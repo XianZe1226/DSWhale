@@ -1,0 +1,10 @@
+include main.py metadata.yaml _conf_schema.json requirements.txt LICENSE THIRD_PARTY_NOTICES.md SECURITY.md
+include README.md CONTRIBUTING.md .gitignore
+include docs/setup.md docs/operations.md docs/validation.md
+recursive-include scripts *.py *.ps1 *.command
+recursive-include tests *.py
+recursive-include .github *.yml
+prune .private
+prune .runtime
+prune .superpowers
+exclude docs/local-run*.md

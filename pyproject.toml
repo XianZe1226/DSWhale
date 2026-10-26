@@ -1,0 +1,36 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "dswhale"
+version = "0.1.0a1"
+description = "A QQ companion for AstrBot with shared memory and evidence-based video experiences"
+readme = "README.md"
+requires-python = ">=3.12,<3.13"
+license = "AGPL-3.0-only"
+dependencies = ["httpx>=0.28,<0.29", "yt-dlp==2026.10.21", "tzdata>=2025.1", "filelock>=3.17"]
+
+[project.optional-dependencies]
+host = ["astrbot==4.29.3"]
+dev = ["pytest>=8,<10", "pytest-asyncio>=1,<2", "ruff>=0.14", "build>=1", "astrbot==4.29.3"]
+
+[project.scripts]
+dswhale = "dswhale.__main__:main"
+
+[tool.setuptools.packages.find]
+include = ["dswhale*"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+pythonpath = ["."]
+
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "ASYNC"]
+# Natural-language Chinese prompts are intentionally kept as readable strings.
+ignore = ["E501"]

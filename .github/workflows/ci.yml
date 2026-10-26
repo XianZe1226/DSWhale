@@ -1,0 +1,59 @@
+name: DSWhale checks
+on: [push, pull_request]
+permissions:
+  contents: read
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-2022]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install ffmpeg (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y ffmpeg
+      - name: Install ffmpeg (macOS)
+        if: runner.os == 'macOS'
+        run: brew install ffmpeg
+      - name: Install ffmpeg (Windows)
+        if: runner.os == 'Windows'
+        run: choco install ffmpeg --no-progress -y
+      - run: python -m pip install -e ".[dev]" uv
+      - name: Prepare pinned LivingMemory integration
+        run: python -m dswhale install --astrbot-dir .memory-fixture --with-memory
+      - name: Install memory test dependencies
+        run: python -m pip install -r .memory-fixture/data/plugins/astrbot_plugin_livingmemory/requirements.txt
+      - run: python -m pytest -q
+        env:
+          DSWHALE_LIVINGMEMORY_SOURCE: ${{ github.workspace }}/.memory-fixture/data/plugins/astrbot_plugin_livingmemory
+      - run: python -m ruff check .
+      - run: python -m ruff format --check .
+      - run: python -m build
+      - run: python -m scripts.build_release
+      - name: Windows PowerShell 5.1 clean installation and repeat upgrade
+        if: runner.os == 'Windows'
+        shell: powershell
+        env:
+          PYTHONUTF8: '1'
+        run: |
+          if ($PSVersionTable.PSVersion.Major -ne 5) { throw 'Expected Windows PowerShell 5.1' }
+          $installDir = Join-Path $env:RUNNER_TEMP ([string][char]0x9c7c + ' install test')
+          $archive = Get-Item dist/DSWhale-*-source.zip
+          Expand-Archive -LiteralPath $archive.FullName -DestinationPath $installDir
+          $source = Get-ChildItem $installDir -Directory | Select-Object -First 1
+          & powershell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $source.FullName 'scripts/setup.ps1')
+          if ($LASTEXITCODE -ne 0) { throw 'Clean installation failed' }
+          & powershell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $source.FullName 'scripts/setup.ps1')
+          if ($LASTEXITCODE -ne 0) { throw 'Repeat installation failed' }
+          $installedPython = Join-Path $source.FullName '.runtime/venv/Scripts/python.exe'
+          & $installedPython -c "import astrbot, dswhale; from dswhale.install import doctor; print('Host and plugin imports OK')"
+          if ($LASTEXITCODE -ne 0) { throw 'Installed imports failed' }
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dswhale-${{ matrix.os }}
+          path: dist/

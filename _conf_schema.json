@@ -1,0 +1,128 @@
+{
+  "owner_qq": {
+    "description": "主人 QQ 号码",
+    "type": "string",
+    "default": "",
+    "hint": "保存后重载插件生效。"
+  },
+  "owner_umo": {
+    "description": "主人完整私聊会话 ID（用 /fish whoami 获取）",
+    "type": "string",
+    "default": "",
+    "hint": "保存后重载插件生效。"
+  },
+  "proactive_enabled": {
+    "description": "开启主动聊天",
+    "type": "bool",
+    "default": false,
+    "hint": "保存后重载插件生效。"
+  },
+  "timezone": {
+    "description": "时区",
+    "type": "string",
+    "default": "Asia/Shanghai",
+    "hint": "保存后重载插件生效。"
+  },
+  "quiet_start": {
+    "description": "安静时段开始（HH:MM）",
+    "type": "string",
+    "default": "23:00",
+    "hint": "保存后重载插件生效。"
+  },
+  "quiet_end": {
+    "description": "安静时段结束（HH:MM）",
+    "type": "string",
+    "default": "08:00",
+    "hint": "保存后重载插件生效。"
+  },
+  "min_interval_minutes": {
+    "description": "主动活动最短间隔（分钟）",
+    "type": "int",
+    "default": 120,
+    "hint": "保存后重载插件生效。"
+  },
+  "max_interval_minutes": {
+    "description": "主动活动最长间隔（分钟）",
+    "type": "int",
+    "default": 240,
+    "hint": "保存后重载插件生效。"
+  },
+  "daily_limit": {
+    "description": "每日主动活动上限（失败也计数）",
+    "type": "int",
+    "default": 3,
+    "hint": "保存后重载插件生效。"
+  },
+  "unanswered_limit": {
+    "description": "连续未回复活动上限",
+    "type": "int",
+    "default": 2,
+    "hint": "保存后重载插件生效。"
+  },
+  "content_url": {
+    "description": "OpenBiliClaw 地址",
+    "type": "string",
+    "default": "http://127.0.0.1:8420",
+    "hint": "保存后重载插件生效。"
+  },
+  "content_token_env": {
+    "description": "内容服务令牌的环境变量名（不是令牌本身）",
+    "type": "string",
+    "default": "DSWHALE_OBC_TOKEN",
+    "hint": "保存后重载插件生效。"
+  },
+  "discover_enabled": {
+    "description": "主动活动时发现并读取视频",
+    "type": "bool",
+    "default": false,
+    "hint": "保存后重载插件生效。"
+  },
+  "video_enabled": {
+    "description": "允许读取视频",
+    "type": "bool",
+    "default": true,
+    "hint": "保存后重载插件生效。"
+  },
+  "vision_provider_id": {
+    "description": "支持图片的 AstrBot 模型提供商 ID",
+    "type": "string",
+    "default": "",
+    "hint": "保存后重载插件生效。"
+  },
+  "max_video_seconds": {
+    "description": "视频最大长度（秒）",
+    "type": "int",
+    "default": 300,
+    "hint": "保存后重载插件生效。"
+  },
+  "max_media_mb": {
+    "description": "视频大小上限（MiB）",
+    "type": "int",
+    "default": 80,
+    "hint": "保存后重载插件生效。"
+  },
+  "frame_count": {
+    "description": "抽样画面数量",
+    "type": "int",
+    "default": 6,
+    "hint": "保存后重载插件生效。"
+  },
+  "media_timeout_seconds": {
+    "description": "一次视频观察的总时限（秒）",
+    "type": "int",
+    "default": 180,
+    "hint": "保存后重载插件生效。"
+  },
+  "cookies_path": {
+    "description": "本机 Netscape cookies 文件完整路径（可选）",
+    "type": "string",
+    "default": "",
+    "hint": "保存后重载插件生效。"
+  },
+  "persona": {
+    "description": "自定义人格（留空使用内置大肥鱼人格）",
+    "type": "text",
+    "default": "",
+    "hint": "保存后重载插件生效。"
+  }
+}
