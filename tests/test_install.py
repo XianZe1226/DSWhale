@@ -124,3 +124,17 @@ def test_doctor_accepts_astrbot_bom_config_without_revealing_identity(tmp_path):
     assert checks["owner"]["ok"] and checks["vision"]["ok"]
     assert "987654321" not in json.dumps(result)
     assert "test-vision" not in json.dumps(result)
+
+
+def test_cli_outputs_utf8_under_legacy_windows_pipe_encoding(tmp_path):
+    import os
+    import subprocess
+    import sys
+
+    result = subprocess.run(
+        [sys.executable, "-m", "dswhale", "install", "--astrbot-dir", str(tmp_path / "安装 host")],
+        env={**os.environ, "PYTHONIOENCODING": "ascii"},
+        capture_output=True,
+    )
+    assert result.returncode == 0
+    assert "已安装" in result.stdout.decode("utf-8")

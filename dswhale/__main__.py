@@ -10,6 +10,10 @@ from .install import InstallError, backup, doctor, install_memory, install_plugi
 
 
 def main(argv=None):
+    # Windows redirected consoles may default to an encoding without Chinese.
+    for stream in (sys.stdout, sys.stderr):
+        if hasattr(stream, "reconfigure"):
+            stream.reconfigure(encoding="utf-8", errors="replace")
     parser = argparse.ArgumentParser(prog="dswhale", description="DSWhale 大肥鱼安装与维护")
     parser.add_argument("--version", action="version", version=__version__)
     commands = parser.add_subparsers(dest="command", required=True)
