@@ -91,14 +91,14 @@ def test_full_backup_restore_keeps_memory_config_and_old_state(tmp_path):
 
 def test_cli_help_and_invalid_directory_exit(tmp_path):
     result = subprocess.run(
-        [sys.executable, "-m", "dswhale", "--help"], capture_output=True, text=True
+        [sys.executable, "-m", "dswhale", "--help"], capture_output=True, encoding="utf-8"
     )
     assert result.returncode == 0
     assert "doctor" in result.stdout
     result = subprocess.run(
         [sys.executable, "-m", "dswhale", "doctor", "--astrbot-dir", str(tmp_path), "--json"],
         capture_output=True,
-        text=True,
+        encoding="utf-8",
     )
     assert result.returncode == 1
     assert not json.loads(result.stdout)["ready"]
