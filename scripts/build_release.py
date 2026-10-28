@@ -2,6 +2,7 @@
 
 import hashlib
 import json
+import stat
 import tarfile
 import tempfile
 import zipfile
@@ -32,7 +33,11 @@ if source_tar.is_file():
         for entry in source.getmembers():
             if entry.isfile():
                 with source.extractfile(entry) as stream:
-                    archive.writestr(entry.name, stream.read())
+                    info = zipfile.ZipInfo(entry.name)
+                    info.create_system = 3
+                    info.external_attr = (stat.S_IFREG | entry.mode) << 16
+                    info.compress_type = zipfile.ZIP_DEFLATED
+                    archive.writestr(info, stream.read())
 checksums = {}
 for path in sorted(dist.iterdir()):
     if path.suffix in {".zip", ".whl", ".gz"}:

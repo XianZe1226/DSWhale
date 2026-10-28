@@ -1,0 +1,9 @@
+{
+  "name": "dswhale-bili-bridge",
+  "version": "0.2.0-alpha.2",
+  "private": true,
+  "type": "module",
+  "license": "AGPL-3.0-only",
+  "engines": {"node": ">=22"},
+  "dependencies": {"qrcode": "1.5.4", "react": "18.3.1", "react-dom": "18.3.1"}
+}

@@ -28,6 +28,11 @@ class Settings:
     media_timeout_seconds: int = 180
     cookies_path: str = ""
     persona: str = ""
+    bili_enabled: bool = False
+    bili_node_path: str = ""
+    bili_allow_dm: bool = False
+    bili_allow_public: bool = False
+    bili_qq_recommendations: bool = True
 
     @classmethod
     def from_mapping(cls, mapping):
@@ -83,6 +88,8 @@ class Settings:
                 raise ValueError("owner_umo 必须是主人 QQ 的完整私聊 /sid")
         if self.proactive_enabled and not self.owner_umo:
             raise ValueError("开启主动聊天前请先配置主人 QQ 和私聊 /sid")
+        if self.bili_enabled and not self.owner_umo:
+            raise ValueError("开启 B站整合前请先配置主人 QQ 和私聊 /sid")
 
     @staticmethod
     def _minutes(value: str) -> int:

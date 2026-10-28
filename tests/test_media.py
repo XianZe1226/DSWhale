@@ -151,3 +151,45 @@ async def test_bilibili_srt_reaches_evidence_in_download_pipeline(monkeypatch):
     reader._extract = extract
     async with reader.read("https://www.bilibili.com/video/BV1xx411c7mD") as evidence:
         assert evidence.subtitles == "你好，海獭"
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX process group contract")
+async def test_successful_parent_does_not_leave_detached_helper(tmp_path):
+    import os
+    import signal
+
+    pidfile = tmp_path / "helper.pid"
+    program = "import subprocess,sys; p=subprocess.Popen([sys.executable,'-c','import time; time.sleep(30)'],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL); open(sys.argv[1],'w').write(str(p.pid))"
+    await run_process([sys.executable, "-c", program, str(pidfile)], timeout=5)
+    pid = int(pidfile.read_text())
+    try:
+        await asyncio.sleep(0.1)
+        with pytest.raises(ProcessLookupError):
+            os.kill(pid, 0)
+    finally:
+        try:
+            os.kill(pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows Job Object kernel contract")
+async def test_windows_wrapper_exit_kills_orphaned_descendant(tmp_path):
+    import ctypes
+    from ctypes import wintypes
+
+    pidfile = tmp_path / "helper.pid"
+    program = "import subprocess,sys; p=subprocess.Popen([sys.executable,'-c','import time; time.sleep(30)'],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL); open(sys.argv[1],'w').write(str(p.pid))"
+    await run_process([sys.executable, "-c", program, str(pidfile)], timeout=5)
+    kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+    kernel.OpenProcess.restype = wintypes.HANDLE
+    kernel.WaitForSingleObject.argtypes = [wintypes.HANDLE, wintypes.DWORD]
+    kernel.WaitForSingleObject.restype = wintypes.DWORD
+    kernel.CloseHandle.argtypes = [wintypes.HANDLE]
+    handle = kernel.OpenProcess(0x00100000, False, int(pidfile.read_text()))
+    if handle:
+        try:
+            assert kernel.WaitForSingleObject(handle, 2000) == 0
+        finally:
+            kernel.CloseHandle(handle)

@@ -1,6 +1,10 @@
 # 安装与配置
 
+分平台入口：[Windows](windows.md)、[macOS](macos.md)，换电脑见 [迁移](migration.md)。
+
 首次安装请按 [README 的完整流程](../README.md#安装前准备)依次完成。该流程包括 Windows PowerShell 5.1、macOS、NapCat 小号/入口切换、反向 WebSocket、模型、Embedding、LivingMemory 管理员权限、主人绑定、视频与可选推荐设置。
+
+B站新增完整流程见 [B站养鱼设置](bilibili.md)，初版升级见 [本地升级](local-upgrade.md)，大小号同登见 [Mac QQ 双开](qq-dual-login.md)。
 
 ## 安装到已有 AstrBot
 
@@ -8,7 +12,7 @@
 
 ```bash
 python -m pip install .
-python -m dswhale install --astrbot-dir "/完整路径/AstrBot" --with-memory
+python -m dswhale install --astrbot-dir "/完整路径/AstrBot" --with-memory --node "/完整路径/node"
 python -m pip install -r "/完整路径/AstrBot/data/plugins/astrbot_plugin_livingmemory/requirements.txt"
 python -m dswhale doctor --astrbot-dir "/完整路径/AstrBot"
 ```
@@ -27,3 +31,5 @@ Windows 路径请使用双引号，例如 `"D:\Apps\AstrBot"`。已有 LivingMem
 - `/lmem status` 权限不足时，在 AstrBot 管理员 ID 中添加主人 QQ UID，并重启宿主；或通过 LivingMemory 控制台查看。
 
 视频读取失败请确认标准链接、长度、Cookie、ffmpeg 和真正支持图片的提供商。全局图片转述模型不是 DSWhale 的 `vision_provider_id`。
+
+已有宿主使用 B站整合时另需 Node 22；`--node` 指向真实 Node 可执行文件，安装器会准备网页依赖。宿主启动环境也要能找到 Node 和 ffmpeg，或在 DSWhale 配置 `bili_node_path`。推荐使用项目根目录 Install/Start 入口统一管理这些路径。

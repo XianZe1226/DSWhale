@@ -23,6 +23,11 @@ jobs:
       - name: Install ffmpeg (Windows)
         if: runner.os == 'Windows'
         run: choco install ffmpeg --no-progress -y
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22.23.4'
+      - run: npm ci --ignore-scripts --no-audit --no-fund --prefix dswhale/bili_bridge
+      - run: node --test tests/*.test.mjs dswhale/bili_bridge/upstream/tests/*.test.mjs
       - run: python -m pip install -e ".[dev]" uv
       - name: Prepare pinned LivingMemory integration
         run: python -m dswhale install --astrbot-dir .memory-fixture --with-memory

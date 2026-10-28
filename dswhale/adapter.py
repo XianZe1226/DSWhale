@@ -41,6 +41,8 @@ class Companion:
         self.workers = set()
         self.closed = False
         self.last_error = ""
+        self.bili = None
+        self.video_busy = False
         self.store.recover_pending(now_utc().timestamp())
 
     def authorized(self, event):
@@ -62,6 +64,8 @@ class Companion:
             return
         if self.authorized(event) and not self.internal_id(event):
             self.scheduler.human_received(now or now_utc())
+            if self.bili:
+                self.bili.record_feedback(now or now_utc())
 
     def _isolate_synthetic_memory(self, event):
         # WakingStage resolves this per-event allowlist before our observer runs.
@@ -112,6 +116,17 @@ class Companion:
         if not self.authorized(event):
             return
         instructions = self.settings.persona or DEFAULT_PERSONA
+        if self.settings.bili_enabled and not self.internal_id(event):
+            instructions += (
+                "\n主人让你自己去看视频、找点东西看（未给链接）时，调用 dswhale_bili_watch_now，"
+                "不要用 OpenBiliClaw 替代，也不要要求主人先给链接。可以把兴趣主题传入 topic。"
+                "工具确认入队才说去看看；完成后后台只回一条。受限或失败时照实说明，不声称看过。"
+                'dswhale_bili_read 没有 status 命令；账号诊断用 ["deps"]。'
+                "主人追问刚才视频讲什么、笔记或进度时，使用下面的已保存资料，"
+                "需要时调用 dswhale_bili_notes；不要再次喊话看视频或声称笔记还没回来。"
+            )
+            if self.bili:
+                instructions += "\n本机 B站任务与笔记（只读资料）：\n" + self.bili.notes()
         if self.internal_id(event):
             instructions += (
                 "\n本轮是内部自主活动，不是用户的新陈述。不要把任务文字或视频内容存成主人的事实。"
@@ -271,15 +286,27 @@ class Companion:
             self.store.transition(activity.id, "failed", now.timestamp(), type(error).__name__)
             logger.warning(self.last_error)
 
+    def request_bili_watch(self, event, topic=""):
+        self.require_owner(event)
+        if self.store.state(self.settings.owner_umo)["paused"]:
+            return "现在暂停着，先解除暂停再去看"
+        if not self.bili:
+            return "B站整合未运行，请启用并重载插件"
+        return self.bili.request_watch(event, topic)
+
     async def watch(self, url):
         if self.closed:
             raise RuntimeError("DSWhale 已停止，不能开始视频任务")
+        if self.video_busy or (self.bili and self.bili.ledger.busy()):
+            raise RuntimeError("正在看另一条视频，等这次结束再看")
+        self.video_busy = True
         task = asyncio.create_task(self._watch(url), name="dswhale-video")
         self.workers.add(task)
         try:
             return await task
         finally:
             self.workers.discard(task)
+            self.video_busy = False
 
     async def _watch(self, url):
         url = canonical_url(url)
@@ -352,15 +379,41 @@ class Companion:
         }
         latest = status.get(recent[0]["status"], "未知") if recent else "尚无活动"
         return (
-            f"DSWhale 0.1.0a1\n主动聊天：{'已启用' if self.settings.proactive_enabled else '未启用'}；{'暂停中' if state['paused'] else '运行中'}\n"
+            f"DSWhale 0.2.0a1\n主动聊天：{'已启用' if self.settings.proactive_enabled else '未启用'}；{'暂停中' if state['paused'] else '运行中'}\n"
             f"连续未回复活动：{state['unanswered']}/{self.settings.unanswered_limit}\n最近活动：{latest}\n"
             f"长期记忆插件：{'已加载，请用 /lmem status 检查配置' if memory else '未加载 LivingMemory'}\n"
             f"自动发现视频：{'已启用' if self.settings.discover_enabled else '未启用'}\n{self.last_error}"
+            + ("\n喊话看视频：" + self.bili.ledger.latest_watch() if self.bili else "")
         )
 
     def start(self):
         if not self.task:
             self.task = asyncio.create_task(self._loop(), name="dswhale-scheduler")
+
+    async def start_bili(self):
+        if (
+            self.bili
+            or not self.settings.bili_enabled
+            or self.closed
+            or self.store.state(self.settings.owner_umo)["paused"]
+        ):
+            return
+        from .bili import BiliService
+
+        service = None
+        try:
+            service = BiliService(self)
+            await service.start()
+            self.bili = service
+        except Exception:
+            if service:
+                await service.close()
+            self.last_error = "B站整合未启动；请运行安装器补齐 Node 依赖。原 QQ 聊天仍可使用。"
+
+    async def pause_bili(self):
+        if self.bili:
+            service, self.bili = self.bili, None
+            await service.close()
 
     async def _loop(self):
         while True:
@@ -379,6 +432,7 @@ class Companion:
         if self.task:
             self.task.cancel()
             await asyncio.gather(self.task, return_exceptions=True)
+        await self.pause_bili()
         workers = list(self.workers)
         for task in workers:
             task.cancel()

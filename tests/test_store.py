@@ -119,3 +119,31 @@ def test_activity_does_not_count_as_human_and_failure_is_not_sent(tmp_path):
         assert store.activity(item.id).status == "failed"
         assert not store.transition(item.id, "sent", NOW.timestamp())
         assert store.state(SCOPE)["unanswered"] == 1
+
+
+def test_bili_share_uses_same_quiet_daily_and_unanswered_budget(tmp_path):
+    from dataclasses import replace
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+
+    from dswhale.config import Settings
+    from dswhale.scheduler import Scheduler
+    from dswhale.store import Store
+
+    cfg = replace(
+        Settings(),
+        owner_qq="123",
+        owner_umo="qq:FriendMessage:123",
+        proactive_enabled=True,
+        daily_limit=1,
+    )
+    store = Store(tmp_path / "state.db")
+    scheduler = Scheduler(cfg, store)
+    noon = datetime(2026, 10, 26, 12, tzinfo=ZoneInfo("Asia/Shanghai"))
+    quiet = noon.replace(hour=23)
+    assert scheduler.reserve(quiet, external_kind="bili-share") is None
+    activity = scheduler.reserve(noon, external_kind="bili-share")
+    assert activity and activity.kind == "bili-share"
+    store.transition(activity.id, "failed", noon.timestamp())
+    assert scheduler.reserve(noon, external_kind="bili-share") is None
+    store.close()

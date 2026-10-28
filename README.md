@@ -2,84 +2,56 @@
 
 一个基于 AstrBot 的开源 AI 陪伴项目：用普通 QQ 小号聊天，记住你的偏好，在合适的时间主动搭话，并读取 B 站或抖音视频后分享观察。
 
-**初版：0.1.0a1（Alpha）。支持安装目标：Windows 10/11 x64、macOS。** macOS 已有一次真实 QQ、模型、记忆配置和视频观察的人工实跑；自动化测试与各平台验证范围见 [验证说明](docs/validation.md)。需要自己的模型服务、QQ 小号和本机持续运行的程序。
+**版本：0.2.0a2（Alpha）。支持目标：Windows 10/11 x64、macOS Intel/Apple Silicon。** 从 [Releases](https://github.com/XianZe1226/DSWhale/releases)下载完整 `DSWhale-0.2.0a2-source.zip`，解压后双击安装。
+
+- [Windows 从零安装](docs/windows.md) · [Mac 从零安装](docs/macos.md)
+- [换电脑迁移](docs/migration.md) · [升级与回退](docs/local-upgrade.md) · [验证范围](docs/validation.md)
+
+公开默认是一条自然聊天、可爱又有主见的大肥鱼。不包含任何使用者的人格私设、姓名、账号、聊天记录或记忆；自定义人格只保存在各自本机配置。
 
 > **视频理解是抽样证据，不是逐帧看完整部视频。** 默认读取五分钟内的视频，结合可用字幕、抽样画面以及可选音频转写生成观察；输出会说明实际获取了哪些证据。站点登录、验证或提取失败时不会声称已经看过。
 
 ## 功能
 
-| 功能 | 初版行为 |
-| --- | --- |
-| QQ 私聊陪伴 | 一个主人、一个普通 QQ 小号；复用 AstrBot 的人格、模型和会话 |
-| 长期记忆 | LivingMemory 保存和召回真实聊天中的事实、偏好与约定；需要 Embedding 模型 |
-| 主动聊天 | 默认关闭；支持免打扰、随机间隔、每日预算、未回复停止和持久化暂停 |
-| 视频观察 | 手动提供 B 站/抖音标准视频页；字幕优先，图片模型理解抽样画面 |
-| 自主找视频 | 可连接独立运行的 OpenBiliClaw 获取候选，再读取视频并通过 QQ 分享 |
-| 视频日志 | 保存来源、观察和证据范围，临时视频文件处理后清理 |
-| 可选语音 | 调用 AstrBot 的 STT/TTS；`/fish voice` 可生成语音 |
-| 安装维护 | 独立 Python 环境、诊断、代码更新保留数据、完整备份恢复 |
+| 功能      | 当前行为                                                          |
+| ------- | ------------------------------------------------------------- |
+| QQ 私聊陪伴 | 一个主人、一个普通 QQ 小号；复用 AstrBot 的人格、模型和会话                          |
+| 长期记忆    | LivingMemory 保存和召回真实聊天中的事实、偏好与约定；需要 Embedding 模型              |
+| 主动聊天    | 默认关闭；支持免打扰、随机间隔、每日预算、未回复停止和持久化暂停                              |
+| 视频观察    | 手动提供 B 站/抖音标准视频页；字幕优先，图片模型理解抽样画面                              |
+| 自主找视频   | 内置 dsh-bili-whale 0.4.6 的作息、选题、深读、评分、日记与推荐；也可选独立 OpenBiliClaw |
+| B站互动    | 扫码登录、私信、评论与直播监听、收藏、动态、待审回复；默认不开启自主公开写入                        |
+| 视频日志    | 保存来源、观察和证据范围，临时视频文件处理后清理                                      |
+| 可选语音    | 调用 AstrBot 的 STT/TTS；`/fish voice` 可生成语音                      |
+| 安装维护    | 独立 Python 环境、诊断、代码更新保留数据、完整备份恢复                               |
 
-自主活动只读个人长期记忆，避免把任务文字或视频剧情写成你的经历；它自己的视频观察保存在日志和宿主聊天历史里。
+自主活动只读个人长期记忆，避免把任务文字或视频剧情写成你的经历；视频观察与鱼日记单独保存，普通聊天可以读取已有笔记。可以直接说“去 B站看个科技视频，回来聊聊”，完成后再问“介绍一下刚才那个视频”。
 
-本项目是 **AstrBot 插件和安装工具**，不是 DSH 运行时。DSH 的 `dsh-*` 插件不能直接装入 AstrBot。当前不包含桌面鱼动画、自动点赞投币、评论区互动或 B 站私信通道。
+本项目是 **AstrBot 插件和安装工具**。dsh-bili-whale 已通过适配层接入；其他 DSH 插件不能直接装入 AstrBot。不包含 DSH 运行时、桌面鱼动画或自动点赞投币。完整入口与各通道授权见 [B站设置](docs/bilibili.md)。
 
 ## 安装前准备
 
-- Windows 10/11 **x64**（建议使用仍有安全维护的系统配置）或 macOS；可用磁盘空间建议至少 2 GB。
-- [uv](https://docs.astral.sh/uv/getting-started/installation/)：安装器用它自动管理 Python **3.12**，无需先单独安装 Python。
-- [FFmpeg](https://ffmpeg.org/download.html)，含 `ffmpeg`、`ffprobe`，两者需能在终端找到。
-- 机器人 QQ 小号；主人号与小号互加好友。普通 QQ 接入依赖用户独立安装的 [NapCat](https://napneko.github.io/guide/boot/Shell)。非官方接入可能受平台风控影响。
-- 可用的聊天模型、支持图片的模型和 Embedding 模型。三个角色可以来自不同服务；模型 API 密钥只在你自己的 AstrBot 中填写。
+- Windows 10/11 x64 或 macOS，建议预留 6 GB 以上可用空间（模型与视频缓存另计）。
+- macOS 没有 FFmpeg 时先按 [Homebrew 官网](https://brew.sh/)安装 Homebrew；Windows 没有 WinGet 时先安装微软 App Installer。已有 FFmpeg/ffprobe 可直接使用。
+- 机器人 QQ 小号与主人号互加好友；[NapCat](https://napneko.github.io/guide/boot/Shell) 独立安装、本人扫码。非官方接入可能受平台风控影响。
+- 聊天模型、支持图片的模型、Embedding 模型及自己的密钥；可来自不同服务。API 调用可能收费。
 
-安装代码本身不收费，模型服务可能按调用计费；QQ、B 站等第三方平台的规则与可用性由对应平台决定。
+### 双击安装
 
-### Windows 10 / 11
+1. 使用这份完整源码，解压到固定目录（支持中文与空格）。已有初版先停止 AstrBot，不要删除 `.runtime`。
+2. **Windows 双击 `Install.cmd`；macOS 双击 `Install.command`**。macOS ZIP 解压未保留执行权限时，可在终端进入目录运行 `bash Install.command`。
+3. 安装器自动准备 uv、Python 3.12、AstrBot 4.29.3、LivingMemory 2.7.1、Node 22 和 B站网页依赖。缺 FFmpeg 时调用 Homebrew/WinGet 安装；缺前置工具时显示安装链接，完成后重新运行即可。
+4. 双击 **Start.cmd / Start.command** 启动，然后完成下面的账号与模型设置。B站整合开启后用 **Bili-Settings.cmd / Bili-Settings.command** 打开养鱼页。
 
-1. 从 [Releases](../../releases) 下载 **完整源码 ZIP**，解压到一个固定目录，例如 `D:\Apps\DSWhale`。不要把源码包与仅供已有 AstrBot 使用的插件 ZIP 混淆。
-2. 在 PowerShell 中准备依赖。系统已有 WinGet 时：
+Windows 支持系统 PowerShell 5.1，入口只对当前进程使用执行策略参数，不永久修改执行策略。终端备用入口是 `powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\setup.ps1`；macOS 为 `bash scripts/setup.command`。
 
-   ```powershell
-   winget install --id astral-sh.uv --exact
-   winget install --id Gyan.FFmpeg --exact
-   ```
+Python 与宿主位于 `.runtime/venv`、`.runtime/astrbot`；下载的工具放在 `.runtime/tools`。已有 LivingMemory 不覆盖。升级前自动保存完整数据备份，插件新依赖准备失败不会替换原插件。运行中的宿主会阻止升级；关闭终端、休眠或关机后，主动任务也会停止。
 
-   Windows 10 若没有 `winget`，先安装/更新微软的 App Installer，或按 uv 官方安装文档与 FFmpeg 官方下载页手动安装。FFmpeg 解压后把包含两个 EXE 的 `bin` 目录加入用户 PATH。
-3. **重新打开 PowerShell**，进入解压后的项目目录，确认：
-
-   ```powershell
-   uv --version
-   ffmpeg -version
-   ffprobe -version
-   ```
-
-4. 安装，再启动。支持系统自带 **Windows PowerShell 5.1**：
-
-   ```powershell
-   powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\setup.ps1
-   powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\start.ps1
-   ```
-
-   这里的 `Bypass` 只针对这次进程，不永久修改系统执行策略。路径中有空格时，切换目录使用 `Set-Location 'D:\你的目录\DSWhale'`。
-
-### macOS
-
-1. 下载完整源码 ZIP，解压到固定目录。已有 [Homebrew](https://brew.sh/) 时准备依赖：
-
-   ```bash
-   brew install uv ffmpeg
-   ```
-
-   没有 Homebrew 时先按其官网安装，或使用 uv/FFmpeg 官方提供的其他方式。
-2. 在终端进入项目目录，执行：
-
-   ```bash
-   bash scripts/setup.command
-   bash scripts/start.command
-   ```
-
-安装器创建 `.runtime/venv` 和 `.runtime/astrbot`，安装固定版本 AstrBot **4.29.3**、LivingMemory **2.7.1**。Python 已缓存时不会重复下载；已有 LivingMemory 不会被覆盖。首次安装需要联网。关闭终端、退出进程或电脑休眠后，主动任务也会停止。
+QQ/模型/B站登录不能自动完成，需在下面的设置页面本人操作。安装器不重新安装或切换现有 NapCat。源码里的通用人设不包含任何使用者个人资料。
 
 ## 首次配置：按顺序完成
+
+已有版本的用户可直接看 [升级与回退](docs/local-upgrade.md)、[B站设置](docs/bilibili.md) 和 [Mac QQ 双开](docs/qq-dual-login.md)。
 
 ### 1. 打开 AstrBot 管理页面
 
@@ -96,7 +68,7 @@
 
 **macOS 账号与入口注意事项：**安装器 v1.7 的原版 QQ/NapCat 共用程序入口；点击“启动原版 QQ”可能恢复原版入口，之后需要重新“切换程序入口 → NapCat”。QQ 的“最后登录账号”也可能被原版 QQ 改成主人号。每次启动后先核对 NapCat 当前账号，避免自动登录成主人号；各账号的 OneBot 网络配置彼此独立。
 
-初次配置建议：电脑上让 NapCat 跑小号，主人号使用手机 QQ。新版安装器若提供独立双开，以对应正式版文档为准，不把未发布分支功能当作已安装能力。
+macOS 需要同时使用大小号时，按 [Mac QQ 双开](docs/qq-dual-login.md)准备未经修改的独立官方 QQ；大号启动辅助只接受签名完整的官方原生入口，不回退到 NapCat 那份。两份应用仍可能共享数据容器、设备和网络，不能保证账号绝不受限；NapCat 官方也提示同设备或 IP 的关联风险。
 
 NapCat WebUI 端口通常为 **6099**，按控制台提示使用本机令牌登录；每次打开要求重新输入令牌可能是正常行为。可在其设置中将监听地址限制为 `127.0.0.1`。
 
@@ -106,27 +78,25 @@ NapCat WebUI 端口通常为 **6099**，按控制台提示使用本机令牌登�
 2. 给平台填写固定 ID，例如 `qq-companion`。该 ID 会成为私聊会话 ID 的前缀，不必与示例一致。
 3. AstrBot 配置反向 WebSocket 监听：本机地址 `127.0.0.1`、示例端口 `6199`，设置自己的访问令牌并启用。
 4. NapCat 新建 **WebSocket 客户端 / 反向 WebSocket**，地址：
-
    ```text
    ws://127.0.0.1:6199/ws
    ```
-
    填入与 AstrBot 相同的令牌，保存并启用。若更改端口，地址也一起更改。
 5. 确认两侧日志显示连接成功。主人号私聊小号，先验证 AstrBot 普通聊天能回复。宿主重启后 NapCat 应自动重新连接。
 
-这里配置的是反向 WebSocket，不是 OneBot HTTP 服务。初版按同机部署编写，跨机器部署需要自行配置网络和访问控制。建议在 AstrBot 限制响应对象，关闭暂时不需要的群聊响应。
+这里配置的是反向 WebSocket，不是 OneBot HTTP 服务。本项目按同机部署编写，跨机器部署需要自行配置网络和访问控制。建议在 AstrBot 限制响应对象，关闭暂时不需要的群聊响应。
 
 ### 4. 配置聊天、图片与 Embedding 模型
 
 在 AstrBot **「模型提供商」** 页面新增来源、填写服务地址和密钥，再添加具体模型。随后启用并选择相应提供商：
 
-| 角色 | 配置位置与要求 |
-| --- | --- |
-| 聊天模型 | AstrBot 会话使用的模型；需要支持工具调用，可用 DeepSeek 或其他兼容服务 |
-| 图片模型 | 确认具体模型真正支持图片输入；把其**完整提供商 ID**填到 DSWhale 的 `vision_provider_id` |
-| Embedding | 在 AstrBot 新增 Embedding 提供商；记录其 ID、模型与维度，用于 LivingMemory |
-| STT（可选） | AstrBot 的语音转文字提供商；无字幕视频可用它转写音频 |
-| TTS（可选） | AstrBot 的文字转语音提供商；给 `/fish voice` 使用 |
+| 角色        | 配置位置与要求                                                        |
+| --------- | -------------------------------------------------------------- |
+| 聊天模型      | AstrBot 会话使用的模型；需要支持工具调用，可用 DeepSeek 或其他兼容服务                   |
+| 图片模型      | 确认具体模型真正支持图片输入；把其**完整提供商 ID**填到 DSWhale 的 `vision_provider_id` |
+| Embedding | 在 AstrBot 新增 Embedding 提供商；记录其 ID、模型与维度，用于 LivingMemory        |
+| STT（可选）   | AstrBot 的语音转文字提供商；无字幕视频可用它转写音频                                 |
+| TTS（可选）   | AstrBot 的文字转语音提供商；给 `/fish voice` 使用                           |
 
 例如模型 ID 可能是 `来源ID/模型ID`，应从你的界面原样复制，不是模型显示名称。服务声称兼容 OpenAI API 不代表每个模型支持图片。
 
@@ -181,7 +151,9 @@ AstrBot 的全局 **「图片转述模型」**是另一项设置，不等于 DSW
 
 默认北京时间 **23:00–08:00** 安静；活动间隔 **120–240 分钟**；每日最多 **3 次尝试**；连续 **2 次未收到主人回复**就停下。失败同样占用预算，重启不清空。首次活动要等待完整间隔；在安静时段启用不会立即发消息。收到主人的真实消息后会重新计时。
 
-需要自己找视频时，另外安装运行 [OpenBiliClaw](https://github.com/whiteguo233/OpenBiliClaw)，按上游文档配置来源、兴趣与推荐：
+优先使用内置 B站养鱼：按 [B站设置](docs/bilibili.md)开启 `bili_enabled`，扫码登录、绑定 B站主人 UID，选择 QQ 推荐，再开启主动活动。开启私信监听需要单独设置 `listen.dm` 和 `bili_allow_dm`，仅选择推荐渠道不会接收来信。
+
+也可选择独立的 [OpenBiliClaw](https://github.com/whiteguo233/OpenBiliClaw)，按上游文档配置来源、兴趣与推荐：
 
 - DSWhale `content_url` 默认 `http://127.0.0.1:8420`，读取 `/api/recommendations` 的 `items`。
 - 若需要访问令牌，在启动终端设置 `DSWHALE_OBC_TOKEN` 环境变量；`content_token_env` 填的是变量名，不是令牌本身。
@@ -190,15 +162,17 @@ AstrBot 的全局 **「图片转述模型」**是另一项设置，不等于 DSW
 
 ## 日常命令
 
-| 命令 | 用途 |
-| --- | --- |
-| `/fish whoami` | 获取本人的私聊绑定信息 |
-| `/fish status` | 查看开关、预算、记忆插件和最近投递状态 |
-| `/fish start` / `/fish pause` | 解除/启用主动活动暂停；不改变配置页总开关 |
-| `/fish watch 标准链接` | 读取视频并说明证据范围 |
-| `/fish journal` | 最近三条观察记录 |
-| `/fish voice 内容` | 使用配置好的 TTS 生成语音 |
-| `/lmem status` | LivingMemory 状态，需要 AstrBot 管理员权限 |
+| 命令                                   | 用途                               |
+| ------------------------------------ | -------------------------------- |
+| `/fish whoami`                       | 获取本人的私聊绑定信息                      |
+| `/fish bili`                         | 查看 B站整合是否启动                      |
+| `/fish pending` / `/fish approve ID` | 查看并逐条确认 B站写操作                    |
+| `/fish status`                       | 查看开关、预算、记忆插件和最近投递状态              |
+| `/fish start` / `/fish pause`        | 解除/启用主动活动暂停；不改变配置页总开关            |
+| `/fish watch 标准链接`                   | 读取视频并说明证据范围                      |
+| `/fish journal`                      | 最近三条观察记录                         |
+| `/fish voice 内容`                     | 使用配置好的 TTS 生成语音                  |
+| `/lmem status`                       | LivingMemory 状态，需要 AstrBot 管理员权限 |
 
 “已提交给 QQ”不代表用户已读；发送结果不明确时不自动重发。暂停状态、预算和日志会持久化。
 
@@ -221,7 +195,7 @@ python -m dswhale restore "项目外的安全目录/backup.zip"
 
 ## 许可证、致谢与边界
 
-DSWhale 原创整合代码采用 **AGPL-3.0-only**，见 [LICENSE](LICENSE)。感谢 [AstrBot](https://github.com/AstrBotDevs/AstrBot)、[LivingMemory](https://github.com/lxfight-s-Astrbot-Plugins/astrbot_plugin_livingmemory)、[OpenBiliClaw](https://github.com/whiteguo233/OpenBiliClaw)、[yt-dlp](https://github.com/yt-dlp/yt-dlp)、[FFmpeg](https://ffmpeg.org/)、[uv](https://github.com/astral-sh/uv) 及大肥鱼社区的工作；完整来源与各自许可见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
+DSWhale 原创整合代码采用 **AGPL-3.0-only**，见 [LICENSE](LICENSE)。感谢 [AstrBot](https://github.com/AstrBotDevs/AstrBot)、[LivingMemory](https://github.com/lxfight-s-Astrbot-Plugins/astrbot_plugin_livingmemory)、[OpenBiliClaw](https://github.com/whiteguo233/OpenBiliClaw)、[yt-dlp](https://github.com/yt-dlp/yt-dlp)、[FFmpeg](https://ffmpeg.org/)、[uv](https://github.com/astral-sh/uv) 及大肥鱼社区的工作；完整来源与各自许可见 [THIRD\_PARTY\_NOTICES.md](THIRD_PARTY_NOTICES.md)。
 
 NapCat/QQ 由安装者从各自官方渠道独立获取；本项目不重新分发或修改它们的程序。第三方项目保留各自许可证、商标和署名；本项目与腾讯、哔哩哔哩、抖音、DeepSeek 等无官方隶属或背书关系，不提供模型服务或账号权限。
 

@@ -20,7 +20,14 @@ from . import __version__
 from .config import Settings
 
 PLUGIN = "astrbot_plugin_dswhale"
-PLUGIN_FILES = ("main.py", "metadata.yaml", "_conf_schema.json", "requirements.txt", "LICENSE")
+PLUGIN_FILES = (
+    "main.py",
+    "metadata.yaml",
+    "_conf_schema.json",
+    "requirements.txt",
+    "LICENSE",
+    "THIRD_PARTY_NOTICES.md",
+)
 MEMORY_COMMIT = "b8aaaec2c1232ec2c86fce22cec066a0069018e0"
 MEMORY_URL = f"https://codeload.github.com/lxfight-s-Astrbot-Plugins/astrbot_plugin_livingmemory/zip/{MEMORY_COMMIT}"
 MEMORY_SHA256 = "9f75add262ebd514112c5c0fa8bc75ea402578f814c70360939b02337acef44a"
@@ -58,7 +65,7 @@ def _replace(source: Path, destination: Path, root: Path):
         raise
 
 
-def install_plugin(root: Path) -> Path:
+def install_plugin(root: Path, *, node=None) -> Path:
     root = root.expanduser().resolve()
     with offline_host(root):
         plugin_parent = root / "data" / "plugins"
@@ -75,6 +82,15 @@ def install_plugin(root: Path) -> Path:
             (stage / "dswhale").mkdir()
             for module in code.glob("*.py"):
                 shutil.copy2(module, stage / "dswhale" / module.name)
+            shutil.copytree(
+                code / "bili_bridge",
+                stage / "dswhale/bili_bridge",
+                ignore=shutil.ignore_patterns("node_modules", "__pycache__", ".DS_Store"),
+            )
+            if node:
+                from .runtime import prepare_bridge
+
+                prepare_bridge(stage / "dswhale/bili_bridge", node)
             destination = plugin_parent / PLUGIN
             _replace(stage, destination, root)
         return destination

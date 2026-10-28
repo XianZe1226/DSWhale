@@ -124,5 +124,30 @@
     "type": "text",
     "default": "",
     "hint": "保存后重载插件生效。"
+  },
+  "bili_enabled": {
+    "description": "启用完整 B站养鱼整合；先安装依赖并绑定主人，自动活动同时受主动聊天总开关控制",
+    "type": "bool",
+    "default": false
+  },
+  "bili_node_path": {
+    "description": "可选：Node.js 22+ 路径；留空优先使用安装器管理的运行时",
+    "type": "string",
+    "default": ""
+  },
+  "bili_allow_dm": {
+    "description": "允许自动给 B站 owner.mid 发私信；双方必须互关。关闭时保存待确认动作",
+    "type": "bool",
+    "default": false
+  },
+  "bili_allow_public": {
+    "description": "允许自动执行评论、弹幕、动态或收藏等上游写操作；默认关闭，交给主人确认",
+    "type": "bool",
+    "default": false
+  },
+  "bili_qq_recommendations": {
+    "description": "允许给已绑定的主人 QQ 推荐视频或推送日记摘要，仍遵守暂停、免打扰和活动预算",
+    "type": "bool",
+    "default": true
   }
 }

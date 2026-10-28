@@ -27,3 +27,4 @@ docs/local-run*.md
 *.pem
 *.key
 credentials*.json
+node_modules/

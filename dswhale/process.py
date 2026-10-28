@@ -4,6 +4,7 @@ import asyncio
 import os
 import signal
 import subprocess
+import sys
 from pathlib import Path
 
 
@@ -11,11 +12,18 @@ class ProcessError(RuntimeError):
     pass
 
 
+def owned_command(args):
+    if os.name == "nt":
+        return [sys.executable, str(Path(__file__).with_name("winjob.py")), *args]
+    return args
+
+
 async def run_process(
     args: list[str],
     *,
     timeout: float,  # noqa: ASYNC109 - bounded subprocess API, tested on cancellation
     cwd: Path | None = None,
+    env: dict[str, str] | None = None,
     output_limit: int = 4 * 1024 * 1024,
     disk_limit: int | None = None,
 ) -> str:
@@ -26,8 +34,9 @@ async def run_process(
     )
     try:
         process = await asyncio.create_subprocess_exec(
-            *args,
+            *owned_command(args),
             cwd=cwd,
+            env=env,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
             **options,
@@ -72,6 +81,13 @@ async def run_process(
     except TimeoutError as error:
         raise ProcessError("媒体处理超时") from error
     finally:
+        # Children may outlive an already-exited wrapper (e.g. a timed-out Node CLI).
+        # Every invocation owns its POSIX session, so this never targets the host.
+        if os.name != "nt":
+            try:
+                os.killpg(process.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
         if process.returncode is None:
             if os.name == "nt":
                 killer = await asyncio.create_subprocess_exec(

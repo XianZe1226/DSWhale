@@ -18,6 +18,10 @@ def test_install_update_preserves_data_and_previous_code(tmp_path):
     plugin = install_plugin(host)
     assert (plugin / "main.py").is_file()
     assert (plugin / "dswhale" / "adapter.py").is_file()
+    assert (plugin / "dswhale/bili_bridge/server.mjs").is_file()
+    assert (plugin / "dswhale/bili_bridge/upstream/LICENSE").is_file()
+    assert (plugin / "dswhale/bili_bridge/upstream/tools/bili.mjs").is_file()
+    assert not (plugin / "dswhale/bili_bridge/node_modules").exists()
     assert not (plugin / ".venv").exists()
     assert not (plugin / "tests").exists()
     config = host / "data/config/user.json"

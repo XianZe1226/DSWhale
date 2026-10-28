@@ -2,9 +2,16 @@ include main.py metadata.yaml _conf_schema.json requirements.txt LICENSE THIRD_P
 include README.md CONTRIBUTING.md .gitignore
 include docs/setup.md docs/operations.md docs/validation.md
 recursive-include scripts *.py *.ps1 *.command
+include Install.command Install.cmd Start.command Start.cmd Bili-Settings.command Bili-Settings.cmd
+recursive-include dswhale/bili_bridge *.js *.mjs *.json *.html *.md LICENSE
+prune dswhale/bili_bridge/node_modules
+include docs/bilibili.md docs/local-upgrade.md docs/qq-dual-login.md
+recursive-include tests *.mjs
 recursive-include tests *.py
 recursive-include .github *.yml
 prune .private
 prune .runtime
 prune .superpowers
 exclude docs/local-run*.md
+
+include docs/windows.md docs/macos.md docs/migration.md

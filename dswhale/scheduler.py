@@ -27,7 +27,9 @@ class Scheduler:
             (now.timestamp(), self._next_due(now), scope),
         )
 
-    def reserve(self, now: datetime) -> Activity | None:
+    def reserve(self, now: datetime, *, external_kind: str | None = None) -> Activity | None:
+        if external_kind not in {None, "bili-share", "bili-note", "bili-watch"}:
+            raise ValueError("Unknown activity kind")
         cfg = self.settings
         local = cfg.local_time(now)
         if not cfg.proactive_enabled or not cfg.owner_umo or cfg.is_quiet(now):
@@ -37,12 +39,12 @@ class Scheduler:
             state = self.store.state(scope)
             if state["paused"] or state["unanswered"] >= cfg.unanswered_limit:
                 return None
-            if state["next_due"] is None:
+            if state["next_due"] is None and external_kind is None:
                 db.execute(
                     "UPDATE sessions SET next_due=? WHERE scope=?", (self._next_due(now), scope)
                 )
                 return None
-            if ts < state["next_due"]:
+            if external_kind is None and ts < state["next_due"]:
                 return None
             count = db.execute(
                 "SELECT COUNT(*) FROM activities WHERE scope=? AND local_day=?",
@@ -55,7 +57,11 @@ class Scheduler:
             if count >= cfg.daily_limit or pending:
                 return None
             item = Activity(
-                uuid.uuid4().hex, scope, "video" if cfg.discover_enabled else "chat", "reserved", ts
+                uuid.uuid4().hex,
+                scope,
+                external_kind or ("video" if cfg.discover_enabled else "chat"),
+                "reserved",
+                ts,
             )
             db.execute(
                 "INSERT INTO activities VALUES(?,?,?,?,?,?,?,?)",
