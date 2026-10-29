@@ -193,3 +193,24 @@ async def test_windows_wrapper_exit_kills_orphaned_descendant(tmp_path):
             assert kernel.WaitForSingleObject(handle, 2000) == 0
         finally:
             kernel.CloseHandle(handle)
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX process groups")
+async def test_timeout_does_not_signal_an_already_killed_group_twice(monkeypatch):
+    import os
+
+    import dswhale.process as process_tools
+
+    original = os.killpg
+    signalled = set()
+
+    def kill_once(pid, sig):
+        if pid in signalled:
+            # Darwin can report EPERM for a group already killed but not reaped.
+            raise PermissionError("group has already exited")
+        signalled.add(pid)
+        return original(pid, sig)
+
+    monkeypatch.setattr(process_tools.os, "killpg", kill_once)
+    with pytest.raises(ProcessError, match="超时"):
+        await run_process([sys.executable, "-c", "import time;time.sleep(30)"], timeout=0.1)

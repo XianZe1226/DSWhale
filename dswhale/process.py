@@ -100,11 +100,8 @@ async def run_process(
                     stderr=asyncio.subprocess.DEVNULL,
                 )
                 await killer.wait()
-            else:
-                try:
-                    os.killpg(process.pid, signal.SIGKILL)
-                except ProcessLookupError:
-                    pass
+            # POSIX groups were signalled above, including when the wrapper
+            # already exited. Repeating killpg before reaping races on Darwin.
             await process.wait()
         for task in tasks:
             if not task.done():
