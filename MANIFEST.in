@@ -15,3 +15,4 @@ prune .superpowers
 exclude docs/local-run*.md
 
 include docs/windows.md docs/macos.md docs/migration.md
+include docs/design.md

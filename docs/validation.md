@@ -1,6 +1,6 @@
 # 验证范围
 
-版本：0.2.0a2，日期：2026-10-28。当前发布候选的测试结果见 [GitHub Actions](https://github.com/XianZe1226/DSWhale/actions)；本页不把旧版本 CI 当作本版验收。
+版本：0.2.0a2，日期：2026-10-29。当前发布候选的测试结果见 [GitHub Actions](https://github.com/XianZe1226/DSWhale/actions)；本页不把旧版本 CI 当作本版验收。
 
 ## 自动化验证
 

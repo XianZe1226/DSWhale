@@ -478,3 +478,33 @@ async def test_failed_frame_read_is_not_repeated_in_same_activity(watching, monk
     await agent.run_agent(service, service.ledger.next_job())
     assert sum(a[0] == "watch-video" for a in calls) == 1
     assert "--uniform" in calls[-1]
+
+
+async def test_chat_read_debrief_cannot_implicitly_download_frames(watching):
+    import main
+
+    c, service = watching
+    service.command = AsyncMock(return_value={"ok": True, "out": "标题: 测试"})
+    await main.DSWhale.bili_read(
+        SimpleNamespace(companion=c), event(c.context), '["debrief","BV1234567890"]'
+    )
+    assert service.command.await_args.args[0] == ["debrief", "BV1234567890", "--no-frames"]
+
+
+async def test_raw_chat_frames_require_the_duration_checked_link_tool(watching):
+    import main
+
+    c, service = watching
+    service.command = AsyncMock(return_value={"ok": True, "out": "unbounded"})
+    reply = await main.DSWhale.bili_read(
+        SimpleNamespace(companion=c), event(c.context), '["watch-video","BV1234567890"]'
+    )
+    assert "dswhale_watch_video" in reply
+    assert service.command.await_count == 0
+
+
+def test_status_reports_the_installed_version(watching):
+    from dswhale import __version__
+
+    c, _ = watching
+    assert f"DSWhale {__version__}" in c.status(event(c.context))

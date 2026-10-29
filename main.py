@@ -266,6 +266,14 @@ class DSWhale(Star):
 
         try:
             args = json.loads(args_json)
+            if isinstance(args, list) and args:
+                if args[0] == "watch-video":
+                    return (
+                        "画面观察请用 dswhale_watch_video 并提供标准视频链接，"
+                        "由该工具检查时长、大小和处理时限；不要直接调用 watch-video。"
+                    )
+                if args[0] == "debrief" and "--no-frames" not in args:
+                    args.append("--no-frames")
             if (
                 isinstance(args, list)
                 and args

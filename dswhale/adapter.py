@@ -12,6 +12,7 @@ from astrbot.api.message_components import Plain
 from astrbot.api.platform import AstrBotMessage, MessageMember, MessageType
 from astrbot.core.agent.run_context import ContextWrapper
 
+from . import __version__
 from .config import Settings
 from .content import ContentClient, canonical_url
 from .media import MediaError, MediaReader
@@ -379,7 +380,7 @@ class Companion:
         }
         latest = status.get(recent[0]["status"], "未知") if recent else "尚无活动"
         return (
-            f"DSWhale 0.2.0a1\n主动聊天：{'已启用' if self.settings.proactive_enabled else '未启用'}；{'暂停中' if state['paused'] else '运行中'}\n"
+            f"DSWhale {__version__}\n主动聊天：{'已启用' if self.settings.proactive_enabled else '未启用'}；{'暂停中' if state['paused'] else '运行中'}\n"
             f"连续未回复活动：{state['unanswered']}/{self.settings.unanswered_limit}\n最近活动：{latest}\n"
             f"长期记忆插件：{'已加载，请用 /lmem status 检查配置' if memory else '未加载 LivingMemory'}\n"
             f"自动发现视频：{'已启用' if self.settings.discover_enabled else '未启用'}\n{self.last_error}"
