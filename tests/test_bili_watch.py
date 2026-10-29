@@ -376,7 +376,7 @@ def test_owner_chat_sees_saved_bili_notes_without_new_work(watching):
     service.ledger.finish("qq-watch-old", "done")
     service.ledger.save_result("qq-watch-old", "《声音实验》简介已读，字幕未读")
     (service.root / ".dsh/whale-diary.md").write_text(
-        "实验通过水中扬声器解释声波传播，不是主人的经历"
+        "实验通过水中扬声器解释声波传播，不是主人的经历", encoding="utf-8"
     )
     req = ProviderRequest(system_prompt="original")
     c.enrich(event(c.context), req)
@@ -392,7 +392,7 @@ async def test_owner_can_read_notes_without_bili_network_or_private_diary(watchi
     import main
 
     c, service = watching
-    (service.root / ".dsh/whale-diary.md").write_text("public-note: 声音传播")
+    (service.root / ".dsh/whale-diary.md").write_text("public-note: 声音传播", encoding="utf-8")
     (service.root / ".dsh/whale-diary-private.md").write_text("private-secret")
     plugin = SimpleNamespace(companion=c)
     text = await main.DSWhale.bili_notes(plugin, event(c.context))
@@ -408,7 +408,7 @@ def test_consumed_debrief_transcript_counts_as_subtitle_evidence(tmp_path):
     folder = tmp_path / ".dsh/shots"
     folder.mkdir(parents=True)
     transcript = folder / "BV1234567890-debrief.txt"
-    transcript.write_text("[00:00] 这是字幕原文")
+    transcript.write_text("[00:00] 这是字幕原文", encoding="utf-8")
     ev.record(["debrief", "BV1234567890"], {"ok": True, "out": "标题: 实验"})
     assert not ev.videos["BV1234567890"]["subtitles"]
     ev.consumed(transcript)
