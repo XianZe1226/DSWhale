@@ -16,7 +16,7 @@ DSWhale 原创代码：AGPL-3.0-only，完整文本见 LICENSE。依赖保留各
 
 LivingMemory 下载固定到提交 `b8aaaec2c1232ec2c86fce22cec066a0069018e0`；ZIP SHA-256：`9f75add262ebd514112c5c0fa8bc75ea402578f814c70360939b02337acef44a`。校验失败会停止安装，不回退到未经校验的最新分支。GitHub 如重新生成不同字节的归档，需要维护者重新审查并更新摘要。
 
-## 本地 B站整合新增组件
+## B站集成组件
 
 - **dsh-bili-whale 0.4.6**，作者 **ALTERSSSS**，MIT，固定提交 `8b0009f8ce2ebdc421afcb2e727b19ac18912ec6`。原 `lib`、`tools`、测试及完整 [LICENSE](dswhale/bili_bridge/upstream/LICENSE) 随源码保留；本地路径、QQ 分享和测试适配记录见 [UPSTREAM.md](dswhale/bili_bridge/UPSTREAM.md)。这部分代码没有改署为 DSWhale 作者，MIT 声明必须随再分发保留。感谢原作者的工具链、作息、互动与安全保护实现。
 - **React / ReactDOM 18.3.1**（Meta 及贡献者）、**qrcode 1.5.4**（node-qrcode 贡献者）：MIT，安装时通过 npm 固定锁文件下载；包内许可证保持原样，不把 node_modules 放进源码包。

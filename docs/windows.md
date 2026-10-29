@@ -1,57 +1,55 @@
-# Windows 10/11 安装与运行
+# Windows 安装
 
-支持 **Windows 10/11 x64**，使用系统 Windows PowerShell 5.1 即可。Windows ARM64 不在本版本支持范围。首次安装需要联网；不要在压缩包内部、临时目录或 OneDrive 同步目录运行。换电脑且要保留自己的记忆，请先读 [迁移指南](migration.md)。
+## 系统要求
 
-## 1. 下载和前置环境
+- Windows 10/11 x64，系统 PowerShell 5.1。
+- 至少 6 GB 可用空间，视频缓存和模型数据另计。
+- 可访问 GitHub、Python 软件源和所用模型服务。
 
-1. 打开 [Releases](https://github.com/XianZe1226/DSWhale/releases)，下载 `DSWhale-0.2.0a2-source.zip` 并全部解压到固定文件夹，例如 `D:\Apps\DSWhale`。新用户不用插件 ZIP 或 wheel。
-2. 预留 6 GB 以上空间，视频缓存和模型数据另计。无需预先安装 Python、Git 或 Node。
-3. 若电脑没有 FFmpeg，安装器会调用 **WinGet**。先在 Microsoft Store 安装/更新 [应用安装程序](https://apps.microsoft.com/detail/9nblggh4nns1)，确保 `winget --version` 可运行。没有商店或 WinGet 的机器，可自行从 [FFmpeg 官方下载入口](https://ffmpeg.org/download.html)选择 Windows 构建，将同时含 `ffmpeg.exe`、`ffprobe.exe` 的 `bin` 文件夹加入 PATH，重新开终端后检查两个命令都能运行。
-4. 安装期间若系统要求安装 FFmpeg 的授权，阅读并完成提示；权限不足或 WinGet 的 user scope 不被当前包支持时，先单独安装 FFmpeg，确认 PATH 后重跑 `Install.cmd`。不需要关闭防火墙或杀毒软件。
+安装器会准备 Python 3.12、AstrBot、LivingMemory、Node.js 和 B站页面依赖，无需预先安装 Python、Git 或 Node。
 
-## 2. 双击安装、启动
+## 准备 FFmpeg
 
-1. 双击根目录 **Install.cmd**。会准备项目内 uv、Python 3.12、AstrBot 4.29.3、LivingMemory 2.7.1、Node 22、B站网页依赖及 FFmpeg；需要下载，第一次可能较久。
-2. 显示安装完成后，双击 **Start.cmd**，保持该窗口运行。按日志中的本机地址打开 AstrBot 管理页，通常是 `http://127.0.0.1:6185`。完成初始账户/密码设置，将管理页监听地址限制为 `127.0.0.1`。
-3. 若窗口一闪而过，打开系统 PowerShell，进入解压目录，执行下面的命令以保留报错。执行策略参数只对本次进程生效，不永久改系统策略：
+已有 `ffmpeg.exe` 和 `ffprobe.exe` 且已加入 PATH 时，可跳过本节。
+
+安装器通过 WinGet 安装 FFmpeg。先从 Microsoft Store 安装或更新 [应用安装程序](https://apps.microsoft.com/detail/9nblggh4nns1)，在新终端中确认 `winget --version` 可用。
+
+没有 WinGet，或自动安装遇到权限、安装范围错误时，可从 [FFmpeg 下载页](https://ffmpeg.org/download.html)选择 Windows 构建，将包含 `ffmpeg.exe` 和 `ffprobe.exe` 的 `bin` 目录加入 PATH，然后重新打开终端。
+
+## 安装与启动
+
+1. 从 [Releases](https://github.com/XianZe1226/DSWhale/releases)下载 `DSWhale-版本号-source.zip`。
+2. 全部解压到固定目录，例如 `D:\Apps\DSWhale`。不要在压缩包内运行，建议避开同步目录。
+3. 双击 **Install.cmd**，等待安装完成。
+4. 双击 **Start.cmd**，在浏览器打开启动日志中的 AstrBot 管理地址，默认通常为 `http://127.0.0.1:6185`。
+5. 完成管理账户设置，按 [配置指南](setup.md)连接 QQ、添加模型并绑定用户。
+
+若窗口关闭过快，可在项目目录打开 PowerShell，运行：
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\setup.ps1
 powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\start.ps1
 ```
 
-`Install.cmd` 可重复执行。升级前先在 AstrBot 启动窗口按 Ctrl+C，安装器会备份数据；不要删除 `.runtime`。下载失败时保留完整错误类型和最后一步名称，脱敏后再反馈，不提供配置文件或带令牌链接。
+执行策略参数仅影响当前进程，不会永久修改系统策略。安装失败后可重新运行 `Install.cmd`。
 
-## 3. QQ 小号接入
+## 安装 NapCat
 
-按照 [NapCat 官方 Windows 说明](https://napneko.github.io/guide/boot/Shell)选择一种安装方式：
+按 [NapCat 官方 Windows 文档](https://napneko.github.io/guide/boot/Shell)选择安装包：
 
-- 手动 Shell 包：先安装 QQ，解压 NapCat；**Windows 10 使用 `launcher-win10.bat`**，Windows 11 按包内 `launcher.bat` 使用。
-- 官方文档里的 Windows OneKey 包：运行其安装器，之后用安装结果里的 `napcat.bat`。不要混用不同包的入口。
+- 手动 Shell 包：先安装 QQ；Windows 10 使用 `launcher-win10.bat`，Windows 11 按包内说明启动。
+- OneKey 包：运行安装器，之后使用安装结果中的 `napcat.bat`。
 
-扫码登录**机器人小号**，通过控制台提供的地址和令牌进入 NapCat WebUI。主号只用腾讯官方客户端或手机 QQ，不把主号交给 NapCat；不能承诺同设备、同网络的账号关联风险为零。
+登录独立机器人账号，再配置到 AstrBot 的反向 WebSocket。示例地址为 `ws://127.0.0.1:6199/ws`，两端访问令牌保持一致，详细步骤见 [连接 QQ](setup.md#连接-qq)。
 
-按 [README 第 3 步](../README.md#3-连接-qq反向-websocket)建立 AstrBot `aiocqhttp (OneBot v11)` 平台，再建 NapCat WebSocket 客户端：`ws://127.0.0.1:6199/ws`，两端设置同一访问令牌。先确认主号发普通私聊、小号能回复，再继续。
+普通 QQ 接入可能受到平台风控影响，请遵守平台规则。
 
-若无法连接，用 `Get-NetTCPConnection -LocalPort 6199 -ErrorAction SilentlyContinue` 查监听；核对平台已启用、两侧端口/令牌一致。仅同机部署，无需将端口暴露公网。不要为省事全局关闭防火墙。
+## 启用 B站功能
 
-## 4. 模型、记忆与主人绑定
+在 DSWhale 配置中开启 `bili_enabled`，保存并重载后，双击 **Bili-Settings.cmd**。扫码登录，填写用户 UID、偏好和推荐渠道。主动活动、QQ 推荐与 B站私信需要分别配置，见 [B站设置](bilibili.md)。
 
-依次完成 [README 首次配置](../README.md#首次配置按顺序完成)：
+## 日常使用
 
-1. 聊天模型必须支持工具调用；图片模型必须真的支持图片。Embedding 模型单独配置，保留其 Provider ID 与维度。
-2. LivingMemory 启用，填写 Embedding 与整理模型 Provider ID；Pages → dashboard → 设置中选择 `session` 作用域，启用回忆工具。管理员命令需要把主人数字 QQ 加入 AstrBot `admins_id`，保存并重启。
-3. 主号私聊小号发送 `/fish whoami`，把返回 QQ 和完整 UMO 填到 DSWhale 的 `owner_qq`、`owner_umo`；图片 Provider ID 填入 `vision_provider_id`。
-4. 保存、重载 DSWhale，用 `/fish status` 检查。先测试标准短视频链接，再开主动活动。
+先启动 NapCat，再运行 `Start.cmd`。AstrBot 和 NapCat 需要持续运行；B站设置网页配置完成后可以关闭。
 
-默认人格是通用可爱大肥鱼。自定义 `persona` 填在本机插件配置；不要提交到源码、issue 或 GitHub。宿主人格也要与之相容，否则两个人格会拉扯。
-
-## 5. B站、主动聊天和日常启动
-
-完整步骤见 [B站设置](bilibili.md)。开启 `bili_enabled`、保存重载，再双击根目录 **Bili-Settings.cmd**。若界面不显示字段英文名，找中文说明“启用完整 B站养鱼整合”。扫码登录鱼的 B站账号，绑定自己的主号 UID，先选择 QQ 推荐。
-
-主动活动还需 `proactive_enabled`，QQ 推荐需 `bili_qq_recommendations`。接收主人的 B站私信需单独开启养鱼页「倾听」里的 `listen.dm`，并开启 `bili_allow_dm`、双方互关；推荐渠道可仍为 QQ。
-
-之后每次开机：**启动 NapCat 小号 → Start.cmd → 必要时 Bili-Settings.cmd**。保持 AstrBot 和 NapCat 运行，设置网页配置完可以关闭。关机、休眠或关闭启动窗口后任务也会停。先用默认低频预算，别反复重发或频繁重新扫码。
-
-验收：普通私聊 → `/fish status` → 一条短视频 → “去 B站看个科技视频，回来聊聊” → 完成后“介绍一下刚才那个视频”。追问只读已有笔记，新任务仍可能受网络、模型和平台限制。Windows CI 能验证安装和代码，真实 QQ 登录、B站账号和模型仍要在你自己的笔记本验收。
+升级前停止 AstrBot，再运行新版安装脚本。保留 `.runtime`，安装器会自动备份数据，详见 [升级与回退](upgrading.md)。

@@ -1,7 +1,7 @@
 name: astrbot_plugin_dswhale
 display_name: DSWhale 大肥鱼
 desc: QQ 私聊陪伴、共享长期记忆、主动聊天与有证据的视频观察。
-version: 0.2.0a2
+version: 0.2.0a3
 author: DSWhale Contributors
 astrbot_version: '>=4.29.3,<4.30'
 support_platforms:
