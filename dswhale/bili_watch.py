@@ -81,6 +81,18 @@ class WatchEvidence:
         self.errors = []
         self.artifacts = {}
         self.started = time.time_ns()
+        # Filesystem timestamps can lag or have coarser precision than time_ns.
+        # Compare the pre-job snapshot instead of mixing two different clocks.
+        self.before = {
+            file.resolve(): self.fingerprint(file)
+            for file in (self.root / ".dsh/shots").rglob("*")
+            if file.is_file()
+        }
+
+    @staticmethod
+    def fingerprint(file):
+        stat = file.stat()
+        return stat.st_mtime_ns, stat.st_ctime_ns, stat.st_size, stat.st_ino
 
     def record(self, args, result):
         if not result.get("ok"):
@@ -144,7 +156,7 @@ class WatchEvidence:
                 row["comments"] |= bool(re.search(r"^\[\d+\].*♥\d+.*rpid=\d+\s*\n\s+\S", out, re.M))
         # Only files actually produced this turn can establish image/transcript coverage.
         for file in (self.root / ".dsh/shots").rglob(bvid + "*"):
-            if file.is_file() and file.stat().st_mtime_ns >= self.started:
+            if file.is_file() and self.before.get(file.resolve()) != self.fingerprint(file):
                 self.artifacts[file.resolve()] = bvid
 
     def consumed(self, file, *, vision=False):

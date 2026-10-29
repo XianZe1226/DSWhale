@@ -508,3 +508,38 @@ def test_status_reports_the_installed_version(watching):
 
     c, _ = watching
     assert f"DSWhale {__version__}" in c.status(event(c.context))
+
+
+def test_new_artifact_is_seen_despite_coarse_or_delayed_filesystem_clock(tmp_path):
+    import os
+
+    from dswhale.bili_watch import WatchEvidence
+
+    ev = WatchEvidence(tmp_path)
+    folder = tmp_path / ".dsh/shots"
+    folder.mkdir(parents=True)
+    frame = folder / "BV1234567890-clock.jpg"
+    frame.write_bytes(b"new-this-job")
+    # A new file can have an mtime earlier than time.time_ns() on coarse mounts.
+    os.utime(frame, ns=(ev.started - 1_000_000, ev.started - 1_000_000))
+    ev.record(["debrief", "BV1234567890"], {"ok": True, "out": "标题: 实验"})
+    ev.consumed(frame, vision=True)
+    assert ev.videos["BV1234567890"]["frames"]
+
+
+def test_unchanged_old_artifact_cannot_be_reused_even_with_future_mtime(tmp_path):
+    import os
+    import time
+
+    from dswhale.bili_watch import WatchEvidence
+
+    folder = tmp_path / ".dsh/shots"
+    folder.mkdir(parents=True)
+    frame = folder / "BV1234567890-old.jpg"
+    frame.write_bytes(b"stale")
+    future = time.time_ns() + 60_000_000_000
+    os.utime(frame, ns=(future, future))
+    ev = WatchEvidence(tmp_path)
+    ev.record(["debrief", "BV1234567890"], {"ok": True, "out": "标题: 实验"})
+    ev.consumed(frame, vision=True)
+    assert not ev.videos["BV1234567890"]["frames"]
