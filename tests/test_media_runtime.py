@@ -1,5 +1,6 @@
 import hashlib
 import io
+import json
 import os
 import stat
 import zipfile
@@ -136,8 +137,11 @@ def test_managed_media_repairs_only_private_tools_and_reuses_on_repeat(tmp_path,
     downloads = []
     content = archive_bytes(
         {
-            tool: f'#!/bin/sh\nprintf "{tool} version 9.0.2 Copyright\\n"\n'.encode()
-            for tool in ["ffmpeg", "ffprobe"]
+            "LICENSE.txt": b"Synthetic vendor license retained with its executable",
+            **{
+                tool: f'#!/bin/sh\nprintf "{tool} version 9.0.2 Copyright\\n"\n'.encode()
+                for tool in ["ffmpeg", "ffprobe"]
+            },
         }
     )
     manifest = {
@@ -159,6 +163,13 @@ def test_managed_media_repairs_only_private_tools_and_reuses_on_repeat(tmp_path,
     assert media_runtime.ensure_media(runtime, reuse=False) == first
     assert len(downloads) == 1
     assert (data / "memory.db").read_bytes() == b"keep me"
+    assert any(
+        b"Synthetic vendor license" in file.read_bytes()
+        for file in (target / "licenses").glob("*.txt")
+    )
+    receipt = json.loads((target / "sources.json").read_text())
+    assert receipt["ffmpeg"] == manifest["ffmpeg"]
+    assert (target / "licenses/ffmpeg-license.txt").is_file()
 
 
 def test_download_rejects_checksum_oversize_and_http(tmp_path, monkeypatch):

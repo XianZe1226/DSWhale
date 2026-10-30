@@ -237,4 +237,4 @@ class RuntimeManager {
   }
   async cancel() {this.controller?.abort();if(this.operation)await this.operation.catch(()=>{});}
 }
-module.exports={RuntimeManager,platformInfo,compatibleVersion,downloadVerified,withInstallLock,runBounded};
+module.exports={RuntimeManager,SetupError,platformInfo,compatibleVersion,downloadVerified,withInstallLock,runBounded};

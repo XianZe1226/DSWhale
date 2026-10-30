@@ -55,7 +55,7 @@ jobs:
         if: runner.os == 'Windows'
         shell: powershell
         run: |
-          $archiveDir = Join-Path $env:RUNNER_TEMP 'DSWhale 鱼 archive'
+          $archiveDir = Join-Path $env:RUNNER_TEMP ('DSWhale ' + [char]0x9c7c + ' archive')
           New-Item -ItemType Directory -Force $archiveDir | Out-Null
           $archive = Join-Path $archiveDir 'uv.zip'
           Invoke-WebRequest 'https://github.com/astral-sh/uv/releases/download/0.13.5/uv-x86_64-pc-windows-msvc.zip' -OutFile $archive
@@ -64,6 +64,7 @@ jobs:
           & tar -tf $archive
           $archiveExit = $LASTEXITCODE
           & "$env:SystemRoot\System32\tar.exe" -tf $archive
+          node -e "const fs=require('node:fs'),cp=require('node:child_process'),path=require('node:path');const p=process.argv[1];const r=cp.spawnSync('tar',['-xOf',p,'uv.exe'],{maxBuffer:100*1024**2});console.log('extract',r.status,r.error?.code,r.stdout?.length,r.stderr?.toString());if(r.status!==0)process.exit(1);const exe=path.join(path.dirname(p),'uv.exe');fs.writeFileSync(exe,r.stdout);const v=cp.spawnSync(exe,['--version']);console.log('version',v.status,v.error?.code,v.stdout?.toString(),v.stderr?.toString());if(v.status!==0)process.exit(1)" $archive
           if ($archiveExit -ne 0) { throw 'Default archive reader failed for a Unicode path' }
       - name: Fresh and repeated desktop installation with synthetic data
         run: node desktop/tests/install-smoke.cjs

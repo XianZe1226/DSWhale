@@ -4,7 +4,7 @@ const fs = require('node:fs/promises');
 const os = require('node:os');
 const path = require('node:path');
 const assert = require('node:assert/strict');
-const { RuntimeManager } = require('../lib/runtime.cjs');
+const { RuntimeManager, SetupError } = require('../lib/runtime.cjs');
 
 async function main() {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'DSWhale 桌面 验收-'));
@@ -44,4 +44,4 @@ async function main() {
     console.log('Fresh install and repeated upgrade verified; synthetic data preserved.');
   } finally { await manager.cancel(); await fs.rm(directory, { recursive: true, force: true }); }
 }
-main().catch(() => { console.error('Desktop installation smoke check failed. Private temporary data was not uploaded.'); process.exitCode = 1; });
+main().catch(error => { console.error(error instanceof SetupError ? error.message : 'Desktop installation smoke check failed. Private temporary data was not uploaded.'); process.exitCode = 1; });

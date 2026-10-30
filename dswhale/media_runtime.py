@@ -139,6 +139,36 @@ def extract_media_archive(archive, destination, tool, sha256):
         with bundle.open(wanted[0]) as source, destination.open("xb") as output:
             shutil.copyfileobj(source, output, length=1024 * 1024)
         destination.chmod(0o755)
+        # Keep vendor notices without extracting vendor-controlled paths.
+        for number, info in enumerate(infos):
+            leaf = PurePosixPath(info.orig_filename).name.lower()
+            if (
+                not info.is_dir()
+                and leaf.startswith(("license", "copying", "notice"))
+                and info.file_size <= 2 * 1024**2
+            ):
+                licenses = destination.parent / "licenses"
+                licenses.mkdir(exist_ok=True)
+                (licenses / f"{tool}-vendor-{number}.txt").write_bytes(bundle.read(info))
+
+
+def _record_media_license(directory, assets, names):
+    licenses = directory / "licenses"
+    licenses.mkdir(exist_ok=True)
+    for tool, filename in names.items():
+        result = subprocess.run(
+            [str(directory / filename), "-L"],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=10,
+            check=True,
+        )
+        (licenses / f"{tool}-license.txt").write_text(
+            result.stdout + result.stderr, encoding="utf-8"
+        )
+    (directory / "sources.json").write_text(json.dumps(assets, indent=2) + "\n", encoding="utf-8")
 
 
 def ensure_media(runtime, *, reuse=True):
@@ -170,6 +200,7 @@ def ensure_media(runtime, *, reuse=True):
                 extract_media_archive(downloaded[key], binaries / filename, tool, asset["sha256"])
                 if not usable_media(binaries / filename, tool):
                     raise RuntimeError("下载的媒体工具与当前系统不兼容")
+            _record_media_license(binaries, assets, names)
             if target.is_symlink():
                 raise ValueError("媒体工具目标不能是符号链接")
             previous = tools / f".ffmpeg-previous-{uuid.uuid4().hex}"
