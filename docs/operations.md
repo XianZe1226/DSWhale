@@ -1,6 +1,8 @@
 # 运维与故障排查
 
-以下命令在项目根目录执行。`python` 指安装环境中的解释器：Windows 为 `.runtime/venv/Scripts/python.exe`，macOS 为 `.runtime/venv/bin/python`。使用现有 AstrBot 时，通过 `--astrbot-dir` 指定宿主目录。
+桌面用户先在应用内查看「环境」与服务状态，从导航打开 QQ、记忆或 B站页面检查实际连接，使用「打开数据目录」定位个人文件。安装失败可在环境页重试；配置修改前先停止服务。桌面数据路径见[桌面指南](desktop.md#数据保存在哪里)。
+
+以下为终端部署的高级命令，在项目根目录执行。`python` 指安装环境中的解释器：Windows 为 `.runtime/venv/Scripts/python.exe`，macOS 为 `.runtime/venv/bin/python`。使用现有 AstrBot 时，通过 `--astrbot-dir` 指定宿主目录。
 
 ## 状态检查
 
@@ -17,7 +19,7 @@ python -m dswhale doctor --json
 
 | 数据 | 位置 |
 | --- | --- |
-| 聊天、模型与插件配置 | `.runtime/astrbot/data` |
+| 聊天、模型与插件配置 | 桌面应用数据目录的 `runtime/astrbot/data`；源码部署为 `.runtime/astrbot/data` |
 | 长期记忆及索引 | LivingMemory 插件数据目录 |
 | DSWhale 活动、预算和观察记录 | `data/plugin_data/astrbot_plugin_dswhale/state.db` |
 | B站凭据、配置、日记和媒体 | `data/plugin_data/astrbot_plugin_dswhale/bilibili/` |
@@ -28,7 +30,7 @@ python -m dswhale doctor --json
 
 ## 备份与恢复
 
-先停止 AstrBot：
+桌面用户先在应用中停止服务并点击备份。终端部署可执行：
 
 ```bash
 python -m dswhale backup "备份目录/backup.zip"
@@ -62,7 +64,7 @@ python -m dswhale restore "备份目录/backup.zip"
 | 视频读取失败 | 标准链接、长度与体积限制、Cookie、FFmpeg、图片模型 |
 | 不主动聊天 | `proactive_enabled`、暂停、免打扰、活动预算、连续未回复次数、电脑休眠 |
 | B站私信无回复 | `listen.dm`、`bili_allow_dm`、绑定 UID、互关、免打扰与平台限制 |
-| B站设置页打不开 | 服务是否启动；重启后重新运行 Bili-Settings，不复用旧页面地址 |
+| B站设置页打不开 | 服务是否启动；桌面用户重新点击 B站入口，终端用户重新运行 Bili-Settings，不复用旧页面地址 |
 | OpenBiliClaw 连接失败 | 服务地址、推荐列表和令牌环境变量；远程鉴权使用 HTTPS |
 
 长期记忆的查看、纠正和删除由 LivingMemory 管理。删除 DSWhale 的观察日志不会清除 LivingMemory 中的记忆，也不能撤回已发送的消息。

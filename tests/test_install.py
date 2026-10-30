@@ -18,6 +18,7 @@ def test_install_update_preserves_data_and_previous_code(tmp_path):
     plugin = install_plugin(host)
     assert (plugin / "main.py").is_file()
     assert (plugin / "dswhale" / "adapter.py").is_file()
+    assert (plugin / "dswhale/media_assets.json").is_file()
     assert (plugin / "dswhale/bili_bridge/server.mjs").is_file()
     assert (plugin / "dswhale/bili_bridge/upstream/LICENSE").is_file()
     assert (plugin / "dswhale/bili_bridge/upstream/tools/bili.mjs").is_file()

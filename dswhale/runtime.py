@@ -4,14 +4,17 @@ import hashlib
 import json
 import os
 import platform
+import re
 import shutil
 import subprocess
 import tarfile
 import tempfile
+import uuid
 import zipfile
 from pathlib import Path, PurePosixPath
 
 import httpx
+from filelock import FileLock
 
 NODE_VERSION = "22.23.4"
 NODE_HASHES = {
@@ -70,12 +73,22 @@ def usable_node(node):
     try:
         version = subprocess.check_output([str(node), "--version"], timeout=10, text=True).strip()
         npm_cli(node)
-        return version.startswith("v22.")
+        match = re.fullmatch(r"v(22)\.(\d+)\.(\d+)", version)
+        return bool(
+            match and tuple(map(int, match.groups())) >= tuple(map(int, NODE_VERSION.split(".")))
+        )
     except (OSError, subprocess.SubprocessError, RuntimeError):
         return False
 
 
 def ensure_node(runtime, *, reuse=True):
+    tools = Path(runtime) / "tools"
+    tools.mkdir(parents=True, exist_ok=True)
+    with FileLock(tools / "node-install.lock", timeout=0):
+        return _ensure_node(runtime, reuse=reuse)
+
+
+def _ensure_node(runtime, *, reuse=True):
     system_node = shutil.which("node") if reuse else None
     if system_node and usable_node(system_node):
         return Path(system_node).resolve()
@@ -123,9 +136,19 @@ def ensure_node(runtime, *, reuse=True):
                 bundle.extractall(unpacked, filter="data")
         if not usable_node(unpacked / top / relative):
             raise RuntimeError("下载的 Node.js 无法运行")
+        if target.is_symlink():
+            raise ValueError("运行库目标不能是符号链接")
+        previous = tools / f".node-previous-{uuid.uuid4().hex}"
         if target.exists():
-            raise RuntimeError("已有运行库损坏，请先移走 .runtime/tools 中对应的 Node 目录")
-        (unpacked / top).rename(target)
+            target.rename(previous)
+        try:
+            (unpacked / top).rename(target)
+        except BaseException:
+            if previous.exists():
+                previous.rename(target)
+            raise
+        if previous.exists():
+            shutil.rmtree(previous)
     return target / relative
 
 
@@ -155,11 +178,35 @@ def launch_environment(runtime):
     runtime = Path(runtime).resolve()
     file = runtime / "tool-env.json"
     saved = json.loads(file.read_text(encoding="utf-8")) if file.exists() else {}
-    directories = [str(Path(p).parent) for p in saved.values() if isinstance(p, str)]
+    tools = {}
+    for key in ("node", "ffmpeg", "ffprobe"):
+        if key in saved:
+            value = saved[key]
+            if not isinstance(value, str) or not Path(value).is_absolute() or "\0" in value:
+                raise ValueError("环境记录损坏，请重新运行安装器")
+            tools[key] = value
+    common = []
+    if platform.system() == "Darwin":
+        common = ["/opt/homebrew/bin", "/usr/local/bin"]
+    elif platform.system() == "Windows" and os.environ.get("LOCALAPPDATA"):
+        common = [str(Path(os.environ["LOCALAPPDATA"]) / "Microsoft/WinGet/Links")]
+    directories = list(
+        dict.fromkeys(
+            filter(
+                None,
+                [
+                    *(str(Path(p).parent) for p in tools.values()),
+                    *common,
+                    *os.environ.get("PATH", "").split(os.pathsep),
+                ],
+            )
+        )
+    )
     return {
         **os.environ,
         "PYTHONUTF8": "1",
-        "PATH": os.pathsep.join([*directories, os.environ.get("PATH", "")]),
+        "PATH": os.pathsep.join(directories),
         "ASTRBOT_ROOT": str(runtime / "astrbot"),
+        "DSWHALE_RUNTIME_DIR": str(runtime),
         **({"DSWHALE_NODE": saved["node"]} if saved.get("node") else {}),
     }

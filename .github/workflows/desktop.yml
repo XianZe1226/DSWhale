@@ -1,0 +1,88 @@
+name: Desktop installers
+
+on:
+  push:
+    branches: [main, 'codex/desktop-setup']
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: ${{ matrix.platform }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-2022
+            platform: Windows-x86_64
+            arch: x64
+            target: --win --x64
+          - os: macos-15
+            platform: macOS-arm64
+            arch: arm64
+            target: --mac --arm64
+          - os: ubuntu-22.04
+            platform: Linux-x86_64
+            arch: x64
+            target: --linux --x64
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22.23.4'
+          cache: npm
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Confirm native build architecture
+        run: node -e "if (process.arch !== '${{ matrix.arch }}') throw Error('Unexpected runner architecture: ' + process.arch)"
+      - name: Install packaging tools
+        run: npm ci --no-audit --no-fund
+      - name: Install staging test dependencies
+        run: python -m pip install pytest
+      - name: Test desktop boundary and runtime contracts
+        run: npm test
+      - name: Test public source staging and planted leak exclusions
+        run: python -m pytest -q tests/test_desktop_stage.py
+      - name: Fresh and repeated desktop installation with synthetic data
+        run: node desktop/tests/install-smoke.cjs
+      - name: Build native installer
+        run: npm run dist -- ${{ matrix.target }}
+        env:
+          # Optional Developer ID certificate. Empty secrets produce a clearly
+          # documented ad-hoc Mac build; this workflow does not claim notarization.
+          CSC_LINK: ${{ runner.os == 'macOS' && secrets.MACOS_CERTIFICATE || '' }}
+          CSC_KEY_PASSWORD: ${{ runner.os == 'macOS' && secrets.MACOS_CERTIFICATE_PASSWORD || '' }}
+          CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+      - name: Create checksums for installers only
+        shell: python
+        run: |
+          import hashlib
+          from pathlib import Path
+          output = Path('desktop-dist')
+          packages = sorted(p for p in output.iterdir() if p.name.startswith('DSWhale-') and p.name.endswith(('.exe', '.dmg', '.deb', '.tar.gz')))
+          if not packages:
+              raise SystemExit('No native installer was built')
+          lines = []
+          for package in packages:
+              with package.open('rb') as stream:
+                  digest = hashlib.file_digest(stream, 'sha256').hexdigest()
+              lines.append(f'{digest}  {package.name}')
+          (output / 'SHA256SUMS-${{ matrix.platform }}.txt').write_text('\n'.join(lines) + '\n', encoding='utf-8')
+      - uses: actions/upload-artifact@v4
+        with:
+          name: DSWhale-${{ matrix.platform }}
+          if-no-files-found: error
+          retention-days: 14
+          path: |
+            desktop-dist/DSWhale-*.exe
+            desktop-dist/DSWhale-*.dmg
+            desktop-dist/DSWhale-*.deb
+            desktop-dist/DSWhale-*.tar.gz
+            desktop-dist/SHA256SUMS-*.txt

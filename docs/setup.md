@@ -1,8 +1,10 @@
 # 配置指南
 
-完成 [Windows](windows.md) 或 [macOS](macos.md)安装后，启动 AstrBot，按顺序完成以下配置。管理页面地址以启动日志为准，默认端口为 `6185`。
+完成[桌面安装](desktop.md)后，在「环境」准备依赖，点击启动服务，再按顺序配置。常用 QQ 绑定、OneBot 端口和访问令牌可在应用内填写；模型、记忆和高级配置通过同一窗口里的 AstrBot 页面完成。旧式终端部署的管理页面地址以启动日志为准，默认端口为 `6185`。
 
 ## 连接 QQ
+
+桌面应用不修改系统 QQ，也不打包 QQ 或 NapCat。机器人登录与个人 QQ 登录相互独立，需由你按上游说明准备。
 
 1. 按 [NapCat 官方文档](https://napneko.github.io/guide/boot/Shell)安装并登录机器人 QQ。机器人账号与使用者账号需互加好友。
 2. 在 AstrBot 的「机器人」页面创建 `aiocqhttp (OneBot v11)` 平台。设置一个固定的平台 ID，例如 `qq-companion`。

@@ -1,47 +1,35 @@
 # macOS 安装
 
-## 系统要求
+支持 macOS 13+、Apple Silicon（M 系列芯片），不提供 Intel Mac 或 universal 安装包。首次准备需要联网及至少 6 GB 可用空间。
 
-- macOS 12+，Intel 或 Apple Silicon。
-- 至少 6 GB 可用空间，视频缓存和模型数据另计。
-- 可访问 GitHub、Python 软件源和所用模型服务。
+## 桌面安装
 
-安装器会准备 Python 3.12、AstrBot、LivingMemory、Node.js 和 B站页面依赖。
+1. 从 [Releases](https://github.com/XianZe1226/DSWhale/releases)下载 `DSWhale-版本-macOS-arm64.dmg`。
+2. 打开磁盘映像，将 **DSWhale** 拖到「应用程序」，再从「应用程序」打开。
+3. 在「环境」点击准备。兼容的工具会复用，缺失依赖下载到应用自己的目录；桌面安装无需 Homebrew 或预装 Python、Node.js。
+4. 准备完成后启动服务，按[配置指南](setup.md)连接 QQ、配置模型和长期记忆。常用设置与高级页面均在应用窗口内打开。
 
-## 准备 FFmpeg
+预览版默认仅有本地临时签名，没有 Developer ID 身份或 Apple 公证。首次打开可能被系统拦截；确认来自项目 Release 且校验和一致后，可按 macOS「系统设置 → 隐私与安全性」提供的单个应用打开流程处理，不要关闭 Gatekeeper。若系统提示文件损坏或校验不一致，请重新下载并反馈。
 
-已有 `ffmpeg` 和 `ffprobe` 时，可跳过本节。否则先按 [Homebrew 官网](https://brew.sh/)安装 Homebrew，之后安装器会自动安装 FFmpeg。Homebrew 所需的系统组件与权限按其安装提示处理。
+数据位于 `~/Library/Application Support/DSWhale`，升级替换应用时保留。备份与详细说明见[桌面指南](desktop.md)。
 
-## 安装与启动
+## 独立连接 QQ
 
-1. 从 [Releases](https://github.com/XianZe1226/DSWhale/releases)下载 `DSWhale-版本号-source.zip`，解压到固定目录。
-2. 双击 **Install.command**，等待安装完成。
-3. 双击 **Start.command**，在浏览器打开启动日志中的 AstrBot 管理地址，默认通常为 `http://127.0.0.1:6185`。
-4. 完成管理账户设置，按 [配置指南](setup.md)连接 QQ、添加模型并绑定用户。
+按 [NapCat 官方文档](https://napneko.github.io/guide/boot/Shell)准备机器人环境并登录，再填写反向 WebSocket 地址和一致的令牌。DSWhale 不下载 QQ / NapCat，不注入或修改 `/Applications/QQ.app`。
 
-若解压后无法直接运行脚本，在终端进入项目目录执行：
+需要同时使用个人 QQ 时，机器人环境与个人登录应独立管理。可参阅[双开说明](qq-dual-login.md)了解已有环境的隔离方式；该操作由用户自行选择，不是 DSWhale 安装步骤。非官方接入可能受到平台风控影响。
+
+B站功能从应用内入口打开并单独扫码登录，详见 [B站设置](bilibili.md)。
+
+## 高级：源码与终端部署
+
+需终端运行或维护现有 AstrBot 时，可下载源码 ZIP 解压，运行 `Install.command`，再运行 `Start.command`。数据位于源码旁的 `.runtime`，独立于桌面应用数据。
 
 ```bash
 bash Install.command
 bash Start.command
 ```
 
-Homebrew 刚安装或 PATH 调整后，请重新打开终端。安装脚本会检测 Apple Silicon 和 Intel 的标准 Homebrew 位置。
+旧式安装脚本缺少 FFmpeg 时使用 Homebrew，需按 [Homebrew 官网](https://brew.sh/)预先安装；也可自行提供 PATH 中的 FFmpeg 与 ffprobe。B站旧式入口为 `Bili-Settings.command`。源码工具链能否在其他 Mac 架构使用取决于各依赖，不属于本版桌面支持范围。
 
-## 安装 NapCat
-
-按 [NapCat 官方 macOS 文档](https://napneko.github.io/guide/boot/Shell)将 QQ 安装到 `/Applications/QQ.app`，使用 [NapCat-Mac-Installer](https://github.com/NapNeko/NapCat-Mac-Installer/releases)安装并启动 NapCat，登录独立机器人账号。
-
-接着配置 AstrBot 与 NapCat 的反向 WebSocket，详细步骤见 [连接 QQ](setup.md#连接-qq)。示例地址为 `ws://127.0.0.1:6199/ws`，两端访问令牌应一致。
-
-需要同时使用普通 QQ 时，参考 [macOS QQ 双开](qq-dual-login.md)。使用非官方接入可能触发平台风控，独立应用副本不提供账号风险隔离。
-
-## 启用 B站功能
-
-在 DSWhale 配置中开启 `bili_enabled`，保存并重载后，双击 **Bili-Settings.command**。扫码登录，填写用户 UID、偏好和推荐渠道。详细说明见 [B站设置](bilibili.md)。
-
-## 日常使用
-
-先启动 NapCat，再运行 `Start.command`。AstrBot 和 NapCat 需要持续运行；B站设置网页配置完成后可以关闭。电脑休眠、关机或关闭启动窗口后，主动任务会停止。
-
-升级前停止 AstrBot，再运行新版安装脚本。保留 `.runtime`，详细步骤见 [升级与回退](upgrading.md)。
+已有 AstrBot 可按[插件安装](setup.md#接入现有-astrbot)接入。升级前停止宿主并[备份数据](upgrading.md)。

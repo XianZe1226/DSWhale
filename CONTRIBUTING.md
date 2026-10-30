@@ -9,6 +9,7 @@
 ```bash
 uv venv --python 3.12
 uv pip install -e '.[dev]'
+npm ci
 npm ci --ignore-scripts --no-audit --no-fund --prefix dswhale/bili_bridge
 ```
 
@@ -17,6 +18,7 @@ npm ci --ignore-scripts --no-audit --no-fund --prefix dswhale/bili_bridge
 ```bash
 uv run --no-project python -m pytest -q
 node --test tests/*.test.mjs dswhale/bili_bridge/upstream/tests/*.test.mjs
+npm test
 uv run --no-project python -m ruff check .
 uv run --no-project python -m ruff format --check .
 ```
@@ -40,7 +42,17 @@ uv run --no-project python -m build
 uv run --no-project python -m scripts.build_release
 ```
 
-`dist` 包含 wheel、源码 ZIP/tar.gz、AstrBot 插件 ZIP 和 SHA-256 校验文件。源码包供首次安装使用，插件 ZIP 供现有 AstrBot 环境使用。
+`dist` 包含 wheel、源码 ZIP/tar.gz、AstrBot 插件 ZIP 和 SHA-256 校验文件。源码包供高级终端部署使用，插件 ZIP 供现有 AstrBot 环境使用。
+
+桌面构建在对应系统上执行：
+
+```bash
+npm run desktop
+npm run pack
+npm run dist
+```
+
+桌面输出在 `desktop-dist`，不会上传或发布。后端资源通过公开源码清单暂存，新增后端源文件应先加入 Git；私有文件、依赖缓存和运行数据不应进入清单。Windows 仅构建 x86_64，Mac 仅构建 arm64，Linux 为 Ubuntu x86_64。支持范围、签名说明与 CI 配置见[桌面指南](docs/desktop.md#开发者构建)。
 
 ## 提交要求
 

@@ -21,20 +21,21 @@
 
 ## 安装
 
-| 平台 | 安装指南 | 安装 / 启动 |
+下载对应系统的 [桌面安装包](https://github.com/XianZe1226/DSWhale/releases)，安装后打开 **DSWhale**，在「环境」中点击准备，再在同一个窗口连接 QQ、配置模型和长期记忆。首次准备需要联网；QQ / NapCat 和模型账号由你独立提供。
+
+| 支持平台 | 下载文件 | 安装指南 |
 | --- | --- | --- |
-| Windows 10/11 x64 | [Windows](docs/windows.md) | `Install.cmd` / `Start.cmd` |
-| macOS 12+，Intel / Apple Silicon | [macOS](docs/macos.md) | `Install.command` / `Start.command` |
+| Windows 10 22H2 / 11，64 位 Intel / AMD | `DSWhale-版本-Windows-x86_64-setup.exe` | [Windows](docs/windows.md) |
+| macOS 13+，Apple Silicon | `DSWhale-版本-macOS-arm64.dmg` | [macOS](docs/macos.md) |
+| Ubuntu 22.04 / 24.04 桌面，64 位 Intel / AMD | `DSWhale-版本-Linux-x86_64.deb` | [Linux](docs/linux.md) |
 
-1. 从 [Releases](https://github.com/XianZe1226/DSWhale/releases) 下载 `DSWhale-版本号-source.zip`，解压到固定目录。
-2. 运行对应平台的安装脚本。安装器会准备 Python、AstrBot、LivingMemory、Node.js 和 B站页面依赖。
-3. 运行启动脚本，按 [配置指南](docs/setup.md)连接 QQ，并设置模型、记忆和用户绑定。
+本版不提供 Intel Mac、32 位 Windows 或 Linux ARM 安装包。桌面安装器优先复用兼容环境，缺少的 Python、Node.js 和媒体工具安装到应用自己的数据目录，不要求安装整套开发环境。请预留至少 6 GB 空间，视频缓存另计。
 
-首次安装需要联网，建议预留 6 GB 可用空间。缺少 FFmpeg 时，安装器通过 WinGet 或 Homebrew 安装；前置工具的准备方法见分平台指南。QQ 和 B站账号需扫码登录，模型服务需自行配置。
+应用、环境准备、服务启停和设置集中在一个窗口；模型、记忆和 B站高级页面也在窗口内打开。桌面包不会安装或修改你的 QQ，也不会下载本地大模型或 CUDA。模型调用可能产生服务商费用。
 
-已有 AstrBot 的用户可使用插件 ZIP，安装方法见 [接入现有 AstrBot](docs/setup.md#接入现有-astrbot)。插件 ZIP 不包含宿主和外部依赖。
+**0.3 预览版**：默认 Windows 包没有可信发布者签名，Mac 包只有本地临时签名、没有 Apple 公证。若某次构建使用了正式证书，发布页会单独注明；请核对来源与随包 SHA-256。安装提示与数据位置见 [桌面使用指南](docs/desktop.md)。
 
-> 当前版本为预览版，配置项和功能可能调整。升级前请备份数据。
+已有 AstrBot 可继续使用 [插件安装](docs/setup.md#接入现有-astrbot)。需要终端部署或旧式脚本的用户可查看各系统指南中的高级方式；源码 ZIP 不是桌面安装器。
 
 ## 配置
 
@@ -70,7 +71,7 @@
 - 普通 QQ 接入依赖 NapCat，可能受到平台风控影响；请使用独立机器人账号并遵守平台规则。
 - 账号凭据、模型密钥和聊天数据应妥善保管。数据位置、访问范围及反馈要求见 [安全说明](SECURITY.md)。
 
-维护文档：[升级与回退](docs/upgrading.md) · [诊断与数据管理](docs/operations.md) · [macOS QQ 双开](docs/qq-dual-login.md)
+维护文档：[桌面使用指南](docs/desktop.md) · [升级与回退](docs/upgrading.md) · [诊断与数据管理](docs/operations.md) · [macOS QQ 双开](docs/qq-dual-login.md)
 
 ## 许可证与致谢
 

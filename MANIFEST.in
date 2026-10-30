@@ -16,3 +16,12 @@ exclude docs/local-run*.md
 
 include docs/windows.md docs/macos.md
 include docs/design.md
+
+include package.json package-lock.json electron-builder.cjs
+recursive-include desktop *.cjs *.json *.html *.css *.js *.svg *.png *.icns *.ico *.plist *.sh
+recursive-include scripts *.cjs
+include dswhale/media_assets.json
+include docs/desktop.md docs/linux.md
+prune desktop-dist
+prune desktop-resources
+prune node_modules

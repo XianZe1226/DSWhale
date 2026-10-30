@@ -28,3 +28,10 @@ docs/local-run*.md
 *.key
 credentials*.json
 node_modules/
+
+# Desktop build products and local environment.
+desktop-dist/
+desktop-resources/
+desktop-auth.json
+.desktop-auth.pending.json
+DSWhale-backup-*.zip

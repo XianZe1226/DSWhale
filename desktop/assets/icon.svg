@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024">
+  <title>DSWhale — original whale mark</title>
+  <rect x="32" y="32" width="960" height="960" rx="216" fill="#edf5ff"/>
+  <ellipse cx="468" cy="579" rx="295" ry="209" fill="#2563eb"/>
+  <path d="M685 558Q812 554 840 439Q864 483 852 537Q905 500 927 505Q920 635 748 677Z" fill="#2563eb"/>
+  <path d="M203 651Q456 767 719 644Q658 785 464 788Q265 786 203 651" fill="#93c5fd"/>
+  <circle cx="331" cy="543" r="22" fill="#102c62"/>
+  <circle cx="324" cy="536" r="7" fill="white"/>
+  <path d="M426 358Q426 307 386 282M427 340Q436 289 472 267" fill="none" stroke="#60a5fa" stroke-width="28" stroke-linecap="round"/>
+  <circle cx="378" cy="244" r="16" fill="#93c5fd"/>
+  <circle cx="495" cy="221" r="11" fill="#93c5fd"/>
+</svg>

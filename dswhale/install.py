@@ -82,6 +82,7 @@ def install_plugin(root: Path, *, node=None) -> Path:
             (stage / "dswhale").mkdir()
             for module in code.glob("*.py"):
                 shutil.copy2(module, stage / "dswhale" / module.name)
+            shutil.copy2(code / "media_assets.json", stage / "dswhale/media_assets.json")
             shutil.copytree(
                 code / "bili_bridge",
                 stage / "dswhale/bili_bridge",

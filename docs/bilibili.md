@@ -6,11 +6,11 @@ DSWhale 集成 [dsh-bili-whale](https://github.com/Alterssss/dsh-bili-whale) 0.4
 
 1. 先完成 [基础配置](setup.md)，确认 QQ 私聊、聊天模型和图片模型可用。
 2. 在 AstrBot「插件 → DSWhale → 配置」中开启 `bili_enabled`，保存并重载。`bili_node_path` 通常留空，由安装器管理 Node。
-3. 运行根目录的 `Bili-Settings.cmd`（Windows）或 `Bili-Settings.command`（macOS），打开设置页面。
+3. 桌面用户点击左侧 B站入口，在当前窗口打开设置页面。终端部署可运行根目录的 `Bili-Settings.cmd`（Windows）或 `Bili-Settings.command`（macOS）。
 4. 扫码登录机器人使用的 B站账号，填写绑定用户信息、偏好、作息和推荐渠道。
 5. 运行页面中的依赖检查，确认登录状态、Node 和 FFmpeg 正常。
 
-设置页仅在本机开放，端口和访问令牌由启动入口生成。服务暂停或重启后，重新运行 Bili-Settings 打开页面。
+设置页仅在本机开放，端口和访问令牌由启动入口生成。服务暂停或重启后，从应用内重新点击 B站入口；终端部署重新运行 Bili-Settings。不要复用旧页面地址。
 
 ## 基本设置
 
