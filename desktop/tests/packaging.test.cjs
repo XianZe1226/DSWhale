@@ -33,6 +33,6 @@ test('checksum step runs from a temporary Actions script outside the repository'
     const python = process.env.DSWHALE_BUILD_PYTHON || (process.platform === 'win32' ? 'python' : 'python3');
     const result = spawnSync(python, [script], { cwd: root, encoding: 'utf8' });
     assert.equal(result.status, 0, result.stderr);
-    assert.match(fs.readFileSync(path.join(directory, 'SHA256SUMS-fixture.txt'), 'utf8'), /^[a-f0-9]{64}  DSWhale-fixture\.exe\n$/);
+    assert.match(fs.readFileSync(path.join(directory, 'SHA256SUMS-fixture.txt'), 'utf8'), /^[a-f0-9]{64}  DSWhale-fixture\.exe\r?\n$/);
   } finally { fs.rmSync(directory, { recursive: true, force: true }); }
 });
