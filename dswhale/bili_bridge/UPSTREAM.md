@@ -7,3 +7,5 @@ DSWhale changes: isolated `DSWHALE_DATA_HOME` path precedence; host compatibilit
 Additional changes: QQ share option in original settings; missing-runtime integration test mocks process probing to remain deterministic on macOS with global Node installations.
 
 Additional adaptation: wake prompt recognizes QQ sharing; native settings display the isolated data location and DSWhale grants; toolsPath and custom DSH session home are read-only because the adapter fixes its executable. Covers are written under the isolated shots directory with BV validation, not beside installed source files. All original commands remain available to the local manual operator. Automated tools additionally block arbitrary file publishing and require separate owner grants; quota auto-feedback remains available.
+
+Windows desktop adaptation: the shared traffic lock retries transient `EPERM` / `EACCES` sharing errors within the existing ten-second deadline. Account budgets, stale-owner checks and fail-closed network behavior remain in force. A regression test covers the sharing-error sequence.

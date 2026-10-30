@@ -110,6 +110,45 @@ async function readJSON(file, fallback) {
   try {return JSON.parse(await fs.readFile(file,'utf8'));}
   catch(error) {if(error.code==='ENOENT')return fallback;throw new SetupError('环境记录损坏，请重新准备环境');}
 }
+async function extractUVArchive(archive, staged, member, {platform=process.platform, signal, runner=runBounded} = {}) {
+  if (platform === 'win32') {
+    // Windows' bundled bsdtar cannot open non-ANSI paths. .NET accepts Unicode;
+    // keep all filenames in environment data rather than interpolating a script.
+    const script = String.raw`
+$ErrorActionPreference = 'Stop'
+Add-Type -AssemblyName System.IO.Compression.FileSystem
+$zip = [System.IO.Compression.ZipFile]::OpenRead($env:DSWHALE_UV_ARCHIVE)
+try {
+  $chosen = $null
+  $seen = @{}
+  foreach ($entry in $zip.Entries) {
+    $name = $entry.FullName
+    if ($name.StartsWith('/') -or $name.Contains('\') -or $name.Contains(':') -or $name.Contains([char]0) -or ($name.Split('/') -contains '..') -or $seen.ContainsKey($name)) { throw 'Unsafe installer archive' }
+    $seen[$name] = $true
+    if ($name -ceq $env:DSWHALE_UV_MEMBER) {
+      if ($null -ne $chosen -or $entry.Length -gt 104857600 -or (($entry.ExternalAttributes -shr 16) -band 61440) -eq 40960) { throw 'Invalid installer member' }
+      $chosen = $entry
+    }
+  }
+  if ($null -eq $chosen) { throw 'Installer member missing' }
+  $inputStream = $chosen.Open()
+  try {
+    $output = [System.IO.File]::Open($env:DSWHALE_UV_OUTPUT, [System.IO.FileMode]::CreateNew, [System.IO.FileAccess]::Write, [System.IO.FileShare]::None)
+    try { $inputStream.CopyTo($output) } finally { $output.Dispose() }
+  } finally { $inputStream.Dispose() }
+} finally { $zip.Dispose() }
+`;
+    const powershell = path.win32.join(process.env.SystemRoot || 'C:\\Windows', 'System32/WindowsPowerShell/v1.0/powershell.exe');
+    await runner(powershell, ['-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(script, 'utf16le').toString('base64')], {
+      signal, timeout:60000, env:{...process.env, DSWHALE_UV_ARCHIVE:archive, DSWHALE_UV_OUTPUT:staged, DSWHALE_UV_MEMBER:member}
+    });
+  } else {
+    const list=(await runner('tar',['-tf',archive],{signal,timeout:60000})).toString('utf8').trim().split(/\r?\n/);
+    if(list.some(name=>name.startsWith('/')||name.includes('\\')||name.includes(':')||name.split('/').includes('..'))||!list.includes(member))throw new SetupError('安装工具压缩包路径不安全');
+    const binary=await runner('tar',['-xOf',archive,member],{signal,timeout:60000,maxBytes:100*1024**2});
+    await fs.writeFile(staged,binary,{mode:0o755});
+  }
+}
 class RuntimeManager {
   constructor({source,runtime,onProgress=()=>{}}) {
     this.source=path.resolve(source);this.runtime=path.resolve(runtime);this.onProgress=onProgress;
@@ -224,12 +263,8 @@ class RuntimeManager {
     try {
       const archive=path.join(stage,asset.url.endsWith('.zip')?'uv.zip':'uv.tar.gz');
       await downloadVerified(asset,archive,{signal,onProgress:progress=>this.onProgress({phase:'installing',step:'下载并校验安装工具',progress:progress===null?null:.02+progress*.08})});
-      // Read the one pinned member through stdout; never extract archive paths or links.
-      const list=(await runBounded('tar',['-tf',archive],{signal,timeout:60000})).toString('utf8').trim().split(/\r?\n/);
-      if(list.some(name=>name.startsWith('/')||name.includes('\\')||name.includes(':')||name.split('/').includes('..'))||!list.includes(asset.member))throw new SetupError('安装工具压缩包路径不安全');
-      const binary=await runBounded('tar',['-xOf',archive,asset.member],{signal,timeout:60000,maxBytes:100*1024**2});
       const staged=path.join(stage,process.platform==='win32'?'uv.exe':'uv');
-      await fs.writeFile(staged,binary,{mode:0o755});
+      await extractUVArchive(archive,staged,asset.member,{signal});
       if(!compatibleVersion('uv',(await runBounded(staged,['--version'],{signal})).toString('utf8')))throw new SetupError('安装工具版本校验失败');
       await fs.rename(staged,executable);
       return executable;
@@ -237,4 +272,4 @@ class RuntimeManager {
   }
   async cancel() {this.controller?.abort();if(this.operation)await this.operation.catch(()=>{});}
 }
-module.exports={RuntimeManager,SetupError,platformInfo,compatibleVersion,downloadVerified,withInstallLock,runBounded};
+module.exports={RuntimeManager,SetupError,platformInfo,compatibleVersion,downloadVerified,withInstallLock,runBounded,extractUVArchive};

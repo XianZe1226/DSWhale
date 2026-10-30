@@ -48,6 +48,23 @@ test('verified downloads enforce HTTPS, checksum and streamed size limits', asyn
   } finally { await fs.rm(dir,{recursive:true,force:true}); }
 });
 
+test('Windows UV extraction passes Unicode paths as data instead of tar arguments', async () => {
+  assert.equal(typeof runtime.extractUVArchive, 'function');
+  const archive = "C:\\Users\\synthetic\\鱼 '$ env\\uv.zip";
+  const staged = "C:\\Users\\synthetic\\鱼 '$ env\\uv.exe";
+  const calls = [];
+  await runtime.extractUVArchive(archive, staged, 'uv.exe', { platform: 'win32', runner: async (...args) => { calls.push(args); return Buffer.alloc(0); } });
+  assert.equal(calls.length, 1);
+  const [command, args, options] = calls[0];
+  assert.match(command, /powershell\.exe$/i);
+  assert.equal(options.env.DSWHALE_UV_ARCHIVE, archive);
+  assert.equal(options.env.DSWHALE_UV_OUTPUT, staged);
+  const script = Buffer.from(args.at(-1), 'base64').toString('utf16le');
+  assert.match(script, /System\.IO\.Compression\.ZipFile/);
+  assert.ok(!script.includes(archive));
+  assert.ok(!args.includes(archive));
+});
+
 test('installer locks are exclusive and released without exposing subprocess output', async () => {
   assert.equal(typeof runtime.withInstallLock, 'function');
   const dir=await fs.mkdtemp(path.join(os.tmpdir(),'dswhale-lock-'));

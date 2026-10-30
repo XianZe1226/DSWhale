@@ -31,6 +31,20 @@ test('cross-process and cross-instance budgets survive restarts',async t=>{
  assert.equal(s.calls(),2)
  s.advance(3600001);await s.guard.fetch('https://api.bilibili.com/x/three');assert.equal(s.calls(),3)
 })
+test('transient Windows lock sharing errors retry without resetting request budgets',async t=>{
+ const s=setup(t),original=fs.openSync,lock=path.join(s.directory,'traffic-state.json.lock')
+ let attempts=0
+ fs.openSync=function(file,...args){
+  if(file===lock&&attempts++<2)throw Object.assign(new Error('synthetic sharing violation'),{code:attempts===1?'EPERM':'EACCES'})
+  return original.call(this,file,...args)
+ }
+ try {
+  await s.guard.fetch('https://api.bilibili.com/x/test-sharing')
+  assert.equal(s.calls(),1)
+  assert.equal(Object.values(s.guard.status().accounts)[0].readDay,1)
+  assert.ok(attempts>=3)
+ } finally {fs.openSync=original}
+})
 test('HTTP Retry-After pauses every endpoint and cannot be bypassed by no-cache',async t=>{
  const s=setup(t)
  const guard=createTrafficGuard({...s.options,transport:async()=>new Response('',{status:429,headers:{'retry-after':'1200'}})})

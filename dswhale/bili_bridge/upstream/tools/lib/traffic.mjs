@@ -40,9 +40,11 @@ export function createTrafficGuard({ directory, transport = (...a) => globalThis
     const deadline = Date.now() + 10000
     let fd
     while (fd === undefined) {
-      try { fd = fs.openSync(lockFile, 'wx'); fs.writeFileSync(fd, JSON.stringify({ pid: process.pid })) }
+      try { fd = fs.openSync(lockFile, 'wx') }
       catch (e) {
-        if (e.code !== 'EEXIST') throw e
+        // Windows can report a sharing violation while another process closes
+        // or removes the lock. Keep the same bounded, fail-closed wait.
+        if (!['EEXIST', 'EPERM', 'EACCES'].includes(e.code)) throw e
         try {
           const age = Date.now() - fs.statSync(lockFile).mtimeMs
           let pid
@@ -56,6 +58,7 @@ export function createTrafficGuard({ directory, transport = (...a) => globalThis
       }
     }
     try {
+      fs.writeFileSync(fd, JSON.stringify({ pid: process.pid }))
       const s = read(), result = fn(s)
       const temp = stateFile + '.' + process.pid + '.tmp'
       try { fs.writeFileSync(temp, JSON.stringify(s)); fs.renameSync(temp, stateFile) }
