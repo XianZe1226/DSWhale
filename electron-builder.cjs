@@ -1,4 +1,9 @@
 'use strict';
+// GitHub Actions supplies an empty value when an optional secret is absent.
+// electron-builder treats an empty CSC_LINK as the working directory.
+for (const name of ['CSC_LINK', 'CSC_KEY_PASSWORD']) {
+  if (process.env[name] === '') delete process.env[name];
+}
 // A local ad-hoc signature lets Apple Silicon launch the app. It is not a
 // trusted Developer ID signature or notarization. Real certificates are opt-in.
 const config = {

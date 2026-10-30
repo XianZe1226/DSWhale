@@ -51,6 +51,20 @@ jobs:
         run: npm test
       - name: Test public source staging and planted leak exclusions
         run: python -m pytest -q tests/test_desktop_stage.py
+      - name: Check Windows archive tool with Unicode paths
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: |
+          $archiveDir = Join-Path $env:RUNNER_TEMP 'DSWhale 鱼 archive'
+          New-Item -ItemType Directory -Force $archiveDir | Out-Null
+          $archive = Join-Path $archiveDir 'uv.zip'
+          Invoke-WebRequest 'https://github.com/astral-sh/uv/releases/download/0.13.5/uv-x86_64-pc-windows-msvc.zip' -OutFile $archive
+          if ((Get-FileHash $archive -Algorithm SHA256).Hash.ToLowerInvariant() -ne 'a38b8d1902b7cfbc76b423ba1bb456f623f42064cdc72628b6075b89afd1019a') { throw 'Archive checksum mismatch' }
+          Get-Command tar -All | Select-Object Source
+          & tar -tf $archive
+          $archiveExit = $LASTEXITCODE
+          & "$env:SystemRoot\System32\tar.exe" -tf $archive
+          if ($archiveExit -ne 0) { throw 'Default archive reader failed for a Unicode path' }
       - name: Fresh and repeated desktop installation with synthetic data
         run: node desktop/tests/install-smoke.cjs
       - name: Build native installer
@@ -66,7 +80,9 @@ jobs:
         run: |
           import hashlib
           import subprocess
+          import sys
           from pathlib import Path
+          sys.path.insert(0, str(Path.cwd()))
           from scripts.normalize_release import normalize_tar
           output = Path('desktop-dist')
           packages = sorted(p for p in output.iterdir() if p.name.startswith('DSWhale-') and p.name.endswith(('.exe', '.dmg', '.deb', '.tar.gz')))
