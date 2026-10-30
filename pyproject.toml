@@ -13,7 +13,7 @@ dependencies = ["httpx>=0.28,<0.29", "yt-dlp==2026.10.21", "tzdata>=2025.1", "fi
 
 [project.optional-dependencies]
 host = ["astrbot==4.29.3"]
-dev = ["pytest>=8,<10", "pytest-asyncio>=1,<2", "ruff>=0.14", "build>=1", "astrbot==4.29.3"]
+dev = ["pytest>=8,<10", "pytest-asyncio>=1,<2", "ruff>=0.14", "build>=1", "setuptools>=77", "astrbot==4.29.3"]
 
 [project.scripts]
 dswhale = "dswhale.__main__:main"

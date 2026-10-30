@@ -128,6 +128,7 @@ const config = {
       "libatspi2.0-0",
       "libdrm2",
       "libgbm1",
+      "fonts-noto-cjk",
       "libasound2 | libasound2t64"
     ]
   },

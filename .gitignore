@@ -34,4 +34,5 @@ desktop-dist/
 desktop-resources/
 desktop-auth.json
 .desktop-auth.pending.json
+.dswhale-desktop-login.json
 DSWhale-backup-*.zip

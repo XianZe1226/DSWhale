@@ -63,9 +63,14 @@ async function backup() {
   if (selected.canceled) return { canceled: true };
   const wasRunning = supervisor.running; closePanel(); await supervisor.stop();
   try {
-    await hostCommand(['backup', '--astrbot-dir', manager.host, selected.filePath]);
+    await snapshotTo(selected.filePath);
     return { saved: true };
   } finally { if (wasRunning && !shutdownRequested) await supervisor.start(); }
+}
+async function snapshotTo(file) {
+  await settingsCommand(manager, 'prepare-backup');
+  try { await hostCommand(['backup', '--astrbot-dir', manager.host, file]); }
+  finally { await settingsCommand(manager, 'finish-backup').catch(() => {}); }
 }
 async function hostCommand(args) {
   const environment = await manager.environment();
@@ -87,11 +92,11 @@ async function restore() {
   publish({ phase: 'installing', step: '备份当前数据并导入旧配置', progress: null, error: undefined });
   const folder = path.join(manager.runtime, 'backups');
   await fs.mkdir(folder, { recursive: true });
-  await hostCommand(['backup', '--astrbot-dir', manager.host, path.join(folder, `before-import-${Date.now()}.zip`)]);
+  await snapshotTo(path.join(folder, `before-import-${Date.now()}.zip`));
   // A failed/cancelled rebuild must not be mistaken for a startable installation.
   await fs.writeFile(path.join(manager.runtime, 'desktop-install.json'), JSON.stringify({ version: 'needs-import-repair' }));
   await hostCommand(['restore', '--astrbot-dir', manager.host, selected.filePaths[0]]);
-  await fs.rm(path.join(manager.runtime, 'desktop-auth.json'), { force: true });
+  await settingsCommand(manager, 'prepare-import');
   await fs.rm(path.join(manager.runtime, '.desktop-auth.pending.json'), { force: true });
   await session.fromPartition('persist:dswhale-consoles').clearStorageData();
   await manager.install();

@@ -26,7 +26,7 @@ ROOT_FILES = {
     "_conf_schema.json",
     "requirements.txt",
 }
-SCRIPT_FILES = {"scripts/bootstrap.py", "scripts/launch.py"}
+SCRIPT_FILES = {"scripts/bootstrap.py", "scripts/launch.py", "scripts/normalize_release.py"}
 # Exact new resources may be staged before the first development commit.
 NEW_RESOURCES = {
     "dswhale/media_assets.json",

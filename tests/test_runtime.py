@@ -24,22 +24,25 @@ def test_launch_environment_only_reads_known_tools_and_exposes_runtime(tmp_path,
 
     from dswhale.runtime import launch_environment
 
+    node = str(tmp_path / "tools" / "node")
+    media = tmp_path / "media"
+    token = str(tmp_path / "token" / "SECRET")
     (tmp_path / "tool-env.json").write_text(
         json.dumps(
             {
-                "node": "/private/tools/node",
-                "ffmpeg": "/private/media/ffmpeg",
-                "ffprobe": "/private/media/ffprobe",
-                "secret": "/private/token/SECRET",
+                "node": node,
+                "ffmpeg": str(media / "ffmpeg"),
+                "ffprobe": str(media / "ffprobe"),
+                "secret": token,
             }
         )
     )
     env = launch_environment(tmp_path)
     assert env.get("DSWHALE_RUNTIME_DIR") == str(tmp_path.resolve())
     assert env["ASTRBOT_ROOT"] == str(tmp_path.resolve() / "astrbot")
-    assert env["DSWHALE_NODE"] == "/private/tools/node"
-    assert env["PATH"].split(os.pathsep).count("/private/media") == 1
-    assert "/private/token" not in env["PATH"]
+    assert env["DSWHALE_NODE"] == node
+    assert env["PATH"].split(os.pathsep).count(str(media)) == 1
+    assert str(tmp_path / "token") not in env["PATH"]
 
 
 def test_node_rejects_prereleases_and_repairs_corrupt_private_copy(tmp_path, monkeypatch):

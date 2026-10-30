@@ -1,6 +1,8 @@
 """Small, offline connection settings interface for the desktop application."""
 
 import argparse
+import hashlib
+import hmac
 import json
 import os
 import re
@@ -75,6 +77,105 @@ def _safe_file(path, host):
             break
         if candidate.is_symlink():
             raise ValueError("配置目录包含符号链接，请先检查数据目录")
+
+
+def _valid_initial_login(config, credential):
+    dashboard = config.get("dashboard", {})
+    try:
+        if not dashboard.get("password_change_required") or credential.get(
+            "username"
+        ) != dashboard.get("username", "astrbot"):
+            return False
+        password = credential["password"]
+        if not isinstance(password, str) or not 1 <= len(password) <= 256:
+            return False
+        algorithm, iterations, salt, expected = dashboard["pbkdf2_password"].split("$")
+        iterations = int(iterations)
+        if algorithm != "pbkdf2_sha256" or not 100_000 <= iterations <= 5_000_000:
+            return False
+        return hmac.compare_digest(
+            hashlib.pbkdf2_hmac("sha256", password.encode(), bytes.fromhex(salt), iterations),
+            bytes.fromhex(expected),
+        )
+    except (KeyError, ValueError, TypeError, AttributeError):
+        return False
+
+
+def _write_private_json(path, value):
+    temporary = path.with_name(path.name + "." + uuid.uuid4().hex + ".tmp")
+    try:
+        temporary.write_text(json.dumps(value, ensure_ascii=False, indent=2), encoding="utf-8")
+        os.chmod(temporary, 0o600)
+        temporary.replace(path)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def prepare_backup(host):
+    """Include a still-valid initial credential in a private desktop export."""
+    host = Path(host)
+    with offline_host(host):
+        config_file, _ = _files(host)
+        auth = host.parent / "desktop-auth.json"
+        attachment = host / "data/.dswhale-desktop-login.json"
+        for path in (config_file, auth, attachment):
+            _safe_file(path, host)
+        config, credential = _load(config_file, {}), _load(auth, {})
+        if _valid_initial_login(config, credential):
+            _write_private_json(
+                attachment, {key: credential[key] for key in ("username", "password")}
+            )
+        else:
+            attachment.unlink(missing_ok=True)
+    return {"prepared": True}
+
+
+def finish_backup(host):
+    host = Path(host)
+    with offline_host(host):
+        attachment = host / "data/.dswhale-desktop-login.json"
+        _safe_file(attachment, host)
+        attachment.unlink(missing_ok=True)
+    return {"finished": True}
+
+
+def prepare_import(host):
+    """Adapt imported local settings without changing identity, models or memory."""
+    host = Path(host)
+    with offline_host(host):
+        config_file, fish_file = _files(host)
+        auth = host.parent / "desktop-auth.json"
+        attachment = host / "data/.dswhale-desktop-login.json"
+        for path in (config_file, fish_file, auth, attachment):
+            _safe_file(path, host)
+        config, fish = _load(config_file, {}), _load(fish_file, {})
+        dashboard = config.setdefault("dashboard", {})
+        dashboard.update(enable=True, host="127.0.0.1")
+        dashboard.setdefault("port", 6185)
+        dashboard.setdefault("ssl", {})["enable"] = False
+        for key in ("bili_node_path", "cookies_path"):
+            if fish.get(key) and not Path(fish[key]).expanduser().is_file():
+                fish[key] = ""
+        for path, document in ((config_file, config), (fish_file, fish)):
+            path.parent.mkdir(parents=True, exist_ok=True)
+            temporary = path.with_name(path.name + ".import-" + uuid.uuid4().hex)
+            try:
+                temporary.write_text(
+                    json.dumps(document, ensure_ascii=False, indent=2), encoding="utf-8"
+                )
+                os.chmod(temporary, 0o600)
+                temporary.replace(path)
+            finally:
+                temporary.unlink(missing_ok=True)
+        imported_login = _load(attachment, {})
+        if _valid_initial_login(config, imported_login):
+            _write_private_json(
+                auth, {key: imported_login[key] for key in ("username", "password")}
+            )
+        elif not _valid_initial_login(config, _load(auth, {})):
+            auth.unlink(missing_ok=True)
+        attachment.unlink(missing_ok=True)
+    return {"prepared": True}
 
 
 def save_settings(host, patch):
@@ -172,17 +273,26 @@ def save_settings(host, patch):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("action", choices=("read", "save", "status"))
+    parser.add_argument(
+        "action",
+        choices=("read", "save", "status", "prepare-import", "prepare-backup", "finish-backup"),
+    )
     parser.add_argument("--host", type=Path, required=True)
     args = parser.parse_args()
     try:
         if args.action == "save":
             value = save_settings(args.host, json.loads(sys.stdin.read(16_384)))
+        elif args.action == "prepare-import":
+            value = prepare_import(args.host)
+        elif args.action == "prepare-backup":
+            value = prepare_backup(args.host)
+        elif args.action == "finish-backup":
+            value = finish_backup(args.host)
         else:
             value = (read_settings if args.action == "read" else setup_status)(args.host)
         print(json.dumps(value, ensure_ascii=False))
         return 0
-    except (ValueError, OSError, TypeError):
+    except (ValueError, OSError, TypeError, InstallError):
         print(
             json.dumps(
                 {"error": "配置未完成，请检查输入、文件权限，并停止机器人后重试"},

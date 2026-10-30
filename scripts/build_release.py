@@ -10,6 +10,7 @@ from pathlib import Path
 
 from dswhale import __version__
 from dswhale.install import install_plugin
+from scripts.normalize_release import normalize_tar, release_epoch
 
 root = Path(__file__).resolve().parents[1]
 dist = root / "dist"
@@ -24,6 +25,7 @@ with tempfile.TemporaryDirectory() as directory:
 # A full source ZIP is easier to unpack in Windows Explorer than the sdist tarball.
 source_tar = dist / f"dswhale-{__version__}.tar.gz"
 if source_tar.is_file():
+    normalize_tar(source_tar, epoch=release_epoch(root))
     with (
         tarfile.open(source_tar) as source,
         zipfile.ZipFile(

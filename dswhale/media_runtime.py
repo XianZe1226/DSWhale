@@ -101,13 +101,16 @@ def extract_media_archive(archive, destination, tool, sha256):
             raise ValueError("媒体工具解压大小超过限制")
         wanted, seen = [], set()
         for info in infos:
-            name, mode = info.filename, info.external_attr >> 16
+            # ZipInfo normalizes Windows separators in filename. Validate the
+            # original archive member as well, before trusting the canonical one.
+            name, mode = info.orig_filename, info.external_attr >> 16
             path = PurePosixPath(name)
             if (
                 not path.parts
                 or path.is_absolute()
                 or ".." in path.parts
                 or "\\" in name
+                or "\x00" in name
                 or ":" in name
                 or stat.S_ISLNK(mode)
                 or any(

@@ -102,3 +102,71 @@ def test_setup_status_contains_no_credentials_and_existing_platform_id_retained(
     status = setup_status(host)
     assert status["qqConfigured"] and status["ownerConfigured"] and status["modelConfigured"]
     assert "keep-existing-token" not in str(status)
+
+
+def test_import_prepares_loopback_and_clears_only_unavailable_tool_paths(tmp_path):
+    from dswhale.desktop_settings import prepare_import
+
+    host = host_files(tmp_path)
+    config_file = host / "data/cmd_config.json"
+    config = json.loads(config_file.read_text())
+    config["dashboard"] = {
+        "host": "0.0.0.0",
+        "port": 6301,
+        "ssl": {"enable": True},
+        "pbkdf2_password": "keep-password-hash",
+    }
+    config_file.write_text(json.dumps(config))
+    fish_file = host / "data/config/astrbot_plugin_dswhale_config.json"
+    fish = json.loads(fish_file.read_text())
+    fish.update(
+        bili_node_path=str(tmp_path / "old-machine/node"),
+        cookies_path=str(tmp_path / "old-machine/cookies.txt"),
+    )
+    fish_file.write_text(json.dumps(fish))
+    prepare_import(host)
+    result = json.loads(config_file.read_text())
+    assert result["dashboard"]["host"] == "127.0.0.1"
+    assert result["dashboard"]["port"] == 6301
+    assert result["dashboard"]["ssl"]["enable"] is False
+    assert result["dashboard"]["pbkdf2_password"] == "keep-password-hash"
+    assert (
+        result["provider"] == config["provider"]
+        and result["provider_sources"] == config["provider_sources"]
+    )
+    result = json.loads(fish_file.read_text())
+    assert result["bili_node_path"] == result["cookies_path"] == ""
+    assert result["persona"] == fish["persona"]
+
+
+def test_desktop_backup_restores_pending_first_login_on_another_machine(tmp_path):
+    import hashlib
+
+    from dswhale.desktop_settings import finish_backup, prepare_backup, prepare_import
+    from dswhale.install import backup, restore
+
+    host = host_files(tmp_path / "old-device")
+    password, salt = "Synthetic-initial-password-123456789", "11" * 16
+    config_file = host / "data/cmd_config.json"
+    config = json.loads(config_file.read_text())
+    digest = hashlib.pbkdf2_hmac("sha256", password.encode(), bytes.fromhex(salt), 100000).hex()
+    config["dashboard"].update(
+        username="astrbot",
+        password_change_required=True,
+        pbkdf2_password=f"pbkdf2_sha256$100000${salt}${digest}",
+    )
+    config_file.write_text(json.dumps(config))
+    login = {"username": "astrbot", "password": password}
+    (host.parent / "desktop-auth.json").write_text(json.dumps(login))
+    prepare_backup(host)
+    archive = tmp_path / "private-backup.zip"
+    backup(host, archive)
+    finish_backup(host)
+    assert not (host / "data/.dswhale-desktop-login.json").exists()
+    new_host = tmp_path / "new-device/host"
+    restore(new_host, archive)
+    prepare_import(new_host)
+    assert json.loads((new_host.parent / "desktop-auth.json").read_text()) == login
+    assert not (new_host / "data/.dswhale-desktop-login.json").exists()
+    result = json.loads((new_host / "data/cmd_config.json").read_text())
+    assert result["dashboard"]["pbkdf2_password"] == config["dashboard"]["pbkdf2_password"]

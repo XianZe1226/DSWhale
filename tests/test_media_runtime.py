@@ -16,7 +16,11 @@ def archive_bytes(members):
     output = io.BytesIO()
     with zipfile.ZipFile(output, "w") as bundle:
         for name, content in members.items():
-            bundle.writestr(name, content)
+            info = zipfile.ZipInfo(name)
+            # Keep hostile raw ZIP names even on Windows, where ZipInfo's
+            # constructor otherwise normalizes backslashes before writing.
+            info.filename = name
+            bundle.writestr(info, content)
     return output.getvalue()
 
 
@@ -41,7 +45,8 @@ def test_extracts_only_safe_regular_executable_with_verified_checksum(tmp_path):
         archive, output, "ffmpeg", hashlib.sha256(content).hexdigest()
     )
     assert output.read_bytes() == b"binary"
-    assert output.stat().st_mode & stat.S_IXUSR
+    if os.name != "nt":
+        assert output.stat().st_mode & stat.S_IXUSR
     with pytest.raises(ValueError, match="校验"):
         media_runtime.extract_media_archive(archive, tmp_path / "wrong", "ffmpeg", "0" * 64)
     assert not (tmp_path / "wrong").exists()
@@ -81,6 +86,26 @@ def test_rejects_archive_symlinks_and_expansion_limit(tmp_path, monkeypatch):
         media_runtime.extract_media_archive(
             file, tmp_path / "binary", "ffmpeg", hashlib.sha256(content).hexdigest()
         )
+
+
+def test_raw_zip_name_is_checked_before_windows_normalization(tmp_path, monkeypatch):
+    content = archive_bytes({"bin/ffmpeg": b"good", r"root\escape": b"bad"})
+    file = tmp_path / "windows-normalized.zip"
+    file.write_bytes(content)
+    original = zipfile.ZipFile.infolist
+
+    def normalized(bundle):
+        infos = original(bundle)
+        for info in infos:
+            info.filename = info.filename.replace("\\", "/")
+        return infos
+
+    monkeypatch.setattr(zipfile.ZipFile, "infolist", normalized)
+    with pytest.raises(ValueError, match="路径"):
+        media_runtime.extract_media_archive(
+            file, tmp_path / "binary", "ffmpeg", hashlib.sha256(content).hexdigest()
+        )
+    assert not (tmp_path / "binary").exists()
 
 
 def test_media_requires_both_ffmpeg_and_ffprobe_compatible_versions(tmp_path):

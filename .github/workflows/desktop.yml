@@ -41,7 +41,8 @@ jobs:
         with:
           python-version: '3.12'
       - name: Confirm native build architecture
-        run: node -e "if (process.arch !== '${{ matrix.arch }}') throw Error('Unexpected runner architecture: ' + process.arch)"
+        run: |
+          node -e "if (process.arch !== '${{ matrix.arch }}') throw Error('Unexpected runner architecture: ' + process.arch)"
       - name: Install packaging tools
         run: npm ci --no-audit --no-fund
       - name: Install staging test dependencies
@@ -64,13 +65,18 @@ jobs:
         shell: python
         run: |
           import hashlib
+          import subprocess
           from pathlib import Path
+          from scripts.normalize_release import normalize_tar
           output = Path('desktop-dist')
           packages = sorted(p for p in output.iterdir() if p.name.startswith('DSWhale-') and p.name.endswith(('.exe', '.dmg', '.deb', '.tar.gz')))
           if not packages:
               raise SystemExit('No native installer was built')
           lines = []
           for package in packages:
+              if package.name.endswith('.tar.gz'):
+                  epoch = int(subprocess.check_output(['git', 'show', '-s', '--format=%ct', 'HEAD'], text=True).strip())
+                  normalize_tar(package, epoch=epoch)
               with package.open('rb') as stream:
                   digest = hashlib.file_digest(stream, 'sha256').hexdigest()
               lines.append(f'{digest}  {package.name}')

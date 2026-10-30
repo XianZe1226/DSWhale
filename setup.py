@@ -1,10 +1,12 @@
 """Include AstrBot's root entry files in the wheel without duplicating source files."""
 
+import importlib.util
 from pathlib import Path
 from shutil import copy2, copytree, ignore_patterns
 
 from setuptools import setup
 from setuptools.command.build_py import build_py
+from setuptools.command.sdist import sdist
 
 ASSETS = (
     "main.py",
@@ -31,4 +33,18 @@ class BuildPy(build_py):
         )
 
 
-setup(cmdclass={"build_py": BuildPy})
+class SourceDistribution(sdist):
+    def make_distribution(self):
+        super().make_distribution()
+        root = Path(__file__).resolve().parent
+        spec = importlib.util.spec_from_file_location(
+            "_release_normalizer", root / "scripts/normalize_release.py"
+        )
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        for archive in self.archive_files:
+            if str(archive).endswith(".tar.gz"):
+                module.normalize_tar(Path(archive), epoch=module.release_epoch(root))
+
+
+setup(cmdclass={"build_py": BuildPy, "sdist": SourceDistribution})
