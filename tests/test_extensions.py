@@ -143,7 +143,9 @@ def test_update_preserves_memory_persona_embedding_and_private_snapshot(ext, hos
     assert len(snapshots) == 1
     with zipfile.ZipFile(snapshots[0]) as z:
         assert z.read("data/personas/default.json") == b"synthetic persona"
-    assert stat.S_IMODE(snapshots[0].stat().st_mode) & 0o077 == 0
+    # Windows chmod only toggles read-only; access follows the host directory ACL.
+    if os.name != "nt":
+        assert stat.S_IMODE(snapshots[0].stat().st_mode) & 0o077 == 0
     assert "synthetic" not in json.dumps(result)
     assert any(
         "https://codeload.github.com/lxfight-s-Astrbot-Plugins/astrbot_plugin_livingmemory/zip/"
