@@ -297,7 +297,7 @@ async def test_memory_read_keeps_original_scope_and_respects_disabled_plugins(co
 
 
 async def test_pinned_livingmemory_hooks_and_readonly_tool(companion, monkeypatch):
-    """Optional upstream integration: point env at the verified 2.7.1 checkout."""
+    """Optional upstream integration: point env at the verified upstream checkout."""
     import importlib
     import os
     from pathlib import Path

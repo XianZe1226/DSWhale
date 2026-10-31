@@ -16,7 +16,16 @@ from filelock import Timeout
 
 from .install import InstallError, offline_host
 
-FIELDS = {"ownerQQ", "platformId", "onebotPort", "onebotToken", "biliEnabled", "proactiveEnabled"}
+FIELDS = {
+    "ownerQQ",
+    "platformId",
+    "onebotPort",
+    "onebotToken",
+    "biliEnabled",
+    "proactiveEnabled",
+    "signatureEnabled",
+    "qzoneEnabled",
+}
 
 
 def _load(path, default):
@@ -43,6 +52,8 @@ def read_settings(host):
         "onebotToken": platform.get("ws_reverse_token", ""),
         "biliEnabled": bool(fish.get("bili_enabled", False)),
         "proactiveEnabled": bool(fish.get("proactive_enabled", False)),
+        "signatureEnabled": bool(fish.get("qq_signature_enabled", False)),
+        "qzoneEnabled": bool(fish.get("qzone_enabled", False)),
         "hasModels": any(
             p.get("enable", True) and p.get("model") for p in config.get("provider", [])
         ),
@@ -206,9 +217,10 @@ def save_settings(host, patch):
                 raise ValueError("QQ 端口无效或与管理页面冲突")
             if not isinstance(token, str) or len(token) > 256 or any(c.isspace() for c in token):
                 raise ValueError("访问令牌不能包含空白，长度不能超过 256 字符")
-            if any(not isinstance(value[k], bool) for k in ("biliEnabled", "proactiveEnabled")):
+            switches = ("biliEnabled", "proactiveEnabled", "signatureEnabled", "qzoneEnabled")
+            if any(not isinstance(value[k], bool) for k in switches):
                 raise ValueError("开关值无效")
-            if not owner and (value["biliEnabled"] or value["proactiveEnabled"]):
+            if not owner and any(value[k] for k in switches):
                 raise ValueError("请先绑定 QQ 用户，再启用主动功能")
             old_ident = read_settings(host)["platformId"]
             platforms = config.setdefault("platform", [])
@@ -234,6 +246,8 @@ def save_settings(host, patch):
                 owner_umo=f"{ident}:FriendMessage:{owner}" if owner else "",
                 bili_enabled=value["biliEnabled"],
                 proactive_enabled=value["proactiveEnabled"],
+                qq_signature_enabled=value["signatureEnabled"],
+                qzone_enabled=value["qzoneEnabled"],
             )
             if owner:
                 admins = config.setdefault("admins_id", [])

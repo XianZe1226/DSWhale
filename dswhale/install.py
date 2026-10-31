@@ -28,9 +28,9 @@ PLUGIN_FILES = (
     "LICENSE",
     "THIRD_PARTY_NOTICES.md",
 )
-MEMORY_COMMIT = "b8aaaec2c1232ec2c86fce22cec066a0069018e0"
+MEMORY_COMMIT = "a1e9c20a8c5fab93d6143f51be26fb1bbf8143ec"
 MEMORY_URL = f"https://codeload.github.com/lxfight-s-Astrbot-Plugins/astrbot_plugin_livingmemory/zip/{MEMORY_COMMIT}"
-MEMORY_SHA256 = "9f75add262ebd514112c5c0fa8bc75ea402578f814c70360939b02337acef44a"
+MEMORY_SHA256 = "98210c85e9d7fbc3b730632a1d00e8a96a908206bc3c4cdc6124b253838a6443"
 ARCHIVE_LIMIT = 1024**3
 
 

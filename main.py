@@ -1,20 +1,25 @@
 """AstrBot plugin entry point; install this repository as astrbot_plugin_dswhale."""
 
+import re
+
 from astrbot.api import AstrBotConfig
 from astrbot.api.event import AstrMessageEvent, filter
-from astrbot.api.message_components import Record
+from astrbot.api.message_components import Plain, Record
 from astrbot.api.star import Context, Star, StarTools
 from astrbot.core.provider.entities import ProviderRequest
+from astrbot.core.star.filter.command import GreedyStr
 
 if __package__:
     from .dswhale.adapter import Companion
     from .dswhale.bili_agent import read_config
     from .dswhale.config import Settings
+    from .dswhale.reply_cleanup import clean_content, clean_history, clean_stream, clean_text
     from .dswhale.store import Store
 else:  # local SDK smoke tests
     from dswhale.adapter import Companion
     from dswhale.bili_agent import read_config
     from dswhale.config import Settings
+    from dswhale.reply_cleanup import clean_content, clean_history, clean_stream, clean_text
     from dswhale.store import Store
 
 
@@ -50,12 +55,35 @@ class DSWhale(Star):
 
     @filter.on_llm_request()
     async def enrich(self, event: AstrMessageEvent, req: ProviderRequest):
+        if self.companion.authorized(event):
+            req.contexts = clean_history(req.contexts)
         await self.companion.prepare_memory(event)
         self.companion.enrich(event, req)
 
-    @filter.on_decorating_result()
+    @filter.on_llm_response(priority=100000)
+    async def clean_response(self, event: AstrMessageEvent, resp):
+        if self.companion.authorized(event):
+            resp.completion_text = clean_text(resp.completion_text)
+
+    @filter.on_agent_done(priority=100000)
+    async def clean_saved(self, event: AstrMessageEvent, run_context, llm_response):
+        if not self.companion.authorized(event):
+            return
+        for message in reversed(getattr(run_context, "messages", None) or []):
+            if getattr(message, "role", None) == "assistant":
+                message.content = clean_content(message.content)
+                break
+
+    @filter.on_decorating_result(priority=100000)
     async def before_send(self, event: AstrMessageEvent):
         self.companion.allow_delivery(event)
+        result = event.get_result()
+        if self.companion.authorized(event) and result:
+            if getattr(result, "async_stream", None) is not None:
+                result.async_stream = clean_stream(result.async_stream)
+            for item in result.chain or []:
+                if isinstance(item, Plain):
+                    item.text = clean_text(item.text)
 
     @filter.after_message_sent()
     async def delivered(self, event: AstrMessageEvent):
@@ -63,8 +91,68 @@ class DSWhale(Star):
 
     @filter.command_group("fish")
     def fish(self):
-        """DSWhale 管理。子命令：whoami/status/start/pause/watch/journal/voice/bili/pending/approve。"""
+        """DSWhale：状态、视频、B站、签名与空间；完整命令见 README。"""
         pass
+
+    @staticmethod
+    def _command_text(event, command, fallback):
+        match = re.match(rf"^/?fish\s+{re.escape(command)}\s+([\s\S]*)$", event.message_str.strip())
+        return match[1] if match else str(fallback)
+
+    @fish.command("signature")
+    async def signature(self, event: AstrMessageEvent, text: GreedyStr):
+        text = self._command_text(event, "signature", text)
+        yield event.plain_result(await self.companion.social.signature(event, text))
+        event.stop_event()
+
+    @fish.command("qzone-draft")
+    async def qzone_draft(self, event: AstrMessageEvent, text: GreedyStr):
+        text = self._command_text(event, "qzone-draft", text)
+        yield event.plain_result(await self.companion.social.draft(event, text))
+        event.stop_event()
+
+    @fish.command("qzone-publish")
+    async def qzone_publish(self, event: AstrMessageEvent, ident: str):
+        yield event.plain_result(await self.companion.social.publish(event, ident))
+        event.stop_event()
+
+    @fish.command("social-pending")
+    async def social_pending(self, event: AstrMessageEvent):
+        yield event.plain_result(await self.companion.social.pending(event))
+        event.stop_event()
+
+    @fish.command("qzone-cancel")
+    async def qzone_cancel(self, event: AstrMessageEvent, ident: str):
+        yield event.plain_result(await self.companion.social.discard(event, ident))
+        event.stop_event()
+
+    @filter.llm_tool(name="dswhale_set_qq_signature")
+    async def signature_tool(self, event: AstrMessageEvent, text: str) -> str:
+        """仅当绑定主人本条消息明确要求修改签名时调用，不自主修改昵称或头像。
+
+        Args:
+            text(string): 主人明确要求的新签名，单行且最多40字。
+        """
+        return await self.companion.social.signature(event, text)
+
+    @filter.llm_tool(name="dswhale_qzone_draft")
+    async def qzone_draft_tool(self, event: AstrMessageEvent, text: str) -> str:
+        """主人想发QQ空间时准备文字草稿，不会立即发布。返回内容与确认命令，让主人核对。
+        不附带聊天历史、长期记忆或账号资料。仅使用主人明确给定或要求撰写的内容。
+
+        Args:
+            text(string): 这条说说的完整文字，最多1000字。
+        """
+        return await self.companion.social.draft(event, text)
+
+    @filter.llm_tool(name="dswhale_qzone_publish")
+    async def qzone_publish_tool(self, event: AstrMessageEvent, ident: str) -> str:
+        """仅在主人发送返回的完整确认命令后发布对应草稿；不能用工具参数代替主人确认。
+
+        Args:
+            ident(string): 主人确认的草稿ID。
+        """
+        return await self.companion.social.publish(event, ident)
 
     @fish.command("whoami")
     async def whoami(self, event: AstrMessageEvent):

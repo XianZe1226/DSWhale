@@ -33,6 +33,8 @@ class Settings:
     bili_allow_dm: bool = False
     bili_allow_public: bool = False
     bili_qq_recommendations: bool = True
+    qq_signature_enabled: bool = False
+    qzone_enabled: bool = False
 
     @classmethod
     def from_mapping(cls, mapping):

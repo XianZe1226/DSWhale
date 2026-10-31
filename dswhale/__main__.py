@@ -26,7 +26,7 @@ def main(argv=None):
             sub.add_argument(
                 "--with-memory",
                 action="store_true",
-                help="下载校验过的 LivingMemory 2.7.1；不覆盖已有版本",
+                help="下载校验过的 LivingMemory 2.8.2；不覆盖已有版本",
             )
         if name == "doctor":
             sub.add_argument("--json", action="store_true")

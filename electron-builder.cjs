@@ -23,6 +23,7 @@ const config = {
     "desktop/lib/runtime.cjs",
     "desktop/lib/security.cjs",
     "desktop/lib/services.cjs",
+    "desktop/lib/extensions.cjs",
     "desktop/lib/tool-assets.json",
     "desktop/ui/index.html",
     "desktop/ui/app.js",

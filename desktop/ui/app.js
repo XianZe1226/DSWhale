@@ -28,13 +28,25 @@
   let dirty = false;
   let reveal = false;
   let settingsLoading = false;
+  let extensionsLoading = false;
+  let extensionReview = '';
+  let extensionMessage = null;
+  let pendingFocus = null;
   let lastAnnouncement = '';
   const busy = data => !!data.pending || ['checking', 'installing'].includes(data.state.phase);
   const desktop = data => data.mode === 'desktop';
   const disabled = yes => yes ? ' disabled' : '';
-  const button = (text, action, { primary = false, iconName, off = false, payload = '' } = {}) => `<button type="button" class="button${primary ? ' primary' : ''}" data-action="${action}"${payload ? ` data-panel="${payload}"` : ''}${disabled(off)}>${iconName ? icon(iconName) : ''}<span>${esc(text)}</span></button>`;
+  const button = (text, action, { primary = false, iconName, off = false, payload = '', id = '', extension = '', operation = '' } = {}) => `<button type="button" class="button${primary ? ' primary' : ''}" data-action="${action}"${id ? ` id="${id}"` : ''}${payload ? ` data-panel="${payload}"` : ''}${extension ? ` data-extension="${extension}"` : ''}${operation ? ` data-operation="${operation}"` : ''}${disabled(off)}>${iconName ? icon(iconName) : ''}<span>${esc(text)}</span></button>`;
   const routeButton = (text, target) => `<button type="button" class="text-button" data-route="${target}">${esc(text)}${icon('arrow')}</button>`;
   const badge = (label, type = '') => `<span class="badge ${type}"><span class="status-dot"></span>${esc(label)}</span>`;
+  const extensionName = id => id === 'memory' ? 'LivingMemory' : '表情包管理器';
+  function extensionProgress(data) {
+    if (data.pending === 'extensions-status') return '正在读取本机插件状态…';
+    if (!data.pendingExtension) return '';
+    const verb = { 'extension-check': '检查', 'extension-update': data.extensions?.[data.pendingExtension]?.installed ? '更新' : '安装', 'extension-rollback': '回退' }[data.pending];
+    return verb ? `正在${verb}${extensionName(data.pendingExtension)}…` : '';
+  }
+  const preference = (data, value, id, title, description) => `<section class="card preference-card"><div><h3 id="${id}-label">${esc(title)}</h3><p id="${id}-help">${esc(description)}</p></div><label class="switch"><input id="${id}" name="${id}" type="checkbox" aria-labelledby="${id}-label" aria-describedby="${id}-help"${value[id] ? ' checked' : ''}${disabled(!desktop(data) || busy(data))}><span aria-hidden="true"></span></label></section>`;
   function service(data) {
     if (data.state.running) return { label: '服务运行中', type: 'good', title: '一切就绪，保持连接。', description: '在这里管理你的对话服务、模型和记忆。' };
     if (data.state.phase === 'installing') return { label: '正在准备环境', type: 'working', title: '为下一次对话做好准备。', description: '正在准备独立运行环境，请保持网络连接。' };
@@ -68,7 +80,8 @@
   function progress(data) {
     if (!busy(data)) return '';
     const value = Number.isFinite(data.state.progress) ? Math.max(0, Math.min(100, data.state.progress <= 1 ? data.state.progress * 100 : data.state.progress)) : null;
-    return `<section class="task-status" aria-label="当前任务"><div class="task-line"><span class="spinner" aria-hidden="true"></span><strong>${esc(data.state.step || (data.pending === 'inspect' ? '正在检查本机环境…' : '正在处理，请稍候…'))}</strong>${value !== null ? `<span>${Math.round(value)}%</span>` : ''}</div>${value !== null ? `<progress max="100" value="${value}" aria-label="准备进度">${value}%</progress>` : ''}</section>`;
+    const plugin = extensionProgress(data);
+    return `<section class="task-status" aria-label="当前任务"><div class="task-line"><span class="spinner" aria-hidden="true"></span><strong>${esc(plugin || data.state.step || (data.pending === 'inspect' ? '正在检查本机环境…' : '正在处理，请稍候…'))}</strong>${value !== null && !plugin ? `<span>${Math.round(value)}%</span>` : ''}</div>${value !== null && !plugin ? `<progress max="100" value="${value}" aria-label="准备进度">${value}%</progress>` : ''}</section>`;
   }
   function environment(data) {
     const labels = { ready: ['已就绪', 'good'], missing: ['待安装', ''], outdated: ['可升级', 'warn'], incompatible: ['需修复', 'warn'], unknown: ['待检查', ''] };
@@ -83,12 +96,35 @@
     if (!value) return `<section class="page-heading"><div><p class="eyebrow">对话的第一步</p><h1>连接设置</h1><p class="subtitle">设置主人账号与本机 OneBot 服务。</p></div></section><section class="card loading-card">${settingsLoading ? '<span class="spinner" aria-hidden="true"></span> 正在读取连接设置…' : `尚未读取连接设置。${button('重试', 'settings-get', { off: !desktop(data) || busy(data) })}`}</section>`;
     return `<section class="page-heading"><div><p class="eyebrow">让对话连接起来</p><h1>连接设置</h1><p class="subtitle">主人账号与 QQ 连接，在这里统一管理。</p></div>${badge(data.state.setup.ownerConfigured && data.state.setup.qqConfigured ? '已配置' : '等待配置', data.state.setup.ownerConfigured && data.state.setup.qqConfigured ? 'good' : '')}</section>
       <form id="connection-form"><section class="card form-card"><div class="card-heading"><span class="tile-icon">${icon('connect')}</span><div><h2>账号与平台</h2><p>使用你已配置的 QQ / OneBot 服务。</p></div></div><div class="form-grid"><div class="field"><label for="ownerQQ">主人 QQ 号</label><input id="ownerQQ" name="ownerQQ" inputmode="numeric" autocomplete="off" placeholder="输入主人 QQ 号" value="${esc(value.ownerQQ)}"${disabled(!desktop(data) || busy(data))}><p class="field-help">用于识别主人的指令与管理权限。</p></div><div class="field"><label for="platformId">平台标识</label><input id="platformId" name="platformId" autocomplete="off" placeholder="例如 qq" value="${esc(value.platformId)}"${disabled(!desktop(data) || busy(data))}><p class="field-help">对应 AstrBot 中的 OneBot 平台。</p></div></div><div class="form-divider"></div><div class="form-grid"><div class="field"><label for="onebotPort">OneBot 反向 WebSocket 端口</label><input id="onebotPort" name="onebotPort" type="number" min="1" max="65535" step="1" required value="${esc(value.onebotPort)}"${disabled(!desktop(data) || busy(data))}><p class="field-help">应与 QQ 客户端中的反向连接端口一致。</p></div><div class="field"><label for="onebotToken">OneBot 访问令牌</label><div class="secret-input"><input id="onebotToken" name="onebotToken" type="${reveal ? 'text' : 'password'}" autocomplete="off" placeholder="未设置" value="${esc(value.onebotToken)}"${disabled(!desktop(data) || busy(data))}><button type="button" class="reveal-button" data-reveal aria-controls="onebotToken" aria-pressed="${reveal}">${reveal ? '隐藏' : '显示'}</button></div><p class="field-help">令牌只保存在本机，请与 QQ 端保持一致。</p></div></div></section>
-      <section class="card preference-card"><div><h3>主动互动</h3><p>允许已配置的主动互动功能。具体行为由现有插件设置决定。</p></div><label class="switch"><input id="proactiveEnabled" name="proactiveEnabled" type="checkbox"${value.proactiveEnabled ? ' checked' : ''}${disabled(!desktop(data) || busy(data))}><span aria-hidden="true"></span><span class="sr-only">启用主动互动</span></label></section><div class="form-footer"><p>${dirty ? '有未保存的更改' : '保存后应用到本地配置'}</p><button class="button primary" type="submit"${disabled(!desktop(data) || busy(data))}>${data.pending === 'settings-save' ? '正在保存…' : '保存连接设置'}</button></div></form>
+      ${preference(data, value, 'proactiveEnabled', '主动互动', '允许已配置的主动互动功能。具体行为由现有插件设置决定。')}
+      ${preference(data, value, 'signatureEnabled', 'QQ 个性签名', '仅绑定的主人可要求修改当前 QQ 的个性签名。')}
+      ${preference(data, value, 'qzoneEnabled', 'QQ 空间文字动态', '仅绑定的主人可创建文字草稿；每条草稿须明确确认后发布。')}
+      <div class="form-footer"><p>${dirty ? '有未保存的更改' : '保存后应用到本地配置'}</p><button class="button primary" type="submit"${disabled(!desktop(data) || busy(data))}>${data.pending === 'settings-save' ? '正在保存…' : '保存连接设置'}</button></div></form>
       <section class="info-strip">${icon('shield')}<div><strong>连接已有的 QQ 环境</strong><p>需另行安装并启动 NapCat，再在 QQ 登录面板中完成登录。高级设置管理 AstrBot 连接。</p></div><div class="info-actions">${button('QQ 登录', 'open-panel', { payload: 'napcat', off: !data.state.running || !desktop(data) || busy(data) })}${button('高级设置', 'open-panel', { payload: 'qq', off: !data.state.running || !desktop(data) || busy(data) })}</div></section>${!data.state.running ? '<p class="footnote">启动服务后可打开高级设置。</p>' : ''}`;
+  }
+  function extensionCard(data, id) {
+    const value = data.extensions?.[id];
+    const checked = data.extensionChecks[id];
+    const updating = data.pendingExtension === id;
+    const off = !desktop(data) || busy(data) || !data.state.installed || !value;
+    const canUpdate = checked && value?.canUpdate === true;
+    const label = !value ? '待读取' : canUpdate ? value.installed ? '可更新' : '可安装' : checked ? '已检查' : value.installed ? '已安装' : '可选安装';
+    const failed = data.error && data.retry?.payload?.id === id;
+    const review = extensionReview === id;
+    const current = !value ? extensionsLoading ? '正在读取' : '尚未读取' : value.installed ? value.version || '版本未知' : '未安装';
+    const latest = value?.latest || (checked ? '暂无可用版本' : '点击检查更新');
+    return `<section class="card extension-card" aria-labelledby="extension-${id}-title" aria-busy="${updating}"><div class="extension-heading"><span class="tile-icon${id === 'memory' ? ' complete' : ''}">${icon(id === 'memory' ? 'intelligence' : 'folder')}</span><div><h3 id="extension-${id}-title">${extensionName(id)}</h3><p>${id === 'memory' ? '长期记忆 · 独立管理插件版本' : '可选扩展 · 按需安装与管理表情包'}</p></div>${badge(label, canUpdate ? 'warn' : value?.installed ? 'good' : '')}</div>
+      <dl class="extension-versions"><div><dt>当前版本</dt><dd>${esc(current)}</dd></div><div><dt>最新版本</dt><dd>${esc(latest)}</dd></div></dl>
+      <p class="extension-note">更新或安装会自动备份、停止服务，保留配置与数据。完成后请检查设置，再手动启动服务。</p>
+      ${review ? `<div class="extension-review" role="group" aria-labelledby="extension-${id}-review"><strong id="extension-${id}-review">确认回退${extensionName(id)}？</strong><p>将停止服务并恢复上次插件备份。完成后服务保持停止，供你检查。</p><div class="extension-actions">${button('确认回退', 'extension-confirm', { id: `extension-confirm-${id}`, extension: id, primary: true, off })}${button('取消', 'extension-cancel', { id: `extension-cancel-${id}`, extension: id, off: busy(data) })}</div></div>` : `<div class="extension-actions">${button(updating && data.pending === 'extension-check' ? '正在检查…' : '检查更新', 'extension-check', { id: `extension-check-${id}`, extension: id, iconName: 'refresh', off })}${canUpdate ? button(updating && data.pending === 'extension-update' ? '正在处理…' : value.installed ? '更新插件' : '安装插件', 'extension-update', { id: `extension-update-${id}`, extension: id, primary: true, off }) : ''}${value?.canRollback === true ? button('回退版本', 'extension-review', { id: `extension-rollback-${id}`, extension: id, operation: 'extension-rollback', off }) : ''}</div>`}
+      ${updating ? `<p class="extension-feedback" role="status"><span class="spinner" aria-hidden="true"></span>${esc(extensionProgress(data))}</p>` : failed ? `<div class="extension-feedback extension-error" role="alert"><span>${esc(data.error)}</span>${button('重试', 'retry', { extension: id, off: busy(data) })}</div>` : extensionMessage?.id === id ? `<p class="extension-feedback" role="status">${esc(extensionMessage.text)}</p>` : ''}</section>`;
+  }
+  function extensions(data) {
+    return `<div class="section-heading"><h2>插件管理</h2><span>独立更新，无需升级应用</span></div><p class="extension-intro">打开此页只读取本机状态；点击「检查更新」后才会联网查找版本。</p>${extensionsLoading ? '<p class="extension-feedback" role="status"><span class="spinner" aria-hidden="true"></span>正在读取本机插件状态…</p>' : ''}<div class="extension-grid">${extensionCard(data, 'memory')}${extensionCard(data, 'memes')}</div>${!data.extensions && !extensionsLoading ? `<p class="inline-note">未能读取插件状态。${button('重试读取', 'extensions-status', { off: !desktop(data) || busy(data) })}</p>` : ''}`;
   }
   function intelligence(data) {
     const off = !data.state.running || !desktop(data) || busy(data);
-    return `<section class="page-heading"><div><p class="eyebrow">每一次对话，都更懂你</p><h1>模型与记忆</h1><p class="subtitle">连接云端模型，让记忆自然延续。</p></div></section><div class="feature-grid"><section class="card feature-card"><span class="feature-icon lavender">${icon('intelligence')}</span>${badge(data.state.setup.modelConfigured ? '已配置' : '待配置', data.state.setup.modelConfigured ? 'good' : '')}<h2>对话模型</h2><p>在 AstrBot 中管理模型服务商、API 密钥、模型选择与对话能力。</p><ul><li>使用现有的云端模型服务</li><li>无需下载本地模型权重</li></ul>${button('配置模型', 'open-panel', { primary: true, payload: 'models', iconName: 'arrow', off })}</section><section class="card feature-card"><span class="feature-icon mint">${icon('environment')}</span>${badge(data.state.setup.memoryConfigured ? '已配置' : '待配置', data.state.setup.memoryConfigured ? 'good' : '')}<h2>长期记忆</h2><p>在记忆插件中管理检索、总结与记忆设置，让重要的细节留下来。</p><ul><li>沿用现有记忆与插件配置</li><li>在同一个窗口中完成管理</li></ul>${button('管理记忆', 'open-panel', { payload: 'memory', iconName: 'arrow', off })}</section></div>${!data.state.running ? `<section class="info-strip">${icon('play')}<div><strong>先启动对话服务</strong><p>${data.state.installed ? '启动后，即可在当前窗口打开模型和记忆控制台。' : '请先准备运行环境，然后启动服务。'}</p></div>${data.state.installed ? serviceButton(data) : button('准备环境', 'route-environment', { primary: true, iconName: 'arrow' })}</section>` : `<section class="info-strip">${icon('shield')}<div><strong>完整配置，留在当前窗口。</strong><p>模型、插件与高级设置均通过现有 AstrBot 控制台管理。</p></div>${button('打开控制台', 'open-panel', { payload: 'astrbot', off })}</section>`}`;
+    return `<section class="page-heading"><div><p class="eyebrow">每一次对话，都更懂你</p><h1>模型与记忆</h1><p class="subtitle">连接云端模型，让记忆自然延续。</p></div></section><div class="feature-grid"><section class="card feature-card"><span class="feature-icon lavender">${icon('intelligence')}</span>${badge(data.state.setup.modelConfigured ? '已配置' : '待配置', data.state.setup.modelConfigured ? 'good' : '')}<h2>对话模型</h2><p>在 AstrBot 中管理模型服务商、API 密钥、模型选择与对话能力。</p><ul><li>使用现有的云端模型服务</li><li>无需下载本地模型权重</li></ul>${button('配置模型', 'open-panel', { primary: true, payload: 'models', iconName: 'arrow', off })}</section><section class="card feature-card"><span class="feature-icon mint">${icon('environment')}</span>${badge(data.state.setup.memoryConfigured ? '已配置' : '待配置', data.state.setup.memoryConfigured ? 'good' : '')}<h2>长期记忆</h2><p>在记忆插件中管理检索、总结与记忆设置，让重要的细节留下来。</p><ul><li>沿用现有记忆与插件配置</li><li>在同一个窗口中完成管理</li></ul>${button('管理记忆', 'open-panel', { payload: 'memory', iconName: 'arrow', off })}</section></div>${extensions(data)}${!data.state.running ? `<section class="info-strip">${icon('play')}<div><strong>先启动对话服务</strong><p>${data.state.installed ? '启动后，即可在当前窗口打开模型和记忆控制台。' : '请先准备运行环境，然后启动服务。'}</p></div>${data.state.installed ? serviceButton(data) : button('准备环境', 'route-environment', { primary: true, iconName: 'arrow' })}</section>` : `<section class="info-strip">${icon('shield')}<div><strong>完整配置，留在当前窗口。</strong><p>模型、插件与高级设置均通过现有 AstrBot 控制台管理。</p></div>${button('打开控制台', 'open-panel', { payload: 'astrbot', off })}</section>`}`;
   }
   function bilibili(data) {
     const value = draft || data.settings;
@@ -101,7 +137,9 @@
     const focused = document.activeElement?.id;
     const focusAction = document.activeElement?.dataset?.action;
     const focusPanel = document.activeElement?.dataset?.panel;
+    const focusExtension = document.activeElement?.dataset?.extension;
     const focusRoute = document.activeElement?.dataset?.route;
+    if (data.pending && !pendingFocus && (focused || focusAction)) pendingFocus = { id: focused, action: focusAction, panel: focusPanel, extension: focusExtension };
     const selection = document.activeElement && 'selectionStart' in document.activeElement ? [document.activeElement.selectionStart, document.activeElement.selectionEnd] : null;
     const scroll = document.querySelector('.page')?.scrollTop || 0;
     const panel = data.state.panel;
@@ -117,13 +155,21 @@
     if (page) page.scrollTop = scroll;
     if (focused) { const next = document.getElementById(focused); if (next) { next.focus({ preventScroll: true }); if (selection && typeof next.setSelectionRange === 'function' && next.type !== 'number') { try { next.setSelectionRange(...selection); } catch {} } } }
     if (!focused && (focusAction || focusRoute)) {
-      const next = [...root.querySelectorAll('button')].find(item => focusRoute ? item.dataset.route === focusRoute : item.dataset.action === focusAction && item.dataset.panel === focusPanel);
+      const next = [...root.querySelectorAll('button')].find(item => focusRoute ? item.dataset.route === focusRoute : item.dataset.action === focusAction && item.dataset.panel === focusPanel && item.dataset.extension === focusExtension);
       if (next && !next.disabled) next.focus({ preventScroll: true });
     }
-    const announcement = error || data.notice || (busy(data) && data.state.step) || status.label;
+    if (!data.pending && pendingFocus) {
+      if (!document.activeElement || document.activeElement === document.body) {
+        const next = (pendingFocus.id ? document.getElementById(pendingFocus.id) : [...root.querySelectorAll('button')].find(item => item.dataset.action === pendingFocus.action && item.dataset.panel === pendingFocus.panel && item.dataset.extension === pendingFocus.extension)) || (pendingFocus.extension && document.getElementById(`extension-check-${pendingFocus.extension}`));
+        if (next && !next.disabled) next.focus({ preventScroll: true });
+      }
+      pendingFocus = null;
+    }
+    const announcement = error || extensionMessage?.text || data.notice || extensionProgress(data) || (busy(data) && data.state.step) || status.label;
     if (announcement !== lastAnnouncement) { document.getElementById('announcer').textContent = announcement; lastAnnouncement = announcement; }
   }
   async function run(action, payload) {
+    extensionMessage = null;
     try {
       const result = await controller.act(action, payload);
       if (action === 'restore' && !result?.canceled) { draft = null; dirty = false; reveal = false; render(controller.get()); }
@@ -139,6 +185,14 @@
     if (!dirty && controller.get().settings) draft = { ...controller.get().settings };
     render(controller.get());
   }
+  async function ensureExtensions() {
+    const data = controller.get();
+    if (route !== 'intelligence' || data.extensions || extensionsLoading || data.mode !== 'desktop') return;
+    extensionsLoading = true; render(data);
+    await run('extensions-status');
+    extensionsLoading = false;
+    render(controller.get());
+  }
   async function navigate(target) {
     if (!routeNames[target]) return;
     if (controller.get().state.panel) {
@@ -147,10 +201,13 @@
     }
     route = target;
     reveal = false;
+    extensionReview = '';
+    extensionMessage = null;
     render(controller.get());
     document.getElementById('main-content')?.focus({ preventScroll: true });
     const page = document.querySelector('.page'); if (page) page.scrollTop = 0;
     await ensureSettings();
+    await ensureExtensions();
   }
   function readField(target) {
     if (!draft) draft = { ...(controller.get().settings || {}) };
@@ -171,6 +228,34 @@
     if (action === 'save-settings') return saveSettings();
     if (action === 'retry') { const retry = controller.get().retry; if (retry) return run(retry.action, retry.payload); return; }
     if (action === 'settings-get') { await run(action); if (!dirty) draft = { ...controller.get().settings }; render(controller.get()); return; }
+    if (action === 'extension-review') {
+      const id = target.dataset.extension;
+      if (!['memory', 'memes'].includes(id) || target.dataset.operation !== 'extension-rollback' || !controller.get().extensions?.[id]?.canRollback) return;
+      extensionReview = id; extensionMessage = null; render(controller.get());
+      document.getElementById(`extension-confirm-${id}`)?.focus({ preventScroll: true });
+      return;
+    }
+    if (action === 'extension-cancel') {
+      const id = extensionReview;
+      extensionReview = '';
+      extensionMessage = { id, text: '已取消回退，插件未更改。' };
+      render(controller.get());
+      document.getElementById(`extension-rollback-${id}`)?.focus({ preventScroll: true });
+      return;
+    }
+    if (action === 'extension-confirm') {
+      const id = extensionReview;
+      if (!id || target.dataset.extension !== id) return;
+      extensionReview = ''; extensionMessage = null;
+      await run('extension-rollback', { id });
+      document.getElementById(`extension-check-${id}`)?.focus({ preventScroll: true });
+      return;
+    }
+    if (action === 'extension-check' || action === 'extension-update') {
+      extensionReview = ''; extensionMessage = null;
+      await run(action, { id: target.dataset.extension });
+      return;
+    }
     await run(action, action === 'open-panel' ? { panel: target.dataset.panel } : undefined);
   });
   root.addEventListener('input', event => {
@@ -185,5 +270,5 @@
   controller.subscribe(data => { if (data.settings && !dirty) draft = { ...data.settings }; render(data); });
   window.addEventListener('beforeunload', () => controller.dispose());
   render(controller.get());
-  controller.init().catch(() => {}).then(ensureSettings);
+  controller.init().catch(() => {}).then(async () => { await ensureSettings(); await ensureExtensions(); });
 })();

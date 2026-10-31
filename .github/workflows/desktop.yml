@@ -2,7 +2,7 @@ name: Desktop installers
 
 on:
   push:
-    branches: [main, 'codex/desktop-setup']
+    branches: [main, 'codex/**']
     tags: ['v*']
   pull_request:
   workflow_dispatch:

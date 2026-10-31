@@ -1,6 +1,6 @@
 # 架构与交付边界
 
-DSWhale 是 AstrBot 插件与安装工具，QQ 经安装者独立配置的 NapCat/OneBot 接入，模型与聊天由 AstrBot 提供，长期记忆由固定版本 LivingMemory 管理。
+DSWhale 是 AstrBot 插件与安装工具，QQ 经安装者独立配置的 NapCat/OneBot 接入，模型与聊天由 AstrBot 提供，长期记忆由支持独立更新的 LivingMemory 管理。
 
 - 一个绑定主人和完整私聊 UMO，群和其他用户不能管理主动活动或读取私人笔记。
 - 普通聊天使用可配置人格，长期记忆由 LivingMemory 管理。自主活动通过只读接口读取同一会话的记忆，视频观察独立保存。

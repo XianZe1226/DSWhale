@@ -1,6 +1,6 @@
 {
   "name": "dswhale-desktop",
-  "version": "0.3.0-alpha.1",
+  "version": "0.3.0-alpha.2",
   "private": true,
   "description": "DSWhale desktop companion and local environment manager",
   "author": "DSWhale Contributors",

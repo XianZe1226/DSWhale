@@ -149,5 +149,17 @@
     "description": "允许给已绑定的主人 QQ 推荐视频或推送日记摘要，仍遵守暂停、免打扰和活动预算",
     "type": "bool",
     "default": true
+  },
+  "qq_signature_enabled": {
+    "description": "允许主人修改机器人 QQ 签名",
+    "type": "bool",
+    "default": false,
+    "hint": "仅限已绑定主人的私聊明确指令，不会自动修改头像或昵称。"
+  },
+  "qzone_enabled": {
+    "description": "启用 QQ 空间文字草稿与确认发布",
+    "type": "bool",
+    "default": false,
+    "hint": "仅限已绑定主人的私聊；生成草稿后，主人发送确认命令才会发布。"
   }
 }

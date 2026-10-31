@@ -78,7 +78,7 @@ async function withInstallLock(directory, operation) {
   try {await handle.writeFile(JSON.stringify({pid:process.pid})); return await operation();}
   finally {await handle.close(); await fs.rm(file,{force:true});}
 }
-function runBounded(command,args,{env=process.env,cwd,timeout=15000,maxBytes=1024*1024,signal,onLine} = {}) {
+function runBounded(command,args,{env=process.env,cwd,timeout=15000,maxBytes=1024*1024,signal,onLine,allowNonzero=false} = {}) {
   return new Promise((resolve,reject)=>{
     const child = spawn(command,args,{env,cwd,windowsHide:true,detached:process.platform !== 'win32',stdio:['ignore','pipe','pipe']});
     let bytes=0, output=[], lines='', failed;
@@ -103,7 +103,7 @@ function runBounded(command,args,{env=process.env,cwd,timeout=15000,maxBytes=102
     // Drain stderr, but never pass dependency logs/secrets to the renderer.
     child.stderr.on('data',chunk=>{bytes+=chunk.length;if(bytes>maxBytes){failed=new SetupError('安装输出超过限制');stop();}});
     child.on('error',()=>{failed=new SetupError('所需程序无法运行，请重新准备环境');});
-    child.on('close',code=>{clearTimeout(timer);signal?.removeEventListener('abort',abort);if(failed)reject(failed);else if(code!==0)reject(new SetupError('环境准备失败，请检查网络或关闭运行中的服务后重试'));else resolve(Buffer.concat(output));});
+    child.on('close',code=>{clearTimeout(timer);signal?.removeEventListener('abort',abort);if(failed)reject(failed);else if(code!==0&&!allowNonzero)reject(new SetupError('环境准备失败，请检查网络或关闭运行中的服务后重试'));else resolve(Buffer.concat(output));});
   });
 }
 async function readJSON(file, fallback) {

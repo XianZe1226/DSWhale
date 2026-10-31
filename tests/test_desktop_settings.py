@@ -104,6 +104,23 @@ def test_setup_status_contains_no_credentials_and_existing_platform_id_retained(
     assert "keep-existing-token" not in str(status)
 
 
+def test_optional_social_permissions_preserve_persona_and_require_owner(tmp_path):
+    from dswhale.desktop_settings import read_settings, save_settings
+
+    host = host_files(tmp_path)
+    assert read_settings(host)["signatureEnabled"] is False
+    with pytest.raises(ValueError):
+        save_settings(host, {"qzoneEnabled": True})
+    save_settings(host, {"ownerQQ": "123456789", "signatureEnabled": True, "qzoneEnabled": True})
+    result = read_settings(host)
+    assert result["signatureEnabled"] and result["qzoneEnabled"]
+    fish = json.loads((host / "data/config/astrbot_plugin_dswhale_config.json").read_text())
+    assert fish["persona"] == "a custom private persona"
+    assert fish["qq_signature_enabled"] and fish["qzone_enabled"]
+    with pytest.raises(ValueError):
+        save_settings(host, {"signatureEnabled": "true"})
+
+
 def test_import_prepares_loopback_and_clears_only_unavailable_tool_paths(tmp_path):
     from dswhale.desktop_settings import prepare_import
 

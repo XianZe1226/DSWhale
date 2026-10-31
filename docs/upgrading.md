@@ -40,7 +40,7 @@
 
 安装器会先将 AstrBot 数据备份到 `.runtime/backups/before-upgrade-*.zip`，再更新依赖和插件代码。原插件代码保存在 `.runtime/astrbot/.dswhale-backups/`，模型配置、用户绑定、人格和记忆保留。
 
-已有 LivingMemory 不会被自动覆盖或降级。升级该插件时，请遵循其上游文档。
+升级 DSWhale 不会覆盖或降级已有 LivingMemory。需要更新记忆插件时，在桌面应用「模型与记忆」中手动检查并更新，详见[插件管理](extensions.md)。
 
 ## 恢复数据
 

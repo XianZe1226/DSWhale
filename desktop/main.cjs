@@ -7,11 +7,12 @@ const { spawn } = require('node:child_process');
 const { RuntimeManager } = require('./lib/runtime.cjs');
 const { validateRequest, permittedNavigation, biliURL, consolePopupTarget } = require('./lib/security.cjs');
 const { ServiceSupervisor, settingsCommand, portOpen } = require('./lib/services.cjs');
+const { ExtensionRunner, runExtensionAction } = require('./lib/extensions.cjs');
 
 app.setName('DSWhale');
 if (!app.isPackaged && process.env.DSWHALE_DESKTOP_TEST_DATA) app.setPath('userData', path.resolve(process.env.DSWHALE_DESKTOP_TEST_DATA));
 protocol.registerSchemesAsPrivileged([{ scheme: 'dswhale', privileges: { standard: true, secure: true, supportFetchAPI: true } }]);
-let window, panelView, manager, supervisor, quitting = false, shutdownRequested = false, activeAction;
+let window, panelView, manager, supervisor, extensions, quitting = false, shutdownRequested = false, activeAction;
 const activeCommands = new Set();
 let state = { version: app.getVersion(), platform: { id: '', label: '本机', supported: true, detail: '' }, phase: 'idle', installed: false, running: false, components: [], setup: { ownerConfigured: false, qqConfigured: false, modelConfigured: false, memoryConfigured: false, biliEnabled: false } };
 function publish(patch = {}) { state = { ...state, ...patch }; if (window && !window.isDestroyed()) window.webContents.send('dswhale:state', state); return state; }
@@ -21,6 +22,12 @@ function closePanel() {
 }
 function resizePanel() { if (panelView && window) { const [width, height] = window.getContentSize(); panelView.setBounds({ x: 256, y: 140, width: Math.max(0, width - 256), height: Math.max(0, height - 140) }); } }
 async function refresh() {
+  if (!supervisor.running && !extensions.operation) {
+    let pending = false;
+    try { pending = (await fs.readdir(path.join(manager.host, '.dswhale-extensions'))).some(name => name.endsWith('-transaction.json')); }
+    catch (error) { if (error.code !== 'ENOENT') throw error; }
+    if (pending) await extensions.run('status');
+  }
   const result = await manager.inspect();
   let setup = state.setup;
   if (result.installed) { try { setup = await settingsCommand(manager, 'status'); } catch {} }
@@ -105,14 +112,18 @@ async function restore() {
 }
 async function perform(action, payload) {
   if (shutdownRequested) throw new Error('应用正在退出');
-  if (action === 'inspect') return refresh();
+  if (action === 'inspect') return activeAction ? state : refresh();
   if (action === 'home') { closePanel(); return state; }
   if (action === 'settings-get') return settingsCommand(manager, 'read');
   if (activeAction) throw new Error('当前操作尚未完成，请稍候');
   activeAction = action;
   try {
+    if (action === 'extensions-status' || action.startsWith('extension-')) {
+      if (!state.installed) throw new Error('请先准备运行环境');
+      return await runExtensionAction({ runner: extensions, supervisor, closePanel, publish, refresh, isClosing: () => shutdownRequested }, action === 'extensions-status' ? 'status' : action.slice(10), payload?.id);
+    }
     if (action === 'install') { closePanel(); await supervisor.stop(); await manager.install(); return await refresh(); }
-    if (action === 'start') { if (!state.installed) throw new Error('请先准备运行环境'); publish({ step: '正在启动对话服务', progress: null, error: undefined }); await supervisor.start(); return await refresh(); }
+    if (action === 'start') { if (!state.installed) throw new Error('请先准备运行环境'); await extensions.run('status'); if (shutdownRequested) throw new Error('应用正在退出'); publish({ step: '正在启动对话服务', progress: null, error: undefined }); await supervisor.start(); return await refresh(); }
     if (action === 'stop') { closePanel(); await supervisor.stop(); return publish({ running: false, error: undefined }); }
     if (action === 'open-panel') { await openPanel(payload.panel); return state; }
     if (action === 'settings-save') {
@@ -144,6 +155,7 @@ async function perform(action, payload) {
 async function createWindow() {
   const source = app.isPackaged ? path.join(process.resourcesPath, 'backend') : path.resolve(__dirname, '..');
   manager = new RuntimeManager({ source, runtime: path.join(app.getPath('userData'), 'runtime'), onProgress: patch => publish(patch) });
+  extensions = new ExtensionRunner(manager);
   supervisor = new ServiceSupervisor({ manager, onChange: patch => { if (!patch.running && panelView) closePanel(); publish(patch); } });
   const consoleSession = session.fromPartition('persist:dswhale-consoles');
   consoleSession.setPermissionRequestHandler((_contents, _permission, callback) => callback(false));
@@ -182,6 +194,6 @@ else {
     if (shutdownRequested) return;
     shutdownRequested = true;
     for (const child of activeCommands) child.kill();
-    Promise.resolve().then(() => manager?.cancel()).then(() => supervisor?.stop()).finally(() => { quitting = true; app.quit(); });
+    Promise.resolve().then(() => extensions?.close()).then(() => manager?.cancel()).then(() => supervisor?.stop()).finally(() => { quitting = true; app.quit(); });
   });
 }

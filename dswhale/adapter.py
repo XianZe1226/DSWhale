@@ -44,7 +44,21 @@ class Companion:
         self.last_error = ""
         self.bili = None
         self.video_busy = False
+        self._social = None
         self.store.recover_pending(now_utc().timestamp())
+
+    @property
+    def social(self):
+        if self._social is None:
+            from .social import SocialActions
+
+            self._social = SocialActions(
+                self.settings,
+                self.store.path.with_name("social.db"),
+                self.require_owner,
+                is_synthetic=lambda event: self.closed or bool(self.internal_id(event)),
+            )
+        return self._social
 
     def authorized(self, event):
         return self.settings.matches(
@@ -441,4 +455,6 @@ class Companion:
         for event in self.pending.values():
             event.stop_event()
         self.store.recover_pending(now_utc().timestamp())
+        if self._social is not None:
+            self._social.close()
         self.store.close()

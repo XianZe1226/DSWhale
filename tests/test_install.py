@@ -8,9 +8,28 @@ from pathlib import Path
 import pytest
 from filelock import FileLock
 
-from dswhale.install import InstallError, backup, extract_archive, install_plugin, restore
+from dswhale.install import (
+    InstallError,
+    backup,
+    extract_archive,
+    install_memory,
+    install_plugin,
+    restore,
+)
 
 ROOT = Path(__file__).resolve().parents[1]
+
+
+def test_app_upgrade_preserves_separately_updated_memory_plugin(tmp_path, monkeypatch):
+    memory = tmp_path / "data/plugins/astrbot_plugin_livingmemory"
+    memory.mkdir(parents=True)
+    (memory / "metadata.yaml").write_text("version: 99.0.0\n")
+    (memory / "state.db").write_bytes(b"synthetic memory")
+    monkeypatch.setattr("httpx.stream", lambda *a, **kw: pytest.fail("must not download"))
+    install_plugin(tmp_path)
+    assert install_memory(tmp_path) == memory
+    assert (memory / "metadata.yaml").read_text() == "version: 99.0.0\n"
+    assert (memory / "state.db").read_bytes() == b"synthetic memory"
 
 
 def test_install_update_preserves_data_and_previous_code(tmp_path):

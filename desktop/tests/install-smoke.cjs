@@ -5,12 +5,14 @@ const os = require('node:os');
 const path = require('node:path');
 const assert = require('node:assert/strict');
 const { RuntimeManager, SetupError } = require('../lib/runtime.cjs');
+const { ExtensionRunner } = require('../lib/extensions.cjs');
 
 async function main() {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'DSWhale 桌面 验收-'));
   const runtime = path.join(directory, 'runtime');
   const manager = new RuntimeManager({ source: path.resolve(__dirname, '../..'), runtime,
     onProgress: event => { if (event.step) console.log(event.step); } });
+  const extensions = new ExtensionRunner(manager);
   try {
     const installed = await manager.install();
     assert.equal(installed.installed, true);
@@ -41,7 +43,19 @@ async function main() {
     await fs.access(path.join(manager.host, 'data/plugins/astrbot_plugin_livingmemory/main.py'));
     const env = await manager.environment();
     assert.equal(env.ASTRBOT_ROOT, manager.host);
+    const status = await extensions.run('status');
+    assert.equal(status.memory.installed, true);
+    assert.equal(status.memes.installed, false);
+    const checked = await extensions.run('check', 'memes');
+    assert.equal(checked.memes.canUpdate, true);
+    const updated = await extensions.run('update', 'memes');
+    assert.equal(updated.memes.installed, true);
+    assert.equal(updated.memes.canRollback, true);
+    assert.equal((await extensions.run('rollback', 'memes')).memes.installed, false);
+    assert.deepEqual(JSON.parse(await fs.readFile(fishPath, 'utf8')), synthetic);
+    assert.equal(await fs.readFile(marker, 'utf8'), 'synthetic memory survives upgrade');
+    console.log('Independent plugin check, installation and rollback verified.');
     console.log('Fresh install and repeated upgrade verified; synthetic data preserved.');
-  } finally { await manager.cancel(); await fs.rm(directory, { recursive: true, force: true }); }
+  } finally { await extensions.close(); await manager.cancel(); await fs.rm(directory, { recursive: true, force: true }); }
 }
 main().catch(error => { console.error(error instanceof SetupError ? error.message : 'Desktop installation smoke check failed. Private temporary data was not uploaded.'); process.exitCode = 1; });

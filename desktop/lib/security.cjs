@@ -1,11 +1,12 @@
 'use strict';
-const ACTIONS = new Set(['inspect', 'install', 'start', 'stop', 'open-panel', 'home', 'settings-get', 'settings-save', 'open-data', 'backup', 'restore', 'initial-login']);
+const ACTIONS = new Set(['inspect', 'install', 'start', 'stop', 'open-panel', 'home', 'settings-get', 'settings-save', 'open-data', 'backup', 'restore', 'initial-login', 'extensions-status', 'extension-check', 'extension-update', 'extension-rollback']);
 const PANELS = new Set(['astrbot', 'models', 'memory', 'bilibili', 'qq', 'napcat']);
 
 function validateRequest(event, shell, action, payload) {
   if (!shell || event.sender !== shell || event.senderFrame !== shell.mainFrame || !ACTIONS.has(action)) throw new Error('不允许此操作');
   if (action === 'open-panel' && (!payload || !PANELS.has(payload.panel))) throw new Error('页面无效');
   if (action === 'settings-save' && (!payload || typeof payload !== 'object' || Array.isArray(payload) || JSON.stringify(payload).length > 16384)) throw new Error('设置无效');
+  if (action.startsWith('extension-') && (!payload || Object.keys(payload).length !== 1 || !['memory', 'memes'].includes(payload.id))) throw new Error('插件无效');
 }
 
 function permittedNavigation(target, base) {
