@@ -103,6 +103,36 @@ test('failed polling backs off to fifteen minutes and resets after success',()=>
  assert.equal(pollDelay(60,20),900000);assert.equal(pollDelay(300,2),900000)
  assert.equal(pollDelay(60,0),60000)
 })
+for(const outcome of ['success','error'])test(`delayed ${outcome} dispatch leaves a full spacing gap for the next guard`,async t=>{
+ const s=setup(t,{minGapMs:100}),starts=[]
+ const first=createTrafficGuard({...s.options,transport:async()=>{
+  // Model scheduling or adapter work after the shared dispatch claim.
+  s.advance(75);starts.push(s.time())
+  if(outcome==='error')throw Error('synthetic transport failure')
+  return ok()
+ }})
+ const request=first.fetch('https://api.bilibili.com/x/first')
+ if(outcome==='error')await assert.rejects(request,/synthetic transport failure/)
+ else await request
+ const next=createTrafficGuard({...s.options,transport:async()=>{starts.push(s.time());return ok()}})
+ await next.fetch('https://api.bilibili.com/x/second')
+ assert.equal(starts.length,2)
+ assert.ok(starts[1]-starts[0]>=100,JSON.stringify(starts))
+ assert.equal(Object.values(next.status().accounts)[0].readDay,2)
+ assert.equal(next.status().active,undefined)
+})
+test('a failure before transport releases ownership without advancing completed dispatch spacing',async t=>{
+ const s=setup(t,{minGapMs:100})
+ await s.guard.fetch('https://api.bilibili.com/x/first')
+ const completedAt=s.guard.status().lastDispatch
+ s.advance(200)
+ const timeout=t.mock.method(AbortSignal,'timeout',()=>{throw Error('synthetic signal setup failure')})
+ await assert.rejects(s.guard.fetch('https://api.bilibili.com/x/not-dispatched'),/synthetic signal setup failure/)
+ timeout.mock.restore()
+ assert.equal(s.calls(),1)
+ assert.equal(s.guard.status().active,undefined)
+ assert.equal(s.guard.status().lastDispatch,completedAt)
+})
 test('independent Node processes share actual request spacing',async t=>{
  const s=setup(t)
  const file=fileURLToPath(new URL('./helpers/traffic-worker.mjs',import.meta.url))

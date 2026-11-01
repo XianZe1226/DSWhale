@@ -9,6 +9,8 @@ const { ExtensionRunner } = require('../lib/extensions.cjs');
 const { execFile } = require('node:child_process');
 const { promisify } = require('node:util');
 const execute = promisify(execFile);
+let phase='environment';
+const safeErrors=new Set(['无法检查上游稳定版本，请稍后重试','无法检查上游稳定版本，请检查网络后重试','插件下载失败，请重新检查版本后重试','插件下载失败，请检查网络后重试','依赖安装未完成或与现有环境不兼容；原插件尚未替换','插件依赖要求更改现有版本，已停止更新','插件名称或版本与检查结果不匹配','插件操作未完成，请检查网络、目录权限和可用空间后重试']);
 
 async function main() {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'DSWhale 桌面 验收-'));
@@ -56,14 +58,18 @@ async function main() {
     await execute(process.execPath, ['--test', path.resolve(__dirname, 'services.test.cjs')],
       { cwd: directory, env: { ...env, DSWHALE_TEST_PYTHON: manager.python }, timeout: 45000, maxBuffer: 65536, windowsHide: true });
     console.log('Pinned installed AstrBot refuses core updates in the managed host environment.');
+    phase='extension-status';
     const status = await extensions.run('status');
     assert.equal(status.memory.installed, true);
     assert.equal(status.memes.installed, false);
+    phase='extension-check';
     const checked = await extensions.run('check', 'memes');
     assert.equal(checked.memes.canUpdate, true);
+    phase='extension-update';
     const updated = await extensions.run('update', 'memes');
     assert.equal(updated.memes.installed, true);
     assert.equal(updated.memes.canRollback, true);
+    phase='extension-rollback';
     assert.equal((await extensions.run('rollback', 'memes')).memes.installed, false);
     assert.deepEqual(JSON.parse(await fs.readFile(fishPath, 'utf8')), synthetic);
     assert.equal(await fs.readFile(marker, 'utf8'), 'synthetic memory survives upgrade');
@@ -71,4 +77,4 @@ async function main() {
     console.log('Fresh install and repeated upgrade verified; synthetic data preserved.');
   } finally { await extensions.close(); await manager.cancel(); await fs.rm(directory, { recursive: true, force: true }); }
 }
-main().catch(error => { console.error(error instanceof SetupError ? error.message : 'Desktop installation smoke check failed. Private temporary data was not uploaded.'); process.exitCode = 1; });
+main().catch(error => { console.error(error instanceof SetupError ? error.message : `Desktop installation smoke check failed at ${phase}.${safeErrors.has(error.message)?' '+error.message:''} Private temporary data was not uploaded.`); process.exitCode = 1; });
