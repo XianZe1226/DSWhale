@@ -1,6 +1,7 @@
 import importlib.util
 import json
 import zipfile
+from datetime import datetime
 from pathlib import Path
 
 import pytest
@@ -58,6 +59,112 @@ def test_preupgrade_snapshot_works_without_old_python_and_rejects_symlinks(tmp_p
     (host / "data/link").symlink_to(tmp_path)
     with pytest.raises(ValueError, match="符号链接"):
         module.snapshot_data(host, host.parent)
+
+
+@pytest.mark.parametrize("second_time", [datetime(2026, 11, 1), datetime(2026, 10, 31)])
+def test_preupgrade_snapshots_preserve_both_data_versions_when_clock_repeats_or_reverses(
+    tmp_path, monkeypatch, second_time
+):
+    import os
+    import stat
+
+    from dswhale.install import restore
+
+    module = bootstrap()
+    times = iter([datetime(2026, 11, 1), second_time])
+
+    class SnapshotClock:
+        @staticmethod
+        def now():
+            return next(times)
+
+    monkeypatch.setattr(module, "datetime", SnapshotClock)
+    host = tmp_path / "runtime/astrbot"
+    (host / "data").mkdir(parents=True)
+    memory = host / "data/memory.db"
+    memory.write_bytes(b"first data version")
+    first = module.snapshot_data(host, host.parent)
+    memory.write_bytes(b"second data version")
+    second = module.snapshot_data(host, host.parent)
+
+    assert first != second
+    assert set((host.parent / "backups").iterdir()) == {first, second}
+    for index, (archive, expected) in enumerate(
+        [(first, b"first data version"), (second, b"second data version")]
+    ):
+        assert archive.name.startswith("before-upgrade-") and archive.suffix == ".zip"
+        if os.name != "nt":
+            assert stat.S_IMODE(archive.stat().st_mode) == 0o600
+        with zipfile.ZipFile(archive) as bundle:
+            assert bundle.read("data/memory.db") == expected
+            assert json.loads(bundle.read("manifest.json")) == {"project": "DSWhale", "format": 1}
+        restored = tmp_path / f"restored-{index}"
+        restored.mkdir()
+        restore(restored, archive)
+        assert (restored / "data/memory.db").read_bytes() == expected
+
+
+@pytest.mark.parametrize("existing_symlink", [False, True])
+def test_preupgrade_snapshot_final_name_collision_preserves_existing_backup_and_cleans_stage(
+    tmp_path, monkeypatch, existing_symlink
+):
+    module = bootstrap()
+
+    class SnapshotClock:
+        @staticmethod
+        def now():
+            return datetime(2026, 11, 1)
+
+    monkeypatch.setattr(module, "datetime", SnapshotClock)
+    monkeypatch.setattr(module.secrets, "token_hex", lambda count: "a" * (count * 2))
+    host = tmp_path / "runtime/astrbot"
+    (host / "data").mkdir(parents=True)
+    memory = host / "data/memory.db"
+    memory.write_bytes(b"existing backup data")
+    archive = module.snapshot_data(host, host.parent)
+    original = archive.read_bytes()
+    if existing_symlink:
+        saved = tmp_path / "existing.zip"
+        archive.rename(saved)
+        archive.symlink_to(saved)
+    memory.write_bytes(b"new data must not replace backup")
+
+    with pytest.raises(FileExistsError):
+        module.snapshot_data(host, host.parent)
+
+    assert archive.read_bytes() == original
+    assert archive.is_symlink() == existing_symlink
+    assert list((host.parent / "backups").iterdir()) == [archive]
+    assert memory.read_bytes() == b"new data must not replace backup"
+
+
+def test_preupgrade_snapshot_publication_failure_stops_upgrade_before_changes(
+    tmp_path, monkeypatch
+):
+    module = bootstrap()
+    runtime = tmp_path / "runtime"
+    host = runtime / "astrbot"
+    (host / "data").mkdir(parents=True)
+    (host / "data/memory.db").write_bytes(b"preserved data")
+    receipt = runtime / "desktop-install.json"
+    receipt.write_bytes(b"existing receipt")
+    monkeypatch.setenv("DSWHALE_UV", str(tmp_path / "uv"))
+
+    def publication_unavailable(source, destination):
+        raise OSError("snapshot publication unavailable")
+
+    def unexpected_command(*args, **kwargs):
+        pytest.fail("upgrade continued after backup publication failed")
+
+    monkeypatch.setattr(module.os, "link", publication_unavailable)
+    monkeypatch.setattr(module, "run", unexpected_command)
+    with pytest.raises(OSError, match="snapshot publication unavailable"):
+        module.prepare(tmp_path / "source", runtime)
+
+    assert receipt.read_bytes() == b"existing receipt"
+    assert (host / "data/memory.db").read_bytes() == b"preserved data"
+    assert list((runtime / "backups").iterdir()) == []
+    assert not (runtime / "venv").exists()
 
 
 def test_repair_and_repeat_upgrade_keep_data_and_only_write_explicit_runtime(tmp_path, monkeypatch):

@@ -128,7 +128,13 @@ def snapshot_data(host, runtime):
         raise ValueError("data 超过 1 GiB，请先手动备份")
     backups = runtime / "backups"
     backups.mkdir(parents=True, exist_ok=True)
-    archive = backups / ("before-upgrade-" + datetime.now().strftime("%Y%m%d-%H%M%S-%f") + ".zip")
+    archive = backups / (
+        "before-upgrade-"
+        + datetime.now().strftime("%Y%m%d-%H%M%S-%f")
+        + "-"
+        + secrets.token_hex(16)
+        + ".zip"
+    )
     handle, temporary_name = tempfile.mkstemp(dir=backups, suffix=".zip")
     os.close(handle)
     temporary = Path(temporary_name)
@@ -138,7 +144,8 @@ def snapshot_data(host, runtime):
             bundle.writestr("data/", "")
             for file in files:
                 bundle.write(file, file.relative_to(host).as_posix())
-        temporary.replace(archive)
+        # Publish the complete, private ZIP without replacing an existing backup.
+        os.link(temporary, archive)
     finally:
         temporary.unlink(missing_ok=True)
     return archive
