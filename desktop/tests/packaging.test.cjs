@@ -45,7 +45,9 @@ test('source artifact gate runs from the temporary Actions script location',()=>
     const step=workflow.jobs.test.steps.find(step=>step.name==='Verify wheel and source bridge inventory independently');
     const setup=`import subprocess, zipfile, tarfile\nfrom pathlib import Path\nfolder=Path(${JSON.stringify(directory)})\nnames=subprocess.check_output(['git','ls-files','-z','--','dswhale/bili_bridge']).decode().split('\\0')\nwith zipfile.ZipFile(folder/'dswhale-0.0.0-py3-none-any.whl','w') as wheel, tarfile.open(folder/'dswhale-0.0.0.tar.gz','w:gz') as source:\n    for name in filter(None,names):\n        wheel.write(name,name)\n        source.add(name,arcname='dswhale-0.0.0/'+name)\n`;
     const script=path.join(directory,'action.py');
-    fs.writeFileSync(script,setup+step.run.replace("Path('dist')",`Path(${JSON.stringify(directory)})`));
+    const body=step.run.replaceAll("Path('dist')",`Path(${JSON.stringify(directory)})`);
+    assert.ok(!body.includes("Path('dist')"));
+    fs.writeFileSync(script,setup+body);
     const python=process.env.DSWHALE_BUILD_PYTHON||(process.platform==='win32'?'python':'python3');
     const result=spawnSync(python,[script],{cwd:root,encoding:'utf8'});
     assert.equal(result.status,0,result.stderr);
