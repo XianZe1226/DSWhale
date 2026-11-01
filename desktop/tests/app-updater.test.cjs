@@ -88,6 +88,17 @@ test('status is offline, normalizes versions and never claims an installer was a
   assert.ok(!JSON.stringify(await f.manager.status()).includes(f.directory));
 });
 
+test('GitHub REST discovery uses its JSON media type while signed assets use binary media',async t=>{
+  const f=await fixture(t),seen=[];
+  const manager=new updater.AppUpdater({...f.config,fetch:async(url,options)=>{
+    const accept=new Headers(options.headers).get('accept');seen.push({api:new URL(url).hostname==='api.github.com',accept});
+    if(accept!==(new URL(url).hostname==='api.github.com'?'application/vnd.github+json':'application/octet-stream'))return new Response('unsupported media type',{status:415});
+    return f.config.fetch(url,options);
+  }});
+  assert.equal((await manager.check({channel:'alpha'})).targetVersion,'0.3.0a4');
+  assert.deepEqual(seen.map(item=>item.accept),['application/vnd.github+json','application/octet-stream','application/octet-stream']);
+});
+
 test('channel selection uses canonical releases and persists a monotonic version floor', async t => {
   const f=await fixture(t,{releases:['0.3.0a4','0.3.0']});
   assert.equal((await f.manager.check({channel:'stable'})).targetVersion,'0.3.0');

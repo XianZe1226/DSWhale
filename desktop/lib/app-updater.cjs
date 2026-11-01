@@ -214,7 +214,7 @@ class AppUpdater {
     const signal=this.controller?.signal;
     const timeout=AbortSignal.timeout(30000),combined=signal?AbortSignal.any([signal,timeout]):timeout;
     try {
-      const response=await this.request(url,{signal:combined,redirect:'follow',credentials:'omit',headers:{'User-Agent':'DSWhale-Desktop','Accept':'application/octet-stream'}});
+      const response=await this.request(url,{signal:combined,redirect:'follow',credentials:'omit',headers:{'User-Agent':'DSWhale-Desktop','Accept':new URL(url).hostname==='api.github.com'?'application/vnd.github+json':'application/octet-stream'}});
       if(!response.ok||!response.body)fail('NETWORK_FAILED');
       if(response.url) {
         const final=new URL(response.url);
