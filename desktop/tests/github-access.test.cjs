@@ -17,3 +17,12 @@ test('Python test adapter authenticates only allowlisted API reads and removes t
  const result=spawnSync(python,['-c',prelude+helper.ENTRYPOINT],{cwd:path.resolve(__dirname,'../..'),env:{...process.env,DSWHALE_SMOKE_GITHUB_TOKEN:'synthetic_ci_read_token'},encoding:'utf8'});
  assert.equal(result.status,0,result.stderr);assert.deepEqual(JSON.parse(result.stdout),[true,false,false]);assert.ok(!result.stdout.includes('synthetic_ci_read_token'));
 });
+test('CI upstream diagnostics preserve only numeric response details without leaking response data',async()=>{
+ const reports=[];
+ const raw=Buffer.from(JSON.stringify({ok:false,error:'fixed safe error',_ciUpstream:[{status:404,remaining:4999,endpoint:'release',token:'synthetic_secret'},{status:502,remaining:null,endpoint:'commit'},{status:'raw secret',remaining:-1,endpoint:'https://private/path'}]}));
+ const runner=helper.extensionRunner(async()=>raw,'synthetic_ci_read_token',value=>reports.push(value));
+ const value=JSON.parse((await runner('python',['-m','dswhale.extensions'],{env:{}})).toString());
+ assert.deepEqual(value,{ok:false,error:'fixed safe error'});
+ assert.deepEqual(reports,[{status:404,remaining:4999,endpoint:'release'},{status:502,remaining:null,endpoint:'commit'}]);
+ assert.ok(!JSON.stringify(reports).includes('synthetic_secret'));
+});
