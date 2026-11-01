@@ -85,14 +85,19 @@ const isNav = (url) => {
 // 2026-10-22：BILI_NO_CACHE=1 → 关掉缓存与熔断（测试用；排障时也能强制走真网络）
 const noCacheEnv = () => process.env.BILI_NO_CACHE === "1"   // 每次调用时读（测试里会中途设）
 
-let lastRequestAt = 0
+let lastRequestAt = null
 let requestQueue = Promise.resolve()
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
-function throttle() {
+function throttle(dispatch) {
   const turn = requestQueue.then(async () => {
-    const gap = Date.now() - lastRequestAt
-    if (gap < 300) await sleep(300 - gap)
-    lastRequestAt = Date.now()
+    // Keep ownership through response handling so queued calls see new bans.
+    // Recheck elapsed time: timers can wake before the full interval has passed.
+    while (lastRequestAt !== null) {
+      const remaining = 300 - (performance.now() - lastRequestAt)
+      if (remaining <= 0) break
+      await sleep(remaining)
+    }
+    return dispatch()
   })
   requestQueue = turn.catch(() => {})
   return turn
@@ -158,59 +163,66 @@ export async function apiGet(input, headers = {}, opts = {}) {
     }
 
     // ③ 节流：两次请求至少隔 300ms（贴脸连打正是被限流的典型特征 ✗）
-    await throttle()
-    if (biliHost && !noCacheEnv() && bannedUntilNow()) return stale() ?? { code: -412, message: 'B站风控退避中，请稍后重试' }
+    return await throttle(async () => {
+      if (biliHost && !noCacheEnv() && bannedUntilNow()) return stale() ?? { code: -412, message: 'B站风控退避中，请稍后重试' }
 
-    logReq(false, url.pathname)
-    const response = await fetch(url.href, { headers, signal: AbortSignal.timeout(30000) })
+      logReq(false, url.pathname)
+      const signal = AbortSignal.timeout(30000)
+      try {
+        const response = await fetch(url.href, { headers, signal })
 
-    // HTTP 412/429：平台级风控 → 熔断（默认 5 分钟，指数退避封顶 30 分钟）
-    if (biliHost && (response.status === 412 || response.status === 429)) {
-      const prev = readJson(BAN_FILE, {})
-      const streak = Number(prev.streak ?? 0) + 1
-      const mins = Math.min(30, 5 * 2 ** (streak - 1))
-      if (!noCacheEnv()) setBan(mins * 60_000, `HTTP ${response.status}`)
-      if (!noCacheEnv()) writeJson(BAN_FILE, { ...readJson(BAN_FILE, {}), streak, endpoint: url.pathname })
-      const hit = stale()
-      if (hit) return hit
-      return { code: -412, message: `HTTP ${response.status}（B站 风控）—— 已熔断 ${mins} 分钟，别再打了` }
-    }
-    if (!response.ok) return { code: -1, message: `HTTP ${response.status}（B站风控或接口异常，请稍后重试；见 README 排障）` }
-
-    const text = await response.text()
-    let data
-    try {
-      data = JSON.parse(text)
-      if (!data || typeof data !== 'object') throw new Error('invalid JSON payload')
-    } catch {
-      return { code: -1, message: `非 JSON 响应（HTTP ${response.status}），可能是风控或接口变更；见 README 排障` }
-    }
-
-    // 接口层风控码：同样熔断（B站 有时 HTTP 200 但 code=-412）
-    if (biliHost && BAN_CODES.has(Number(data.code))) {
-      const prev = readJson(BAN_FILE, {})
-      const streak = Number(prev.streak ?? 0) + 1
-      const mins = Math.min(30, 5 * 2 ** (streak - 1))
-      if (!noCacheEnv()) writeJson(BAN_FILE, { until: Date.now() + mins * 60_000, why: `code=${data.code}`, at: new Date().toISOString(), streak, endpoint: url.pathname })
-      return { ...data, message: `${data.message ?? ''}（B站 风控 ${data.code}）—— 已熔断 ${mins} 分钟` }
-    }
-    // 成功了：清掉退避计数，并写缓存
-    if (Number(data.code) === 0) {
-      const b = readJson(BAN_FILE, {})
-      if (!noCacheEnv() && b.streak && b.endpoint === url.pathname) writeJson(BAN_FILE, { ...b, streak: 0 })
-      if (!noCache && canCache && !noCacheEnv()) {
-        const store = readJson(CACHE_FILE, {})
-        store[key] = { at: Date.now(), data }
-        // 缓存别无限长（保留最近 400 条）
-        const keys = Object.keys(store)
-        if (keys.length > 400) {
-          keys.sort((a, b2) => Number(store[a].at ?? 0) - Number(store[b2].at ?? 0))
-          for (const k of keys.slice(0, keys.length - 400)) delete store[k]
+        // HTTP 412/429：平台级风控 → 熔断（默认 5 分钟，指数退避封顶 30 分钟）
+        if (biliHost && (response.status === 412 || response.status === 429)) {
+          const prev = readJson(BAN_FILE, {})
+          const streak = Number(prev.streak ?? 0) + 1
+          const mins = Math.min(30, 5 * 2 ** (streak - 1))
+          if (!noCacheEnv()) setBan(mins * 60_000, `HTTP ${response.status}`)
+          if (!noCacheEnv()) writeJson(BAN_FILE, { ...readJson(BAN_FILE, {}), streak, endpoint: url.pathname })
+          const hit = stale()
+          if (hit) return hit
+          return { code: -412, message: `HTTP ${response.status}（B站 风控）—— 已熔断 ${mins} 分钟，别再打了` }
         }
-        writeJson(CACHE_FILE, store)
+        if (!response.ok) return { code: -1, message: `HTTP ${response.status}（B站风控或接口异常，请稍后重试；见 README 排障）` }
+
+        const text = await response.text()
+        let data
+        try {
+          data = JSON.parse(text)
+          if (!data || typeof data !== 'object') throw new Error('invalid JSON payload')
+        } catch {
+          return { code: -1, message: `非 JSON 响应（HTTP ${response.status}），可能是风控或接口变更；见 README 排障` }
+        }
+
+        // 接口层风控码：同样熔断（B站 有时 HTTP 200 但 code=-412）
+        if (biliHost && BAN_CODES.has(Number(data.code))) {
+          const prev = readJson(BAN_FILE, {})
+          const streak = Number(prev.streak ?? 0) + 1
+          const mins = Math.min(30, 5 * 2 ** (streak - 1))
+          if (!noCacheEnv()) writeJson(BAN_FILE, { until: Date.now() + mins * 60_000, why: `code=${data.code}`, at: new Date().toISOString(), streak, endpoint: url.pathname })
+          return { ...data, message: `${data.message ?? ''}（B站 风控 ${data.code}）—— 已熔断 ${mins} 分钟` }
+        }
+        // 成功了：清掉退避计数，并写缓存
+        if (Number(data.code) === 0) {
+          const b = readJson(BAN_FILE, {})
+          if (!noCacheEnv() && b.streak && b.endpoint === url.pathname) writeJson(BAN_FILE, { ...b, streak: 0 })
+          if (!noCache && canCache && !noCacheEnv()) {
+            const store = readJson(CACHE_FILE, {})
+            store[key] = { at: Date.now(), data }
+            // 缓存别无限长（保留最近 400 条）
+            const keys = Object.keys(store)
+            if (keys.length > 400) {
+              keys.sort((a, b2) => Number(store[a].at ?? 0) - Number(store[b2].at ?? 0))
+              for (const k of keys.slice(0, keys.length - 400)) delete store[k]
+            }
+            writeJson(CACHE_FILE, store)
+          }
+        }
+        return data
+      } finally {
+        // A slow log/adapter or failed transport must not consume the next gap.
+        lastRequestAt = performance.now()
       }
-    }
-    return data
+    })
   } catch (error) {
     return { code: -1, message: error.name === 'TimeoutError' ? '请求超时（30 秒）' : error.code === 'BILI_TRAFFIC_PAUSED' ? error.message : '请求失败（网络异常或 WBI 签名密钥无效）' }
   }
