@@ -1,0 +1,7 @@
+# Preserve audited source bytes across Git for Windows and Unix checkouts.
+* text=auto eol=lf
+*.cmd text eol=crlf
+*.bat text eol=crlf
+*.png binary
+*.ico binary
+*.icns binary

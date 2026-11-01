@@ -1,5 +1,5 @@
 include main.py metadata.yaml _conf_schema.json requirements.txt LICENSE THIRD_PARTY_NOTICES.md SECURITY.md
-include README.md CONTRIBUTING.md .gitignore
+include README.md CONTRIBUTING.md .gitignore .gitattributes
 include docs/setup.md docs/operations.md
 recursive-include scripts *.py *.ps1 *.command
 include Install.command Install.cmd Start.command Start.cmd Bili-Settings.command Bili-Settings.cmd

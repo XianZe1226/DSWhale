@@ -1,7 +1,9 @@
 """Desktop releases must never inherit a developer's local account state."""
 
+import hashlib
 import json
 import shutil
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -146,3 +148,30 @@ def test_stage_rejects_modified_file_at_audited_credentials_path(tmp_path):
     with pytest.raises(ValueError, match="[Aa]udit"):
         stage_backend(source, output, tracked_files={AUDITED_CREDENTIAL_SOURCE})
     assert not output.exists()
+
+
+def test_windows_git_checkout_preserves_audited_source_bytes(tmp_path):
+    from scripts.stage_desktop import AUDITED_SOURCES
+
+    root = Path(__file__).resolve().parents[1]
+    source = tmp_path / "checkout"
+    source.mkdir()
+    attributes = root / ".gitattributes"
+    if attributes.exists():
+        shutil.copyfile(attributes, source / ".gitattributes")
+    target = source / AUDITED_CREDENTIAL_SOURCE
+    target.parent.mkdir(parents=True)
+    target.write_bytes(
+        subprocess.check_output(["git", "show", f"HEAD:{AUDITED_CREDENTIAL_SOURCE}"], cwd=root)
+    )
+    subprocess.run(["git", "init", "-q", source], check=True, capture_output=True)
+    command = ["git", "-C", str(source), "-c", "core.autocrlf=true"]
+    subprocess.run([*command, "add", "."], check=True, capture_output=True)
+    target.unlink()
+    subprocess.run(
+        [*command, "checkout-index", "--all", "--force"], check=True, capture_output=True
+    )
+    assert (
+        hashlib.sha256(target.read_bytes()).hexdigest()
+        == AUDITED_SOURCES[AUDITED_CREDENTIAL_SOURCE]
+    )

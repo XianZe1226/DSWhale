@@ -42,7 +42,9 @@ jobs:
       - name: Verify wheel and source bridge inventory independently
         shell: python
         run: |
+          import sys
           from pathlib import Path
+          sys.path.insert(0, str(Path.cwd()))
           from scripts.verify_artifact import verify_artifact
           artifacts = sorted(Path('dist').glob('*.whl')) + sorted(Path('dist').glob('*.tar.gz'))
           if len(artifacts) != 2:
