@@ -26,3 +26,13 @@ test('CI upstream diagnostics preserve only numeric response details without lea
  assert.deepEqual(reports,[{status:404,remaining:4999,endpoint:'release'},{status:502,remaining:null,endpoint:'commit'}]);
  assert.ok(!JSON.stringify(reports).includes('synthetic_secret'));
 });
+test('CI accepts variable-length opaque GitHub JWT-format tokens without interpreting their payload',()=>{
+ const token='ghs_12345_'+('abcXYZ_-'.repeat(40))+'.'+('part_-'.repeat(40))+'.signature_abc-def';
+ const environment={GITHUB_ACTIONS:'true',DSWHALE_SMOKE_GITHUB_TOKEN:token};
+ assert.equal(helper.takeReadToken(environment),token);
+ assert.equal(environment.DSWHALE_SMOKE_GITHUB_TOKEN,undefined);
+ for(const invalid of ['abc\r\nAuthorization: secret','bad token','bad\u0000token','x'.repeat(8193)]){
+  const environment={GITHUB_ACTIONS:'true',DSWHALE_SMOKE_GITHUB_TOKEN:invalid};
+  assert.equal(helper.takeReadToken(environment),'');assert.equal(environment.DSWHALE_SMOKE_GITHUB_TOKEN,undefined);
+ }
+});

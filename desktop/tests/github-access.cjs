@@ -31,7 +31,9 @@ raise SystemExit(result)
 `;
 function takeReadToken(environment=process.env){
  const value=environment.DSWHALE_SMOKE_GITHUB_TOKEN;delete environment.DSWHALE_SMOKE_GITHUB_TOKEN;
- return environment.GITHUB_ACTIONS==='true'&&typeof value==='string'&&/^[A-Za-z0-9_]{1,2048}$/.test(value)?value:'';
+ // GitHub installation tokens are opaque and now include JWT punctuation.
+ // Bound header bytes, reject whitespace/control characters; don't decode JWTs.
+ return environment.GITHUB_ACTIONS==='true'&&typeof value==='string'&&/^[A-Za-z0-9._~+/-]{1,8192}={0,2}$/.test(value)&&value.length<=8192?value:'';
 }
 function extensionRunner(runner,token,report=value=>console.error('CI upstream API:',JSON.stringify(value))){
  return async(command,args,options)=>{
