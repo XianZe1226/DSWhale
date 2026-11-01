@@ -51,6 +51,11 @@ test('source artifact gate runs from the temporary Actions script location',()=>
     const python=process.env.DSWHALE_BUILD_PYTHON||(process.platform==='win32'?'python':'python3');
     const result=spawnSync(python,[script],{cwd:root,encoding:'utf8'});
     assert.equal(result.status,0,result.stderr);
-    assert.equal((result.stdout.match(/123 bridge source files verified/g)||[]).length,2);
+    const tracked=spawnSync('git',['ls-files','-z','--','dswhale/bili_bridge'],{cwd:root,encoding:'utf8'});
+    assert.equal(tracked.status,0,tracked.stderr);
+    const expected=tracked.stdout.split('\0').filter(Boolean).length;
+    assert.ok(expected>0);
+    const counts=[...result.stdout.matchAll(/(\d+) bridge source files verified/g)].map(match=>Number(match[1]));
+    assert.deepEqual(counts,[expected,expected]);
   }finally{fs.rmSync(directory,{recursive:true,force:true});}
 });
