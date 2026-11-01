@@ -6,16 +6,22 @@
 
 1. 从 [Releases](https://github.com/XianZe1226/DSWhale/releases)下载 `DSWhale-版本-Windows-x86_64-setup.exe`。
 2. 运行安装器，按提示选择目录。默认仅安装到当前用户，不要求以管理员运行。
-3. 打开 **DSWhale**，进入「环境」并点击准备。无需预先安装 Python、Node.js、WinGet 或 FFmpeg。
-4. 准备完成后启动服务，按[配置指南](setup.md)独立连接 QQ、配置模型与记忆。常用设置和高级页面均可从应用窗口打开。
+3. 打开 **DSWhale**，进入「运行环境」并点击准备。无需预先安装 Python、Node.js、WinGet 或 FFmpeg。
+4. 在「连接设置」准备独立 QQ 组件、保存主人账号和 OneBot 配置，再启动服务并手动扫码登录。在「模型与记忆」连接自己的模型服务，详见[配置指南](setup.md)。
 
 预览版默认没有可信发布者签名，系统可能显示未知发布者。请检查下载来源与 Release 校验文件，不要关闭系统整体安全保护。数据保存在 `%APPDATA%\DSWhale`，升级安装保留数据，详见[桌面指南](desktop.md)。
 
 ## QQ 与 B站
 
-按 [NapCat 官方 Windows 文档](https://napneko.github.io/guide/boot/Shell)独立安装并登录机器人账号，再配置 OneBot 反向 WebSocket。DSWhale 不打包、不替换你的 QQ，也不会修改系统 QQ 的加载方式。个人账号与机器人账号分别登录。
+「连接设置」提供官方独立组件的下载、文件校验和隔离配置，也可选择已经解压的受支持目录。登录机器人账号后，点击「应用 OneBot 连接」并刷新状态。程序与账号数据保存在 DSWhale 的独立目录，不替换或修改日常使用的官方 QQ，详见[QQ 隔离指南](qq-isolation.md)。已有外部 NapCat 也可继续按官方文档配置反向 WebSocket。
 
 在 DSWhale 窗口开启 B站功能并进入 B站页面，扫码登录后配置偏好与渠道。账号登录、主动活动、QQ 推荐和 B站私信分别配置，见 [B站设置](bilibili.md)。
+
+## 更新与排错
+
+「应用设置」提供应用更新、自动备份与恢复、托盘和登录启动选项；插件可在「模型与记忆」独立更新。旧桌面版首次升级到 0.3.0a3 需下载安装包覆盖安装，再准备运行环境，无需重新导入旧备份。详见[更新指南](updates.md)。
+
+下载跟随系统网络，需要代理时在 Clash 开启系统代理或 TUN 后重试，不必在 DSWhale 填写代理。安装失败时可在「应用设置」导出诊断报告，详见[排错指南](troubleshooting.md)。
 
 ## 高级：源码与终端部署
 

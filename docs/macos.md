@@ -6,7 +6,7 @@
 
 1. 从 [Releases](https://github.com/XianZe1226/DSWhale/releases)下载 `DSWhale-版本-macOS-arm64.dmg`。
 2. 打开磁盘映像，将 **DSWhale** 拖到「应用程序」，再从「应用程序」打开。
-3. 在「环境」点击准备。兼容的工具会复用，缺失依赖下载到应用自己的目录；桌面安装无需 Homebrew 或预装 Python、Node.js。
+3. 在「运行环境」点击准备。兼容的工具会复用，缺失依赖下载到应用自己的目录；桌面安装无需 Homebrew 或预装 Python、Node.js。
 4. 准备完成后启动服务，按[配置指南](setup.md)连接 QQ、配置模型和长期记忆。常用设置与高级页面均在应用窗口内打开。
 
 预览版默认仅有本地临时签名，没有 Developer ID 身份或 Apple 公证。首次打开可能被系统拦截；确认来自项目 Release 且校验和一致后，可按 macOS「系统设置 → 隐私与安全性」提供的单个应用打开流程处理，不要关闭 Gatekeeper。若系统提示文件损坏或校验不一致，请重新下载并反馈。
@@ -15,11 +15,17 @@
 
 ## 独立连接 QQ
 
-按 [NapCat 官方文档](https://napneko.github.io/guide/boot/Shell)准备机器人环境并登录，再填写反向 WebSocket 地址和一致的令牌。DSWhale 不下载 QQ / NapCat，不注入或修改 `/Applications/QQ.app`。
+macOS 使用外部 NapCat / OneBot 服务，不注入或修改日常 QQ。请在独立设备或隔离容器准备协议端并登录机器人账号，再通过受保护的本机隧道连接「连接设置」里的反向 WebSocket 地址，令牌需一致；不要直接开放公网监听。详见[QQ 隔离指南](qq-isolation.md)。
 
 需要同时使用个人 QQ 时，机器人环境与个人登录应独立管理。可参阅[双开说明](qq-dual-login.md)了解已有环境的隔离方式；该操作由用户自行选择，不是 DSWhale 安装步骤。非官方接入可能受到平台风控影响。
 
 B站功能从应用内入口打开并单独扫码登录，详见 [B站设置](bilibili.md)。
+
+## 更新与排错
+
+应用更新、备份恢复和后台运行选项在「应用设置」管理；LivingMemory 等插件在「模型与记忆」独立更新。从旧桌面版首次升级到 0.3.0a3 时，替换应用后准备运行环境即可，详见[更新指南](updates.md)。
+
+下载自动跟随系统网络，可直接配合 Clash 系统代理或 TUN，无需另配代理地址。环境准备前也可导出诊断报告，详见[排错指南](troubleshooting.md)。
 
 ## 高级：源码与终端部署
 
