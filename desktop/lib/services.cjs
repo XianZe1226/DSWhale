@@ -11,12 +11,40 @@ function dashboardURL(config) {
   if (!dashboard || dashboard.enable === false || dashboard.host !== '127.0.0.1' || !Number.isInteger(dashboard.port) || dashboard.port < 1024 || dashboard.port > 65535 || dashboard.ssl?.enable) throw new Error('管理页面需启用本机 HTTP 地址 127.0.0.1；请检查高级配置');
   return `http://127.0.0.1:${dashboard.port}/`;
 }
-function portFree(port) {
+class PortConflictError extends Error {
+  constructor(report) {
+    super(`本机端口 ${report.occupiedPorts.join('、')} 已被占用；请更换连接端口，或手动停止您确认的对应服务后重试`);
+    this.code = 'PORT-001';
+    this.report = report;
+  }
+}
+function probePort(port) {
   return new Promise((resolve, reject) => {
     const server = net.createServer();
-    server.once('error', () => reject(new Error(`本机端口 ${port} 已被占用，请先关闭对应服务或更换端口`)));
-    server.listen(port, '127.0.0.1', () => server.close(resolve));
+    server.once('error', error => error.code === 'EADDRINUSE' ? resolve(false) : reject(new Error('无法检查本机连接端口，请检查系统网络权限后重试')));
+    server.listen(port, '127.0.0.1', () => server.close(() => resolve(true)));
   });
+}
+function portReport(ports, occupiedPorts) {
+  return { ok: occupiedPorts.length === 0, code: occupiedPorts.length ? 'PORT-001' : null, ports, occupiedPorts,
+    nextSteps: occupiedPorts.length ? [
+      { id: 'change-port', label: '在高级配置中更换冲突端口，并同步修改连接端口' },
+      { id: 'stop-service-manually', label: '确认占用服务后手动停止，再重试；应用不会结束其他程序' },
+    ] : [] };
+}
+async function preflightPorts(config) {
+  const url = dashboardURL(config);
+  const dashboardPort = Number(new URL(url).port);
+  const reversePorts = (config.platform ?? []).filter(p => p.enable && p.type === 'aiocqhttp').map(p => p.ws_reverse_port);
+  if (reversePorts.includes(dashboardPort)) throw new Error('管理页面和 OneBot 连接不能共用相同端口，请在高级配置中更换端口');
+  const ports = [...new Set([dashboardPort, ...reversePorts])];
+  if (ports.some(port => !Number.isInteger(port) || port < 1024 || port > 65535)) throw new Error('连接端口配置无效');
+  const available = await Promise.all(ports.map(probePort));
+  return portReport(ports, ports.filter((port, index) => !available[index]));
+}
+async function portFree(port) {
+  if (!Number.isInteger(port) || port < 1024 || port > 65535) throw new Error('连接端口配置无效');
+  if (!await probePort(port)) throw new PortConflictError(portReport([port], [port]));
 }
 function portOpen(port) {
   return new Promise(resolve => {
@@ -53,15 +81,14 @@ class ServiceSupervisor {
     const config = await readJSON(path.join(this.manager.host, 'data/cmd_config.json'));
     this._active(generation);
     const url = dashboardURL(config);
-    const ports = [Number(new URL(url).port), ...(config.platform ?? []).filter(p => p.enable && p.type === 'aiocqhttp').map(p => p.ws_reverse_port)];
-    for (const port of new Set(ports)) {
-      if (!Number.isInteger(port) || port < 1024 || port > 65535) throw new Error('连接端口配置无效');
-      await portFree(port);
-      this._active(generation);
-    }
+    const report = await preflightPorts(config);
+    this._active(generation);
+    if (!report.ok) throw new PortConflictError(report);
     const python = this.manager.python;
     const args = process.platform === 'win32' ? [path.join(this.manager.source, 'dswhale/winjob.py'), python, '-m', 'astrbot.cli', 'run'] : ['-m', 'astrbot.cli', 'run'];
-    const environment = await this.manager.environment();
+    const environment = { ...await this.manager.environment(), ASTRBOT_DESKTOP_MANAGED: '1' };
+    // This application uses its existing dashboard login, not another launcher's session.
+    delete environment.ASTRBOT_DESKTOP_SESSION_SECRET;
     this._active(generation);
     const child = spawn(python, args, { cwd: this.manager.host, env: environment, windowsHide: true, detached: process.platform !== 'win32', stdio: ['ignore', 'pipe', 'pipe'] });
     this.child = child; this.stopped = false; this.startedAt = Date.now();
@@ -122,4 +149,4 @@ async function settingsCommand(manager, action, payload) {
   });
 }
 
-module.exports = { ServiceSupervisor, settingsCommand, dashboardURL, portFree, portOpen };
+module.exports = { ServiceSupervisor, settingsCommand, dashboardURL, portFree, portOpen, preflightPorts, PortConflictError };

@@ -1,10 +1,14 @@
 """Desktop releases must never inherit a developer's local account state."""
 
 import json
+import shutil
+from pathlib import Path
 
 import pytest
 
 from scripts.stage_desktop import stage_backend
+
+AUDITED_CREDENTIAL_SOURCE = "dswhale/bili_bridge/upstream/lib/credentials.js"
 
 
 def put(root, name, content="public source"):
@@ -111,3 +115,34 @@ def test_stage_cannot_replace_any_source_subdirectory(tmp_path):
     with pytest.raises(ValueError, match="source"):
         stage_backend(source, source / "dswhale", tracked_files={"dswhale/public.py"})
     assert (source / "dswhale/public.py").is_file()
+
+
+def test_stage_preserves_exact_audited_upstream_credentials_source(tmp_path):
+    source = tmp_path / "source"
+    audited = Path(__file__).resolve().parents[1] / AUDITED_CREDENTIAL_SOURCE
+    target = source / AUDITED_CREDENTIAL_SOURCE
+    target.parent.mkdir(parents=True)
+    shutil.copyfile(audited, target)
+    put(source, "dswhale/bili_bridge/credentials.js", "private credentials")
+    put(source, "dswhale/bili_bridge/upstream/lib/credentials.json", "private credentials")
+    output = tmp_path / "resources/backend"
+    manifest = stage_backend(
+        source,
+        output,
+        tracked_files={
+            AUDITED_CREDENTIAL_SOURCE,
+            "dswhale/bili_bridge/credentials.js",
+            "dswhale/bili_bridge/upstream/lib/credentials.json",
+        },
+    )
+    assert set(manifest) == {AUDITED_CREDENTIAL_SOURCE}
+    assert (output / AUDITED_CREDENTIAL_SOURCE).read_bytes() == audited.read_bytes()
+
+
+def test_stage_rejects_modified_file_at_audited_credentials_path(tmp_path):
+    source = tmp_path / "source"
+    put(source, AUDITED_CREDENTIAL_SOURCE, "private account material")
+    output = tmp_path / "resources/backend"
+    with pytest.raises(ValueError, match="[Aa]udit"):
+        stage_backend(source, output, tracked_files={AUDITED_CREDENTIAL_SOURCE})
+    assert not output.exists()

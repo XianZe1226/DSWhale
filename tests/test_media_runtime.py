@@ -133,6 +133,7 @@ def test_managed_media_repairs_only_private_tools_and_reuses_on_repeat(tmp_path,
     (data / "memory.db").write_bytes(b"keep me")
     target = runtime / "tools/ffmpeg-9.0.2"
     target.mkdir(parents=True)
+    (runtime / "network.json").write_text(json.dumps({"mode": "direct"}))
     (target / "ffmpeg").write_bytes(b"broken")
     downloads = []
     content = archive_bytes(
@@ -153,7 +154,8 @@ def test_managed_media_repairs_only_private_tools_and_reuses_on_repeat(tmp_path,
     }
     monkeypatch.setattr(media_runtime, "select_media_assets", lambda *args: manifest)
 
-    def download(asset, file):
+    def download(asset, file, **kwargs):
+        assert kwargs.get("config", {}).get("mode") == "direct"
         downloads.append(asset["url"])
         file.write_bytes(content)
 

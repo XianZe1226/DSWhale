@@ -17,6 +17,7 @@ from filelock import Timeout
 from .install import InstallError, offline_host
 
 FIELDS = {
+    "dashboardPort",
     "ownerQQ",
     "platformId",
     "onebotPort",
@@ -46,6 +47,7 @@ def read_settings(host):
         (p for p in platforms if p.get("id") == platform_id), platforms[0] if platforms else {}
     )
     return {
+        "dashboardPort": config.get("dashboard", {}).get("port", 6185),
         "ownerQQ": str(fish.get("owner_qq", "")),
         "platformId": platform.get("id", "dswhale-qq"),
         "onebotPort": platform.get("ws_reverse_port", 6199),
@@ -208,11 +210,18 @@ def save_settings(host, patch):
             if not isinstance(ident, str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,60}", ident):
                 raise ValueError("平台 ID 仅支持字母、数字、下划线和短横线")
             port = value["onebotPort"]
+            dashboard_port = value["dashboardPort"]
+            if (
+                isinstance(dashboard_port, bool)
+                or not isinstance(dashboard_port, int)
+                or not 1024 <= dashboard_port <= 65535
+            ):
+                raise ValueError("控制台端口需要为 1024–65535 的整数")
             if (
                 isinstance(port, bool)
                 or not isinstance(port, int)
                 or not 1024 <= port <= 65535
-                or port == config.get("dashboard", {}).get("port", 6185)
+                or port == dashboard_port
             ):
                 raise ValueError("QQ 端口无效或与管理页面冲突")
             if not isinstance(token, str) or len(token) > 256 or any(c.isspace() for c in token):
@@ -233,6 +242,7 @@ def save_settings(host, patch):
             if platform is None:
                 platform = {}
                 platforms.append(platform)
+            config.setdefault("dashboard", {}).update(port=dashboard_port)
             platform.update(
                 id=ident,
                 type="aiocqhttp",

@@ -60,6 +60,11 @@ PRIVATE_PARTS = {
     "desktop-resources",
 }
 PRIVATE_SUFFIXES = {".db", ".sqlite", ".sqlite3", ".pem", ".key", ".log", ".pyc", ".pyo"}
+# Public upstream implementation, not stored account credentials. Changes require
+# a fresh source audit; a matching basename elsewhere remains denied.
+AUDITED_SOURCES = {
+    "dswhale/bili_bridge/upstream/lib/credentials.js": "00905567a2661eddc429d2598eb4cb208ce7097541a662ffffd4945546e69ce8",
+}
 
 
 def eligible(name: str) -> bool:
@@ -68,7 +73,9 @@ def eligible(name: str) -> bool:
     leaf = parts[-1] if parts else ""
     if any(part in PRIVATE_PARTS or part.startswith(".") for part in parts):
         return False
-    if leaf.startswith(("cookie", "credential", "token", "secret", "desktop-auth")):
+    if name not in AUDITED_SOURCES and leaf.startswith(
+        ("cookie", "credential", "token", "secret", "desktop-auth")
+    ):
         return False
     if path.suffix.lower() in PRIVATE_SUFFIXES:
         return False
@@ -112,6 +119,11 @@ def stage_backend(source: Path, destination: Path, *, tracked_files=None) -> dic
             raise ValueError(f"Symlink source is not allowed: {name}")
         if not local.is_file():
             raise ValueError(f"Missing source file: {name}")
+        if (
+            name in AUDITED_SOURCES
+            and hashlib.sha256(local.read_bytes()).hexdigest() != AUDITED_SOURCES[name]
+        ):
+            raise ValueError(f"Audited upstream source hash mismatch: {name}")
         files.append((name, local))
     destination.parent.mkdir(parents=True, exist_ok=True)
     manifest = {}

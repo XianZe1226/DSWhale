@@ -25,3 +25,5 @@ include docs/desktop.md docs/linux.md
 prune desktop-dist
 prune desktop-resources
 prune node_modules
+
+include docs/extensions.md docs/qq-social.md docs/qq-isolation.md docs/updates.md docs/troubleshooting.md

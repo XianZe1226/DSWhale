@@ -1,6 +1,5 @@
 """Project-local Node runtime; verified downloads without modifying system HOME."""
 
-import hashlib
 import json
 import os
 import platform
@@ -15,6 +14,8 @@ from pathlib import Path, PurePosixPath
 
 import httpx
 from filelock import FileLock
+
+from dswhale.network import download_verified, network_environment, read_network_config
 
 NODE_VERSION = "22.23.4"
 NODE_HASHES = {
@@ -101,25 +102,19 @@ def _ensure_node(runtime, *, reuse=True):
     tools.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix="node-stage-", dir=tools) as stage_name:
         stage = Path(stage_name)
-        archive = stage / asset
-        digest, count = hashlib.sha256(), 0
-        with httpx.stream(
-            "GET",
-            f"https://nodejs.org/dist/v{NODE_VERSION}/{asset}",
-            timeout=90,
-            follow_redirects=True,
-        ) as response:
-            response.raise_for_status()
-            with archive.open("wb") as output:
-                for chunk in response.iter_bytes():
-                    count += len(chunk)
-                    if count > 300 * 1024**2:
-                        raise ValueError("运行库下载超过预期大小")
-                    digest.update(chunk)
-                    output.write(chunk)
         expected = NODE_HASHES[asset.removeprefix(f"node-v{NODE_VERSION}-")]
-        if digest.hexdigest() != expected:
-            raise ValueError("Node.js 校验失败，未安装")
+        cache = Path(runtime) / "cache/downloads"
+        cache.mkdir(parents=True, exist_ok=True)
+        archive = (
+            cache
+            / f"node-{expected}-{'archive.zip' if asset.endswith('.zip') else 'archive.tar.gz'}"
+        )
+        download_verified(
+            {"url": f"https://nodejs.org/dist/v{NODE_VERSION}/{asset}", "sha256": expected},
+            archive,
+            config=read_network_config(runtime),
+            stream=httpx.stream,
+        )
         unpacked = stage / "unpacked"
         if asset.endswith(".zip"):
             with zipfile.ZipFile(archive) as bundle:
@@ -166,7 +161,7 @@ def prepare_bridge(bridge, node):
         ],
         cwd=bridge,
         env={
-            **os.environ,
+            **network_environment(read_network_config()),
             "PATH": str(Path(node).parent) + os.pathsep + os.environ.get("PATH", ""),
         },
         check=True,
@@ -203,10 +198,11 @@ def launch_environment(runtime):
         )
     )
     return {
-        **os.environ,
+        **network_environment(read_network_config(runtime)),
         "PYTHONUTF8": "1",
         "PATH": os.pathsep.join(directories),
         "ASTRBOT_ROOT": str(runtime / "astrbot"),
         "DSWHALE_RUNTIME_DIR": str(runtime),
+        "DSWHALE_NETWORK_CONFIG": str(runtime / "network.json"),
         **({"DSWHALE_NODE": saved["node"]} if saved.get("node") else {}),
     }

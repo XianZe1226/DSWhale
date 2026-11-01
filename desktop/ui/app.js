@@ -31,12 +31,20 @@
   let extensionsLoading = false;
   let extensionReview = '';
   let extensionMessage = null;
+  let workspaceLoading=false;
+  let backupReview=null;
+  let rollbackReview=false;
+  let restoreUpdateData=false;
+  let updateChannel=null;
+  let preferencesDraft=null;
+  let preferencesDirty=false;
+  let localMessage='';
   let pendingFocus = null;
   let lastAnnouncement = '';
   const busy = data => !!data.pending || ['checking', 'installing'].includes(data.state.phase);
   const desktop = data => data.mode === 'desktop';
   const disabled = yes => yes ? ' disabled' : '';
-  const button = (text, action, { primary = false, iconName, off = false, payload = '', id = '', extension = '', operation = '' } = {}) => `<button type="button" class="button${primary ? ' primary' : ''}" data-action="${action}"${id ? ` id="${id}"` : ''}${payload ? ` data-panel="${payload}"` : ''}${extension ? ` data-extension="${extension}"` : ''}${operation ? ` data-operation="${operation}"` : ''}${disabled(off)}>${iconName ? icon(iconName) : ''}<span>${esc(text)}</span></button>`;
+  const button = (text, action, { primary = false, iconName, off = false, payload = '', id = '', extension = '', operation = '', item='' } = {}) => `<button type="button" class="button${primary ? ' primary' : ''}" data-action="${esc(action)}"${id ? ` id="${esc(id)}"` : ''}${payload ? ` data-panel="${esc(payload)}"` : ''}${extension ? ` data-extension="${esc(extension)}"` : ''}${operation ? ` data-operation="${esc(operation)}"` : ''}${item ? ` data-item="${esc(item)}"` : ''}${disabled(off)}>${iconName ? icon(iconName) : ''}<span>${esc(text)}</span></button>`;
   const routeButton = (text, target) => `<button type="button" class="text-button" data-route="${target}">${esc(text)}${icon('arrow')}</button>`;
   const badge = (label, type = '') => `<span class="badge ${type}"><span class="status-dot"></span>${esc(label)}</span>`;
   const extensionName = id => id === 'memory' ? 'LivingMemory' : '表情包管理器';
@@ -46,7 +54,47 @@
     const verb = { 'extension-check': '检查', 'extension-update': data.extensions?.[data.pendingExtension]?.installed ? '更新' : '安装', 'extension-rollback': '回退' }[data.pending];
     return verb ? `正在${verb}${extensionName(data.pendingExtension)}…` : '';
   }
+  const workspaceProgress = data => ({'workspace-status':'正在读取本机工作空间状态…','health-check':'正在检查本机环境…','backup-list':'正在读取本机备份…','backup-restore':'正在备份当前数据并恢复所选备份…','backup-delete':'正在删除所选本机备份…','diagnostics-export':'正在准备诊断报告…','app-update-check':'正在检查官方应用更新…','app-update-download':'正在下载并校验应用安装包…','app-update-install':'正在备份并打开系统安装程序…','app-update-rollback':'正在备份并准备应用回退…','preferences-save':'正在保存应用偏好…','napcat-install':'正在下载并校验独立连接组件…','napcat-configure':'请选择已有独立组件目录…','napcat-wire':'正在配置 OneBot 反向连接…','napcat-guide':'正在打开官方连接指南…','napcat-login-code':'请在系统对话框中查看登录口令…'}[data.pending]||'');
   const preference = (data, value, id, title, description) => `<section class="card preference-card"><div><h3 id="${id}-label">${esc(title)}</h3><p id="${id}-help">${esc(description)}</p></div><label class="switch"><input id="${id}" name="${id}" type="checkbox" aria-labelledby="${id}-label" aria-describedby="${id}-help"${value[id] ? ' checked' : ''}${disabled(!desktop(data) || busy(data))}><span aria-hidden="true"></span></label></section>`;
+  function healthCard(data, bili=false) {
+    const health=data.workspace.health;
+    const checks=Array.isArray(health?.checks)?health.checks.filter(check=>!bili||/bili|bridge|pkg/i.test(`${check.id} ${check.code}`)):[];
+    const failures=checks.filter(check=>!check.ok&&check.required).length;
+    return `<section class="card reliability-card" aria-labelledby="${bili?'bili-':'environment-'}health-title"><div class="reliability-heading"><div><h2 id="${bili?'bili-':'environment-'}health-title">${bili?'视频服务检查':'环境检查'}</h2><p>${health?failures?`${failures} 项必要检查需要处理`:'必要检查结果如下，账号可用性仍需实际验证':'准备环境后可检查本机组件与配置。'}</p></div>${button('重新检查','health-check',{iconName:'refresh',off:!desktop(data)||busy(data)||!data.state.installed})}</div>${checks.length?`<ul class="health-list">${checks.map(check=>`<li><span class="health-indicator ${check.ok?'pass':'attention'}" aria-label="${check.ok?'通过':check.required?'需要处理':'待确认'}">${icon(check.ok?'check':'refresh')}</span><div><strong>${esc(check.name)}</strong><p>${esc(check.detail)}</p></div>${badge(check.ok?'通过':check.required?'需处理':'待确认',check.ok?'good':'warn')}</li>`).join('')}</ul>`:'<p class="reliability-empty">尚无检查结果；此页不会连接你的模型或发送 QQ 消息。</p>'}<div class="card-actions">${button('修复运行环境','install',{off:!desktop(data)||busy(data)||data.state.running||data.state.platform.supported===false})}${button('连接设置','route-connect',{off:busy(data)})}</div>${data.state.running?'<p class="reliability-note">修复前请先停止服务。</p>':''}</section>`;
+  }
+  function versionMatrix(data) {
+    const matrix=data.state.versionMatrix;if(!matrix?.expected)return '';
+    const names={dswhale:'DSWhale',astrbot:'AstrBot',python:'Python',node:'Node.js',ffmpeg:'FFmpeg'};
+    return `<div class="section-heading"><h2>版本对照</h2><span>兼容的本机工具可继续使用</span></div><section class="card component-table matrix-table"><table><thead><tr><th scope="col">组件</th><th scope="col">预期版本</th><th scope="col">实际版本</th></tr></thead><tbody>${Object.entries(names).map(([id,name])=>`<tr><th scope="row">${name}</th><td class="version-text">${esc(matrix.expected[id]||'—')}</td><td class="version-text">${esc(matrix.actual?.[id]||'未检测到')}</td></tr>`).join('')}</tbody></table></section><p class="reliability-note">FFmpeg 可复用兼容版本；组件是否可用以环境检查结果为准。</p>`;
+  }
+  function napcatCard(data) {
+    const state=data.workspace.napcat,windows=data.state.platform.id==='win32-x64';
+    const off=!desktop(data)||busy(data),ready=data.state.installed;
+    return `<section class="card reliability-card connection-guide" aria-labelledby="napcat-title"><div class="reliability-heading"><div><h2 id="napcat-title">QQ 连接助手</h2><p>${windows?'独立组件与数据目录由 DSWhale 管理，登录由你手动完成。':'在外部准备可信的 NapCat / OneBot 服务，再连接 DSWhale。'}</p></div>${badge(state?.connectionConfigured?'连接已配置':state?.configured?'待登录或连接':'等待准备',state?.connectionConfigured?'good':'')}</div><ol class="connection-steps"><li><strong>准备独立组件</strong><span>${state?.configured?'已选择独立环境':windows?'安装官方独立组件，或选择已解压的受支持目录':'请按官方指南准备外部连接环境'}</span></li><li><strong>手动登录 QQ</strong><span>${state?.needsAccountSelection?'存在多个账号配置，请在登录面板中明确选择':state?.needsLogin===false?'已检测到账号配置，仍需确认当前在线状态':'启动服务后，在登录面板手动扫码'}</span></li><li><strong>连接 OneBot</strong><span>先保存下方端口与令牌，再完成反向连接配置。</span></li></ol>${state?.nextStep?`<p class="recovery-note">${esc(state.nextStep)}</p>`:''}<div class="card-actions">${windows?button(state?.configured?'重新准备独立组件':'安装独立组件','napcat-install',{primary:!state?.configured,off:off||!ready||state?.supported!==true||state?.canInstall===false||state?.running}):''}${windows||data.state.platform.id==='linux-x64'?button('选择已有独立组件','napcat-configure',{off:off||!ready||state?.running}):''}${button('官方连接指南','napcat-guide',{off})}${button('刷新状态','workspace-status',{off})}</div><div class="card-actions secondary-actions">${button('QQ 登录面板','open-panel',{payload:'napcat',off:off||!data.state.running})}${windows?button('查看登录口令','napcat-login-code',{off:off||!state?.configured}):''}${button('应用 OneBot 连接','napcat-wire',{off:off||!ready||!state?.configured||state?.needsLogin!==false||state?.needsAccountSelection===true||data.state.platform.id==='darwin-arm64'})}</div><p class="reliability-note">不会安装、注入或修改官方 QQ。${!ready?'请先准备运行环境。':windows?'启动服务时会启动已配置的独立组件。':'外部连接端由你自行启动与登录。'}</p></section>`;
+  }
+  function updateCard(data) {
+    const state=data.workspace.appUpdate,off=!desktop(data)||busy(data);
+    const channel=updateChannel||state?.channel||'alpha';
+    const phases={idle:'尚未检查','up-to-date':'当前版本已是所选通道最新',available:'发现可用版本',downloading:'下载尚未完成',downloaded:'安装包已校验',snapshotting:'正在备份私人数据','install-ready':'等待系统安装','install-launched':'请完成系统安装','awaiting-verification':'等待环境检查',installed:'更新已通过检查','rolling-back':'正在准备回退','rollback-launched':'请完成旧版安装','awaiting-rollback-verification':'等待回退后检查','rolled-back':'回退已通过检查','repair-required':'需要检查与修复'};
+    const restoreRequired=typeof state?.recovery?.rollbackRequiresDataRestore==='boolean'?state.recovery.rollbackRequiresDataRestore:state?.impact?.dataMigration===true||state?.impact?.rollbackCompatible===false;
+    const impact=state?.impact;
+    return `<section class="card reliability-card app-update-card" aria-labelledby="app-update-title"><div class="reliability-heading"><div><h2 id="app-update-title">应用更新</h2><p>打开此页只读取本机记录；检查、下载和安装均由你发起。</p></div>${badge(phases[state?.phase]||'尚未检查',state?.recovery?.interrupted?'warn':'')}</div><dl class="update-versions"><div><dt>当前应用</dt><dd>${esc(state?.currentVersion||data.state.version||'待读取')}</dd></div><div><dt>可用版本</dt><dd>${esc(state?.targetVersion||'检查后显示')}</dd></div>${state?.previousVersion?`<div><dt>保留的上一版</dt><dd>${esc(state.previousVersion)}</dd></div>`:''}</dl><div class="update-controls"><label for="app-update-channel">更新通道</label><select id="app-update-channel"${disabled(off)}><option value="stable"${channel==='stable'?' selected':''}>稳定版</option><option value="alpha"${channel==='alpha'?' selected':''}>Alpha 预览版</option></select>${button('检查应用更新','app-update-check',{id:'app-update-check',off:off||state?.actions?.includes('check')===false||state?.recovery?.servicesMustRemainStopped===true})}</div>${impact?`<div class="update-impact"><strong>这次更新的影响</strong><ul>${impact.runtime?'<li>安装后需要准备并检查运行环境。</li>':''}${impact.configuration?'<li>配置可能调整，安装前会保存私人备份。</li>':''}${impact.dataMigration?'<li>涉及数据格式变化，请保留更新前备份。</li>':''}<li>${impact.rollbackCompatible?'可回退应用并保留当前数据。':'回退需要明确选择恢复更新前数据。'}</li></ul></div>`:''}${state?.error?`<p class="recovery-note" role="alert">${esc(state.error.message)}</p>`:state?.recovery?.interrupted||state?.recovery?.requiresHealthVerification?`<p class="recovery-note">${esc(state.recovery.guidance||'更新尚未完成，请继续安装、修复环境或回退。')}</p>`:''}${rollbackReview?`<div class="inline-review" role="group" aria-labelledby="app-rollback-heading"><h3 id="app-rollback-heading">确认回退应用？</h3><p>默认保留当前数据；操作前会停止服务并保存当前数据备份。</p><label class="check-option"><input id="rollback-restore-data" type="checkbox"${restoreUpdateData?' checked':''}${disabled(off)}>同时恢复更新前的配置、聊天与记忆</label><p>${restoreUpdateData?'你已选择恢复旧数据；后来的聊天会先另行备份，再恢复更新前状态。':restoreRequired?'此版本涉及不兼容变化，需要选择恢复旧数据后才能回退。':'仅替换应用程序，当前配置、聊天与记忆保留。'}</p><div class="card-actions">${button(restoreUpdateData?'确认恢复旧数据并回退':'确认回退应用','app-rollback-confirm',{primary:true,id:'app-rollback-confirm',off:off||restoreRequired&&!restoreUpdateData})}${button('取消','app-rollback-cancel',{off})}</div></div>`:`<div class="card-actions">${state?.canDownload?button(state.recovery?.continueAction==='download'?'继续下载安装包':'下载安装包','app-update-download',{off,primary:true}):''}${state?.canInstall?button(state.recovery?.continueAction==='install'?'继续系统安装':'备份并安装','app-update-install',{off:off||!data.state.installed,primary:true}):''}${state?.canRollback?button('回退上一版','app-rollback-review',{id:'app-rollback-review',off:off||!data.state.installed}):''}${state?.recovery?.requiresHealthVerification?button('修复并检查环境','install',{off:off||data.state.running}):''}</div>`}<p class="reliability-note">更新清单经 Ed25519 签名验证，安装包校验大小与 SHA256。这不代表操作系统签名或系统公证；安装时请按系统提示操作。</p></section>`;
+  }
+  function backupCard(data) {
+    const backups=Array.isArray(data.workspace.backups)?data.workspace.backups:[],off=!desktop(data)||busy(data);
+    const review=backupReview&&backups.find(item=>item.id===backupReview.id);
+    const sizes=value=>Number.isFinite(value)?value<1024**2?`${Math.max(1,Math.round(value/1024))} KB`:`${(value/1024**2).toFixed(1)} MB`:'大小未知';
+    return `<section class="card reliability-card" aria-labelledby="automatic-backup-title"><div class="reliability-heading"><div><h2 id="automatic-backup-title">自动备份</h2><p>更新与恢复前创建，包含私人配置与记忆，仅保存在本机。</p></div>${button('刷新列表','backup-list',{off})}</div>${backups.length?`<ul class="backup-list">${backups.map((item,index)=>`<li><span class="tile-icon">${icon('folder')}</span><div><strong>${esc(item.created?new Date(item.created).toLocaleString('zh-CN'):`本机备份 ${index+1}`)}</strong><p>${esc(sizes(item.size))}<span class="row-divider">·</span>${esc({'app-update':'应用更新前','before-app-rollback':'应用回退前','restore':'数据恢复前','import':'数据导入前'}[item.source]||'本机安全备份')}</p></div><div class="card-actions">${button('恢复','backup-review',{item:item.id,operation:'backup-restore',id:`backup-restore-${index}`,off:off||!data.state.installed})}${button('删除','backup-review',{item:item.id,operation:'backup-delete',off})}</div></li>`).join('')}</ul>`:'<p class="reliability-empty">暂无自动备份。你仍可在下方手动创建或导入备份。</p>'}${review?`<div class="inline-review" role="group" aria-labelledby="backup-review-heading"><h3 id="backup-review-heading">${backupReview.operation==='backup-restore'?'确认恢复此备份？':'确认删除此备份？'}</h3><p>${backupReview.operation==='backup-restore'?'当前配置、聊天与记忆会先另行备份，再恢复所选版本。服务会保持停止，供你检查。':'所选备份将从本机删除。请确认已保留需要的数据。'}</p><div class="card-actions">${button(backupReview.operation==='backup-restore'?'确认恢复':'确认删除','backup-confirm',{primary:true,id:'backup-confirm',off})}${button('取消','backup-cancel',{off})}</div></div>`:''}</section>`;
+  }
+  function networkCard() { return '<p class="footnote">下载跟随系统网络。需要代理时，在 Clash 开启系统代理或 TUN 即可，无需在这里配置。</p>'; }
+  function appPreferences(data) {
+    const value=preferencesDraft||data.workspace.preferences,off=!desktop(data)||busy(data);
+    return `<section class="card reliability-card" aria-labelledby="preferences-title"><div class="reliability-heading"><div><h2 id="preferences-title">启动与后台运行</h2><p>所有选项默认关闭，按你的使用方式开启。</p></div></div>${[['tray','关闭窗口后保留在托盘','保持已启动的本地服务；可从托盘退出。'],['startAtLogin','登录系统后打开应用','仅打开应用，不会自动检查或安装更新。'],['resumeAfterWake','唤醒后恢复先前运行的服务','仅恢复休眠前由 DSWhale 启动的服务。']].map(([id,title,help])=>`<div class="preference-row"><div><h3 id="pref-${id}-label">${title}</h3><p id="pref-${id}-help">${help}</p></div><label class="switch"><input id="pref-${id}" type="checkbox" aria-labelledby="pref-${id}-label" aria-describedby="pref-${id}-help"${value?.[id]===true?' checked':''}${disabled(off)}><span aria-hidden="true"></span></label></div>`).join('')}<div class="card-actions">${button(preferencesDirty?'保存偏好':'保存应用偏好','save-preferences',{off})}</div></section>`;
+  }
+  function diagnosticsCard(data) {
+    const files=Array.isArray(data.workspace.diagnosticFiles)?data.workspace.diagnosticFiles:[];
+    return `<section class="card reliability-card" aria-labelledby="diagnostics-title"><div class="reliability-heading"><div><h2 id="diagnostics-title">诊断报告</h2><p>导出本机检查结果、组件版本与操作事件，便于排查问题。</p></div>${button('导出诊断报告','diagnostics-export',{off:!desktop(data)||busy(data)})}</div><p class="reliability-note">不包含账号、配置值、聊天、记忆、令牌或原始日志。</p>${files.length?`<p class="diagnostic-files">${files.map(file=>`<span>${esc(file)}</span>`).join('')}</p>`:''}</section>`;
+  }
   function service(data) {
     if (data.state.running) return { label: '服务运行中', type: 'good', title: '一切就绪，保持连接。', description: '在这里管理你的对话服务、模型和记忆。' };
     if (data.state.phase === 'installing') return { label: '正在准备环境', type: 'working', title: '为下一次对话做好准备。', description: '正在准备独立运行环境，请保持网络连接。' };
@@ -61,7 +109,7 @@
     return button(text, 'install', { primary: true, iconName: 'arrow', off: !desktop(data) || busy(data) || data.state.running || data.state.platform.supported === false });
   }
   function serviceButton(data) {
-    return data.state.running ? button(data.pending === 'stop' ? '正在停止…' : '停止服务', 'stop', { iconName: 'stop', off: busy(data) || !desktop(data) }) : button(data.pending === 'start' ? '正在启动…' : '启动服务', 'start', { primary: true, iconName: 'play', off: busy(data) || !desktop(data) || !data.state.installed || data.state.platform.supported === false });
+    return data.state.running ? button(data.pending === 'stop' ? '正在停止…' : '停止服务', 'stop', { iconName: 'stop', off: busy(data) || !desktop(data) }) : button(data.pending === 'start' ? '正在启动…' : '启动服务', 'start', { primary: true, iconName: 'play', off: busy(data) || !desktop(data) || !data.state.installed || data.state.platform.supported === false || data.workspace.appUpdate?.recovery?.servicesMustRemainStopped===true });
   }
   function overview(data) {
     const s = service(data);
@@ -79,8 +127,9 @@
   }
   function progress(data) {
     if (!busy(data)) return '';
-    const value = Number.isFinite(data.state.progress) ? Math.max(0, Math.min(100, data.state.progress <= 1 ? data.state.progress * 100 : data.state.progress)) : null;
-    const plugin = extensionProgress(data);
+    const task=workspaceProgress(data);
+    const value = !task&&Number.isFinite(data.state.progress) ? Math.max(0, Math.min(100, data.state.progress <= 1 ? data.state.progress * 100 : data.state.progress)) : null;
+    const plugin = extensionProgress(data)||task;
     return `<section class="task-status" aria-label="当前任务"><div class="task-line"><span class="spinner" aria-hidden="true"></span><strong>${esc(plugin || data.state.step || (data.pending === 'inspect' ? '正在检查本机环境…' : '正在处理，请稍候…'))}</strong>${value !== null && !plugin ? `<span>${Math.round(value)}%</span>` : ''}</div>${value !== null && !plugin ? `<progress max="100" value="${value}" aria-label="准备进度">${value}%</progress>` : ''}</section>`;
   }
   function environment(data) {
@@ -89,18 +138,18 @@
       <section class="card environment-summary"><span class="large-tile">${icon('environment')}</span><div><h2>${data.state.installed ? '运行环境已准备' : '为 DSWhale 准备独立环境'}</h2><p>兼容工具会自动复用，其余依赖安装到应用数据目录。</p><span class="system-label">${esc(data.state.platform.label || '未知系统')}</span></div>${installButton(data)}</section>
       ${data.state.platform.supported === false ? `<div class="alert error" role="alert"><strong>当前系统暂不支持</strong><p>${esc(data.state.platform.detail || '请使用受支持的系统与处理器架构。')}</p></div>` : ''}
       ${data.state.running ? '<p class="inline-note">请先停止服务，再更新或修复环境。</p>' : ''}${progress(data)}
-      <div class="section-heading"><h2>环境组件</h2><span>${data.state.components.length ? `${data.state.components.length} 项` : '检查后显示'}</span></div><section class="card component-table"><table><thead><tr><th scope="col">组件</th><th scope="col">版本</th><th scope="col">状态</th></tr></thead><tbody>${data.state.components.length ? data.state.components.map(c => { const status = labels[c.status] || labels.unknown; return `<tr><td><strong>${esc(c.label)}</strong><span class="component-detail">${esc(c.detail)}</span></td><td class="version-text">${esc(c.version || '—')}</td><td>${badge(status[0], status[1])}</td></tr>`; }).join('') : '<tr><td colspan="3" class="empty-state">尚无检查结果。点击「重新检查」获取本机状态。</td></tr>'}</tbody></table></section><p class="footnote">${icon('shield')}环境准备不会启动对话服务。升级应用时，会保留你的配置、记忆和备份。</p>`;
+      <div class="section-heading"><h2>环境组件</h2><span>${data.state.components.length ? `${data.state.components.length} 项` : '检查后显示'}</span></div><section class="card component-table"><table><thead><tr><th scope="col">组件</th><th scope="col">版本</th><th scope="col">状态</th></tr></thead><tbody>${data.state.components.length ? data.state.components.map(c => { const status = labels[c.status] || labels.unknown; return `<tr><td><strong>${esc(c.label)}</strong><span class="component-detail">${esc(c.detail)}</span></td><td class="version-text">${esc(c.version || '—')}</td><td>${badge(status[0], status[1])}</td></tr>`; }).join('') : '<tr><td colspan="3" class="empty-state">尚无检查结果。点击「重新检查」获取本机状态。</td></tr>'}</tbody></table></section>${versionMatrix(data)}${healthCard(data)}<p class="footnote">${icon('shield')}环境准备不会启动对话服务。升级应用时，会保留你的配置、记忆和备份。</p>`;
   }
   function connect(data) {
     const value = draft || data.settings;
     if (!value) return `<section class="page-heading"><div><p class="eyebrow">对话的第一步</p><h1>连接设置</h1><p class="subtitle">设置主人账号与本机 OneBot 服务。</p></div></section><section class="card loading-card">${settingsLoading ? '<span class="spinner" aria-hidden="true"></span> 正在读取连接设置…' : `尚未读取连接设置。${button('重试', 'settings-get', { off: !desktop(data) || busy(data) })}`}</section>`;
     return `<section class="page-heading"><div><p class="eyebrow">让对话连接起来</p><h1>连接设置</h1><p class="subtitle">主人账号与 QQ 连接，在这里统一管理。</p></div>${badge(data.state.setup.ownerConfigured && data.state.setup.qqConfigured ? '已配置' : '等待配置', data.state.setup.ownerConfigured && data.state.setup.qqConfigured ? 'good' : '')}</section>
-      <form id="connection-form"><section class="card form-card"><div class="card-heading"><span class="tile-icon">${icon('connect')}</span><div><h2>账号与平台</h2><p>使用你已配置的 QQ / OneBot 服务。</p></div></div><div class="form-grid"><div class="field"><label for="ownerQQ">主人 QQ 号</label><input id="ownerQQ" name="ownerQQ" inputmode="numeric" autocomplete="off" placeholder="输入主人 QQ 号" value="${esc(value.ownerQQ)}"${disabled(!desktop(data) || busy(data))}><p class="field-help">用于识别主人的指令与管理权限。</p></div><div class="field"><label for="platformId">平台标识</label><input id="platformId" name="platformId" autocomplete="off" placeholder="例如 qq" value="${esc(value.platformId)}"${disabled(!desktop(data) || busy(data))}><p class="field-help">对应 AstrBot 中的 OneBot 平台。</p></div></div><div class="form-divider"></div><div class="form-grid"><div class="field"><label for="onebotPort">OneBot 反向 WebSocket 端口</label><input id="onebotPort" name="onebotPort" type="number" min="1" max="65535" step="1" required value="${esc(value.onebotPort)}"${disabled(!desktop(data) || busy(data))}><p class="field-help">应与 QQ 客户端中的反向连接端口一致。</p></div><div class="field"><label for="onebotToken">OneBot 访问令牌</label><div class="secret-input"><input id="onebotToken" name="onebotToken" type="${reveal ? 'text' : 'password'}" autocomplete="off" placeholder="未设置" value="${esc(value.onebotToken)}"${disabled(!desktop(data) || busy(data))}><button type="button" class="reveal-button" data-reveal aria-controls="onebotToken" aria-pressed="${reveal}">${reveal ? '隐藏' : '显示'}</button></div><p class="field-help">令牌只保存在本机，请与 QQ 端保持一致。</p></div></div></section>
+      ${napcatCard(data)}<form id="connection-form"><section class="card form-card"><div class="card-heading"><span class="tile-icon">${icon('connect')}</span><div><h2>账号与平台</h2><p>主人绑定与本机 OneBot 连接。</p></div></div><div class="form-grid"><div class="field"><label for="ownerQQ">主人 QQ 号</label><input id="ownerQQ" name="ownerQQ" inputmode="numeric" autocomplete="off" placeholder="输入主人 QQ 号" value="${esc(value.ownerQQ)}"${disabled(!desktop(data) || busy(data))}><p class="field-help">用于识别主人的指令与管理权限。</p></div><div class="field"><label for="platformId">平台标识</label><input id="platformId" name="platformId" autocomplete="off" placeholder="例如 qq" value="${esc(value.platformId)}"${disabled(!desktop(data) || busy(data))}><p class="field-help">对应 AstrBot 中的 OneBot 平台。</p></div></div><div class="form-divider"></div><div class="form-grid"><div class="field"><label for="onebotPort">OneBot 反向 WebSocket 端口</label><input id="onebotPort" name="onebotPort" type="number" min="1024" max="65535" step="1" required value="${esc(value.onebotPort)}"${disabled(!desktop(data) || busy(data))}><p class="field-help">与独立组件中的反向连接端口保持一致。</p></div><div class="field"><label for="dashboardPort">AstrBot 控制台端口</label><input id="dashboardPort" name="dashboardPort" type="number" min="1024" max="65535" step="1" required value="${esc(value.dashboardPort??6185)}"${disabled(!desktop(data)||busy(data))}><p class="field-help">默认 6185；与 OneBot 及其他本机服务区分。</p></div><div class="field field-wide"><label for="onebotToken">OneBot 访问令牌</label><div class="secret-input"><input id="onebotToken" name="onebotToken" type="${reveal ? 'text' : 'password'}" autocomplete="off" placeholder="未设置" value="${esc(value.onebotToken)}"${disabled(!desktop(data) || busy(data))}><button type="button" class="reveal-button" data-reveal aria-controls="onebotToken" aria-pressed="${reveal}">${reveal ? '隐藏' : '显示'}</button></div><p class="field-help">令牌只保存在本机，请与 QQ 端保持一致。</p></div></div></section>
       ${preference(data, value, 'proactiveEnabled', '主动互动', '允许已配置的主动互动功能。具体行为由现有插件设置决定。')}
       ${preference(data, value, 'signatureEnabled', 'QQ 个性签名', '仅绑定的主人可要求修改当前 QQ 的个性签名。')}
       ${preference(data, value, 'qzoneEnabled', 'QQ 空间文字动态', '仅绑定的主人可创建文字草稿；每条草稿须明确确认后发布。')}
       <div class="form-footer"><p>${dirty ? '有未保存的更改' : '保存后应用到本地配置'}</p><button class="button primary" type="submit"${disabled(!desktop(data) || busy(data))}>${data.pending === 'settings-save' ? '正在保存…' : '保存连接设置'}</button></div></form>
-      <section class="info-strip">${icon('shield')}<div><strong>连接已有的 QQ 环境</strong><p>需另行安装并启动 NapCat，再在 QQ 登录面板中完成登录。高级设置管理 AstrBot 连接。</p></div><div class="info-actions">${button('QQ 登录', 'open-panel', { payload: 'napcat', off: !data.state.running || !desktop(data) || busy(data) })}${button('高级设置', 'open-panel', { payload: 'qq', off: !data.state.running || !desktop(data) || busy(data) })}</div></section>${!data.state.running ? '<p class="footnote">启动服务后可打开高级设置。</p>' : ''}`;
+      <section class="info-strip">${icon('shield')}<div><strong>主人私聊与群聊分开配置</strong><p>DSWhale 的私人记忆、主动互动与主人管理用于绑定私聊，不会向群聊注入这些私人功能。群聊能力由 AstrBot 的现有配置管理。</p></div>${button('高级连接设置', 'open-panel', { payload: 'qq', off: !data.state.running || !desktop(data) || busy(data) })}</section>${!data.state.running ? '<p class="footnote">启动服务后可打开高级设置。</p>' : ''}`;
   }
   function extensionCard(data, id) {
     const value = data.extensions?.[id];
@@ -128,10 +177,15 @@
   }
   function bilibili(data) {
     const value = draft || data.settings;
-    return `<section class="page-heading"><div><p class="eyebrow">发现更多感兴趣的内容</p><h1>哔哩哔哩</h1><p class="subtitle">管理关注、动态与视频相关能力。</p></div>${badge(data.state.setup.biliEnabled ? '已启用' : '未启用', data.state.setup.biliEnabled ? 'good' : '')}</section><section class="card bili-card"><span class="feature-icon pink">${icon('bilibili')}</span><h2>把喜欢的内容，带进对话。</h2><p>在完整设置面板中管理登录状态、关注与订阅规则。<br>沿用现有配置，在当前窗口继续操作。</p>${button('打开哔哩哔哩设置', 'open-panel', { primary: true, payload: 'bilibili', iconName: 'arrow', off: !desktop(data) || !data.state.running || busy(data) })}</section><section class="card preference-card"><div><h3>启用哔哩哔哩功能</h3><p>保存后生效。登录与详细订阅请在完整设置中管理。</p></div><label class="switch"><input id="biliEnabled" type="checkbox"${(value?.biliEnabled ?? data.state.setup.biliEnabled) ? ' checked' : ''}${disabled(!desktop(data) || !value || busy(data))}><span aria-hidden="true"></span><span class="sr-only">启用哔哩哔哩功能</span></label></section>${dirty ? `<div class="form-footer"><p>有未保存的更改</p>${button('保存设置', 'save-settings', { primary: true, off: !desktop(data) || busy(data) })}</div>` : ''}${!data.state.running ? '<p class="footnote">启动服务后，可打开完整哔哩哔哩设置。</p>' : ''}`;
+    return `<section class="page-heading"><div><p class="eyebrow">发现更多感兴趣的内容</p><h1>哔哩哔哩</h1><p class="subtitle">管理关注、动态与视频相关能力。</p></div>${badge(data.state.setup.biliEnabled ? '已启用' : '未启用', data.state.setup.biliEnabled ? 'good' : '')}</section><section class="card bili-card"><span class="feature-icon pink">${icon('bilibili')}</span><h2>把喜欢的内容，带进对话。</h2><p>在完整设置面板中管理登录状态、关注与订阅规则。<br>沿用现有配置，在当前窗口继续操作。</p>${button('打开哔哩哔哩设置', 'open-panel', { primary: true, payload: 'bilibili', iconName: 'arrow', off: !desktop(data) || !data.state.running || busy(data) })}</section><section class="card preference-card"><div><h3>启用哔哩哔哩功能</h3><p>保存后生效。登录与详细订阅请在完整设置中管理。</p></div><label class="switch"><input id="biliEnabled" type="checkbox"${(value?.biliEnabled ?? data.state.setup.biliEnabled) ? ' checked' : ''}${disabled(!desktop(data) || !value || busy(data))}><span aria-hidden="true"></span><span class="sr-only">启用哔哩哔哩功能</span></label></section>${dirty ? `<div class="form-footer"><p>有未保存的更改</p>${button('保存设置', 'save-settings', { primary: true, off: !desktop(data) || busy(data) })}</div>` : ''}${!data.state.running ? '<p class="footnote">启动服务后，可打开完整哔哩哔哩设置。</p>' : ''}${healthCard(data,true)}`;
   }
   function settings(data) {
-    return `<section class="page-heading"><div><p class="eyebrow">你的数据，由你掌握</p><h1>应用设置</h1><p class="subtitle">管理本地数据、备份与应用信息。</p></div></section><section class="card settings-list"><div class="settings-row"><span class="tile-icon">${icon('shield')}</span><div><h3>控制台首次登录</h3><p>查看首次登录口令，并可在系统对话框中复制。</p></div>${button('首次登录口令', 'initial-login', { off: !desktop(data) || !data.state.installed || busy(data) })}</div><div class="settings-row"><span class="tile-icon">${icon('folder')}</span><div><h3>数据文件夹</h3><p>查看本地配置、记忆、独立环境与备份。</p></div>${button('打开文件夹', 'open-data', { off: !desktop(data) || busy(data) })}</div><div class="settings-row"><span class="tile-icon">${icon('shield')}</span><div><h3>创建数据备份</h3><p>将当前数据保存为备份，便于迁移与恢复。</p></div>${button(data.pending === 'backup' ? '正在备份…' : '立即备份', 'backup', { off: !desktop(data) || busy(data) })}</div><div class="settings-row"><span class="tile-icon">${icon('folder')}</span><div><h3>导入数据备份</h3><p>导入自己创建的 DSWhale ZIP 备份，保留原配置和记忆；导入后需检查连接再启动。</p></div>${button(data.pending === 'restore' ? '正在导入…' : '导入备份', 'restore', { off: !desktop(data) || !data.state.installed || busy(data) })}</div></section><div class="section-heading"><h2>关于 DSWhale</h2></div><section class="card about-card"><img src="whale.svg" alt="DSWhale 鲸鱼标志"><div><h2>DSWhale</h2><p>让陪伴，在每一次对话中发生。</p><span class="version-text">${data.state.version ? `版本 ${esc(data.state.version)}` : '桌面应用'}<span class="row-divider">·</span>${esc(data.state.platform.label || '本地工作空间')}</span></div><span class="local-label">${icon('shield')}本地工作空间</span></section><p class="footnote">升级应用时，数据仍保留在应用数据目录。恢复或迁移前，建议先创建备份。</p>`;
+    const off=!desktop(data)||busy(data);
+    return `<section class="page-heading"><div><p class="eyebrow">你的数据，由你掌握</p><h1>应用设置</h1><p class="subtitle">管理应用更新、备份与日常运行。</p></div>${button('刷新本机状态','workspace-status',{off})}</section>
+      ${!data.workspaceLoaded&&!workspaceLoading?`<p class="inline-note">本机状态尚未读取。${button('重试读取','workspace-status',{off})}</p>`:''}
+      ${updateCard(data)}${versionMatrix(data)}${networkCard(data)}${appPreferences(data)}${backupCard(data)}
+      <div class="section-heading"><h2>本机数据</h2></div><section class="card settings-list"><div class="settings-row"><span class="tile-icon">${icon('shield')}</span><div><h3>控制台首次登录</h3><p>在系统对话框中查看或复制口令，口令不会进入此页面。</p></div>${button('首次登录口令','initial-login',{off:off||!data.state.installed})}</div><div class="settings-row"><span class="tile-icon">${icon('folder')}</span><div><h3>数据文件夹</h3><p>查看本地配置、记忆、独立环境与备份。</p></div>${button('打开文件夹','open-data',{off})}</div><div class="settings-row"><span class="tile-icon">${icon('shield')}</span><div><h3>创建数据备份</h3><p>将私人数据另存为 ZIP 备份，便于迁移与恢复。</p></div>${button(data.pending==='backup'?'正在备份…':'立即备份','backup',{off:off||!data.state.installed})}</div><div class="settings-row"><span class="tile-icon">${icon('folder')}</span><div><h3>导入数据备份</h3><p>导入自己的 DSWhale ZIP 备份；操作前保留当前数据，完成后检查环境与连接。</p></div>${button(data.pending==='restore'?'正在导入…':'导入备份','restore',{off:off||!data.state.installed})}</div></section>
+      ${diagnosticsCard(data)}<div class="section-heading"><h2>关于 DSWhale</h2></div><section class="card about-card"><img src="whale.svg" alt="DSWhale 鲸鱼标志"><div><h2>DSWhale</h2><p>让陪伴，在每一次对话中发生。</p><span class="version-text">${data.state.version?`版本 ${esc(data.state.version)}`:'桌面应用'}<span class="row-divider">·</span>${esc(data.state.platform.label||'本地工作空间')}</span></div><span class="local-label">${icon('shield')}本地工作空间</span></section>`;
   }
   function render(data) {
     const focused = document.activeElement?.id;
@@ -147,10 +201,10 @@
     const nav = Object.entries(routeNames).map(([id, label]) => `<button type="button" class="nav-item${route === id ? ' active' : ''}" data-route="${id}"${route === id ? ' aria-current="page"' : ''}>${icon(id)}<span>${label}</span>${id === 'environment' && !data.state.installed ? '<span class="nav-dot" aria-label="待准备"></span>' : ''}</button>`).join('');
     const preview = data.mode === 'preview' ? '<div class="mode-banner">界面预览 · 示例数据 · 所有设备操作已禁用</div>' : '';
     const error = data.error || data.state.error;
-    const feedback = error ? `<div class="alert error" role="alert"><span class="alert-symbol">!</span><div><strong>操作未完成</strong><p>${esc(error)}</p></div>${data.retry ? button('重试', 'retry', { off: busy(data) || !desktop(data) }) : ''}</div>` : data.notice ? `<div class="alert success" role="status">${icon('check')}<span>${esc(data.notice)}</span></div>` : '';
+    const feedback = error ? `<div class="alert error" role="alert"><span class="alert-symbol">!</span><div><strong>操作未完成</strong><p>${esc(error)}</p></div>${data.retry ? button('重试', 'retry', { off: busy(data) || !desktop(data) }) : ''}</div>` : localMessage||data.notice ? `<div class="alert success" role="status">${icon('check')}<span>${esc(localMessage||data.notice)}</span></div>` : '';
     const views = { overview, environment, connect, intelligence, bilibili, settings };
     const content = data.mode === 'unavailable' ? `<section class="desktop-notice card"><img src="whale.svg" alt="DSWhale"><h1>请在桌面应用中打开</h1><p>运行环境、对话服务和本地设置需要 DSWhale 桌面应用。</p><p class="footnote">当前页面未连接桌面服务，无法读取或修改本机配置。</p></section>` : views[route](data);
-    root.innerHTML = `<aside class="sidebar" aria-label="主导航"><div class="window-space"></div><div class="brand"><div class="brand-mark"><img src="whale.svg" alt=""></div><div><strong>DSWhale</strong><span>你的对话伙伴</span></div></div><div class="nav-label">工作空间</div><nav>${nav}</nav><div class="sidebar-bottom"><div class="sidebar-service"><span class="status-dot ${data.state.running ? 'good' : ''}"></span><div><strong>${esc(status.label)}</strong><span>${data.state.running ? '本地服务正在运行' : '一切从一段对话开始'}</span></div></div><div class="sidebar-version"><span>DSWhale Desktop</span><span>${esc(data.state.version || '')}</span></div></div></aside><div class="workspace"><header class="topbar"><div class="breadcrumb"><span>工作空间</span><span class="breadcrumb-slash">/</span><strong>${esc(panel ? panelNames[panel] || '控制台' : routeNames[route])}</strong></div><div class="topbar-right">${data.mode === 'preview' ? '<span class="preview-pill">只读预览</span>' : ''}<span class="topbar-status"><span class="status-dot ${data.state.running ? 'good' : ''}"></span>${esc(data.state.running ? '服务运行中' : '本地工作空间')}</span></div></header>${panel ? `<main class="embedded" id="main-content" tabindex="-1"><div class="panel-toolbar"><button type="button" data-action="home" class="panel-back">${icon('back')}返回${esc(routeNames[route])}</button><div class="panel-toolbar-actions"><span>${esc(panelNames[panel] || '控制台')} · 当前窗口</span>${button('首次登录口令', 'initial-login', { off: !desktop(data) || !data.state.installed || busy(data) })}</div></div><div class="embedded-placeholder"><span class="spinner" aria-hidden="true"></span><p>正在显示控制台…</p></div>${feedback ? `<div class="panel-feedback">${feedback}</div>` : ''}</main>` : `<main class="page" id="main-content" tabindex="-1">${preview}${feedback}${content}${route !== 'environment' ? progress(data) : ''}<footer class="page-footer"><span class="footer-line"></span><span>DSWhale · 让对话更有温度</span><span class="footer-line"></span></footer></main>`}</div>`;
+    root.innerHTML = `<aside class="sidebar" aria-label="主导航"><div class="window-space"></div><div class="brand"><div class="brand-mark"><img src="whale.svg" alt=""></div><div><strong>DSWhale</strong><span>你的对话伙伴</span></div></div><div class="nav-label">工作空间</div><nav>${nav}</nav><div class="sidebar-bottom"><div class="sidebar-service"><span class="status-dot ${data.state.running ? 'good' : ''}"></span><div><strong>${esc(status.label)}</strong><span>${data.state.running ? '本地服务正在运行' : '一切从一段对话开始'}</span></div></div><div class="sidebar-version"><span>DSWhale Desktop</span><span>${esc(data.state.version || '')}</span></div></div></aside><div class="workspace"><header class="topbar"><div class="breadcrumb"><span>工作空间</span><span class="breadcrumb-slash">/</span><strong>${esc(panel ? panelNames[panel] || '控制台' : routeNames[route])}</strong></div><div class="topbar-right">${data.mode === 'preview' ? '<span class="preview-pill">只读预览</span>' : ''}<span class="topbar-status"><span class="status-dot ${data.state.running ? 'good' : ''}"></span>${esc(data.state.running ? '服务运行中' : '本地工作空间')}</span></div></header>${panel ? `<main class="embedded" id="main-content" tabindex="-1"><div class="panel-toolbar"><button type="button" data-action="home" class="panel-back">${icon('back')}返回${esc(routeNames[route])}</button><div class="panel-toolbar-actions"><span class="panel-context">${esc(panelNames[panel] || '控制台')}${['astrbot','models','memory','qq'].includes(panel)?'<small>内核由 DSWhale 统一管理，更新请到应用设置</small>':''}</span>${button('首次登录口令', 'initial-login', { off: !desktop(data) || !data.state.installed || busy(data) })}</div></div><div class="embedded-placeholder"><span class="spinner" aria-hidden="true"></span><p>正在显示控制台…</p></div>${feedback ? `<div class="panel-feedback">${feedback}</div>` : ''}</main>` : `<main class="page" id="main-content" tabindex="-1">${preview}${feedback}${content}${route !== 'environment' ? progress(data) : ''}<footer class="page-footer"><span class="footer-line"></span><span>DSWhale · 让对话更有温度</span><span class="footer-line"></span></footer></main>`}</div>`;
     const page = document.querySelector('.page');
     if (page) page.scrollTop = scroll;
     if (focused) { const next = document.getElementById(focused); if (next) { next.focus({ preventScroll: true }); if (selection && typeof next.setSelectionRange === 'function' && next.type !== 'number') { try { next.setSelectionRange(...selection); } catch {} } } }
@@ -165,14 +219,15 @@
       }
       pendingFocus = null;
     }
-    const announcement = error || extensionMessage?.text || data.notice || extensionProgress(data) || (busy(data) && data.state.step) || status.label;
+    const announcement = error || localMessage || extensionMessage?.text || data.notice || extensionProgress(data) || workspaceProgress(data) || (busy(data) && data.state.step) || status.label;
     if (announcement !== lastAnnouncement) { document.getElementById('announcer').textContent = announcement; lastAnnouncement = announcement; }
   }
   async function run(action, payload) {
     extensionMessage = null;
+    localMessage='';
     try {
       const result = await controller.act(action, payload);
-      if (action === 'restore' && !result?.canceled) { draft = null; dirty = false; reveal = false; render(controller.get()); }
+      if (['restore','backup-restore'].includes(action) && !result?.canceled) { draft = null; dirty = false; reveal = false; render(controller.get()); }
       return result;
     } catch { /* Visible error and retry are rendered by the controller. */ }
   }
@@ -193,6 +248,11 @@
     extensionsLoading = false;
     render(controller.get());
   }
+  async function ensureWorkspace(force=false) {
+    const data=controller.get();
+    if(!['settings','connect','environment','bilibili'].includes(route)||workspaceLoading||data.mode!=='desktop'||data.pending||data.workspaceLoaded&&!force)return;
+    workspaceLoading=true;render(data);await run('workspace-status');workspaceLoading=false;render(controller.get());
+  }
   async function navigate(target) {
     if (!routeNames[target]) return;
     if (controller.get().state.panel) {
@@ -203,13 +263,20 @@
     reveal = false;
     extensionReview = '';
     extensionMessage = null;
+    backupReview=null;rollbackReview=false;restoreUpdateData=false;localMessage='';
     render(controller.get());
     document.getElementById('main-content')?.focus({ preventScroll: true });
     const page = document.querySelector('.page'); if (page) page.scrollTop = 0;
     await ensureSettings();
     await ensureExtensions();
+    await ensureWorkspace(true);
   }
   function readField(target) {
+    if(target.id==='app-update-channel'){updateChannel=target.value;return;}
+    if(target.id==='rollback-restore-data'){restoreUpdateData=target.checked===true;return;}
+
+    if(target.id.startsWith('pref-')){if(!preferencesDraft)preferencesDraft={...controller.get().workspace.preferences};preferencesDraft[target.id.slice(5)]=target.checked===true;preferencesDirty=true;return;}
+    if(!['ownerQQ','platformId','onebotPort','dashboardPort','onebotToken','biliEnabled','proactiveEnabled','signatureEnabled','qzoneEnabled'].includes(target.id))return;
     if (!draft) draft = { ...(controller.get().settings || {}) };
     draft[target.id] = target.type === 'checkbox' ? target.checked : target.value;
     dirty = true;
@@ -225,7 +292,26 @@
     const action = target.dataset.action;
     if (!action) return;
     if (action === 'route-environment') return navigate('environment');
+    if(action==='route-connect')return navigate('connect');
     if (action === 'save-settings') return saveSettings();
+    if(action==='save-preferences'){await run('preferences-save',preferencesDraft||controller.get().workspace.preferences);if(!controller.get().error){preferencesDirty=false;preferencesDraft=null;render(controller.get());}return;}
+    if(action==='app-update-check')return run(action,{channel:updateChannel||controller.get().workspace.appUpdate?.channel||'alpha'});
+    if(action==='backup-review') {
+      if(!['backup-restore','backup-delete'].includes(target.dataset.operation)||!controller.get().workspace.backups?.some(item=>item.id===target.dataset.item))return;
+      const index=controller.get().workspace.backups.findIndex(item=>item.id===target.dataset.item);
+      backupReview={id:target.dataset.item,operation:target.dataset.operation,focusId:`backup-restore-${index}`};localMessage='';render(controller.get());document.getElementById('backup-confirm')?.focus({preventScroll:true});return;
+    }
+    if(action==='backup-cancel'){const focusId=backupReview?.focusId;backupReview=null;localMessage='已取消，备份与当前数据未更改。';render(controller.get());document.getElementById(focusId)?.focus({preventScroll:true});return;}
+    if(action==='backup-confirm'){if(!backupReview)return;const review=backupReview;backupReview=null;await run(review.operation,{id:review.id});return;}
+    if(action==='app-rollback-review'){if(!controller.get().workspace.appUpdate?.canRollback)return;rollbackReview=true;restoreUpdateData=false;localMessage='';render(controller.get());document.getElementById('app-rollback-confirm')?.focus({preventScroll:true});return;}
+    if(action==='app-rollback-cancel'){rollbackReview=false;restoreUpdateData=false;localMessage='已取消回退，应用与数据未更改。';render(controller.get());document.getElementById('app-rollback-review')?.focus({preventScroll:true});return;}
+    if(action==='app-rollback-confirm') {
+      if(!rollbackReview)return;
+      const state=controller.get().workspace.appUpdate;
+      const required=typeof state?.recovery?.rollbackRequiresDataRestore==='boolean'?state.recovery.rollbackRequiresDataRestore:state?.impact?.dataMigration===true||state?.impact?.rollbackCompatible===false;
+      if(required&&!restoreUpdateData)return;
+      const restoreData=restoreUpdateData;rollbackReview=false;restoreUpdateData=false;await run('app-update-rollback',{restoreData,confirmDataRestore:restoreData});return;
+    }
     if (action === 'retry') { const retry = controller.get().retry; if (retry) return run(retry.action, retry.payload); return; }
     if (action === 'settings-get') { await run(action); if (!dirty) draft = { ...controller.get().settings }; render(controller.get()); return; }
     if (action === 'extension-review') {
@@ -259,10 +345,10 @@
     await run(action, action === 'open-panel' ? { panel: target.dataset.panel } : undefined);
   });
   root.addEventListener('input', event => {
-    if (event.target.matches('input') && event.target.type !== 'checkbox') readField(event.target);
+    if (event.target.matches('input,textarea') && event.target.type !== 'checkbox') readField(event.target);
   });
   root.addEventListener('change', event => {
-    if (!event.target.matches('input')) return;
+    if (!event.target.matches('input,select,textarea')) return;
     readField(event.target);
     render(controller.get());
   });
@@ -270,5 +356,5 @@
   controller.subscribe(data => { if (data.settings && !dirty) draft = { ...data.settings }; render(data); });
   window.addEventListener('beforeunload', () => controller.dispose());
   render(controller.get());
-  controller.init().catch(() => {}).then(async () => { await ensureSettings(); await ensureExtensions(); });
+  controller.init().catch(() => {}).then(async () => { await ensureSettings(); await ensureExtensions(); await ensureWorkspace(); });
 })();

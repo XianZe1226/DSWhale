@@ -57,7 +57,7 @@ test('actions pass only contracted panel identifiers and preserve error for retr
 test('settings-save serializes supported values and excludes hasModels', async () => {
   const { settingsPayload } = load();
   assert.deepEqual(settingsPayload({ ownerQQ: ' 123456 ', platformId: ' qq ', onebotPort: '6199', onebotToken: 'local secret', biliEnabled: true, proactiveEnabled: false, hasModels: true }), {
-    ownerQQ: '123456', platformId: 'qq', onebotPort: 6199, onebotToken: 'local secret', biliEnabled: true, proactiveEnabled: false, signatureEnabled: false, qzoneEnabled: false,
+    ownerQQ: '123456', platformId: 'qq', onebotPort: 6199, dashboardPort: 6185, onebotToken: 'local secret', biliEnabled: true, proactiveEnabled: false, signatureEnabled: false, qzoneEnabled: false,
   });
   assert.throws(() => settingsPayload({ onebotPort: '0' }), /端口/);
   assert.throws(() => settingsPayload({ onebotPort: '6199.5' }), /端口/);
@@ -90,7 +90,7 @@ test('invalid settings remain visible and no secret is retained for retry', asyn
 test('duplicate actions are rejected until the actual bridge operation settles', async () => {
   const { createController } = load();
   let finish;
-  const c = createController({ bridge: { invoke: () => new Promise(resolve => { finish = resolve; }), onState: () => () => {} } });
+  const c = createController({ bridge: { invoke: action => action==='workspace-status'?Promise.resolve({}):new Promise(resolve => { finish = resolve; }), onState: () => () => {} } });
   const task = c.act('install');
   assert.equal(c.get().pending, 'install');
   await assert.rejects(c.act('start'), /仍在进行/);
@@ -156,7 +156,7 @@ test('social settings default off and survive saving unrelated Bilibili settings
   assert.equal(c.get().settings.signatureEnabled, true);
   assert.equal(c.get().settings.qzoneEnabled, false);
   await c.act('settings-save', { ...c.get().settings, biliEnabled: true, qzoneEnabled: true });
-  assert.deepEqual(saved, { ownerQQ: '123456', platformId: 'qq', onebotPort: 6199, onebotToken: 'token', biliEnabled: true, proactiveEnabled: true, signatureEnabled: true, qzoneEnabled: true });
+  assert.deepEqual(saved, { ownerQQ: '123456', platformId: 'qq', onebotPort: 6199, dashboardPort: 6185, onebotToken: 'token', biliEnabled: true, proactiveEnabled: true, signatureEnabled: true, qzoneEnabled: true });
 });
 
 test('opening the plugin store reads local status without checking or installing', async () => {
@@ -168,7 +168,7 @@ test('opening the plugin store reads local status without checking or installing
   }});
   await c.init();
   await c.act('extensions-status');
-  assert.deepEqual(calls, [['inspect', undefined], ['extensions-status', undefined]]);
+  assert.deepEqual(calls, [['inspect', undefined], ['workspace-status', undefined], ['extensions-status', undefined]]);
   assert.equal(c.get().extensions.memory.version, '1.0.0');
   assert.equal(c.get().extensionChecks.memory, false);
 });
@@ -264,7 +264,9 @@ test('canceled or malformed plugin responses never report a successful upgrade',
   assert.equal(c.get().extensions.memory.version, '1.0.0');
 });
 
-function renderApp({ screen = 'intelligence', invoke } = {}) {
+const workspaceStatus = (patch={}) => ({health:{checks:[],summary:{requiredFailures:0,warnings:0}},backups:[],appUpdate:{currentVersion:'0.3.0a3',targetVersion:null,channel:'alpha',phase:'idle',canDownload:false,canInstall:false,canRollback:false,actions:['check'],impact:null,recovery:{interrupted:false}},network:{mode:'system',proxyUrl:'',noProxy:'',pypiIndex:'',npmRegistry:'',assetMirrors:[]},napcat:{supported:false,configured:false,needsLogin:true,connectionConfigured:false,running:false,code:'EXTERNAL_REQUIRED',nextStep:'连接外部 OneBot 服务',guideURL:'https://napneko.github.io/'},preferences:{tray:false,startAtLogin:false,resumeAfterWake:false},diagnosticFiles:['health.json','events.json','versions.json','README.txt'],...patch});
+
+function renderApp({ screen = 'intelligence', invoke, workspace=workspaceStatus() } = {}) {
   const handlers = {};
   const page = { scrollTop: 0, focus() {} };
   const announcer = { textContent: '' };
@@ -279,7 +281,7 @@ function renderApp({ screen = 'intelligence', invoke } = {}) {
       document.activeElement = body;
       buttons = [...value.matchAll(/<button\b([^>]*)>/g)].map(([, attrs]) => {
         const attr = key => attrs.match(new RegExp(`(?:^|\\s)${key}="([^"]*)"`))?.[1];
-        return { id: attr('id'), disabled: /\sdisabled(?:\s|$)/.test(attrs), dataset: { action: attr('data-action'), panel: attr('data-panel'), route: attr('data-route'), extension: attr('data-extension') }, focus() { if (!this.disabled) document.activeElement = this; } };
+        return { id: attr('id'), disabled: /\sdisabled(?:\s|$)/.test(attrs), dataset: { action: attr('data-action'), panel: attr('data-panel'), route: attr('data-route'), extension: attr('data-extension'), item:attr('data-item') }, focus() { if (!this.disabled) document.activeElement = this; } };
       });
     },
     addEventListener(name, callback) { handlers[name] = callback; },
@@ -287,7 +289,7 @@ function renderApp({ screen = 'intelligence', invoke } = {}) {
   };
   document = { body, activeElement: body, getElementById(id) { return id === 'app' ? root : id === 'announcer' ? announcer : id === 'main-content' ? page : buttons.find(button => button.id === id); }, querySelector() { return page; } };
   const calls = [];
-  const bridge = { invoke: async (action, payload) => { calls.push([action, payload && JSON.parse(JSON.stringify(payload))]); return invoke(action, payload); }, onState: () => () => {} };
+  const bridge = { invoke: async (action, payload) => { calls.push([action, payload && JSON.parse(JSON.stringify(payload))]); return action==='workspace-status'?workspace:invoke(action, payload); }, onState: () => () => {} };
   vm.runInNewContext(fs.readFileSync(path.join(__dirname, '../ui/app.js'), 'utf8'), {
     window: { DSWhaleUI: load(), dswhale: bridge, addEventListener() {} }, document,
     location: { search: `?screen=${screen}` }, URLSearchParams,
@@ -296,9 +298,14 @@ function renderApp({ screen = 'intelligence', invoke } = {}) {
     calls, html: () => root.innerHTML, announcement: () => announcer.textContent,
     focused: () => document.activeElement?.id,
     focus: (action, id) => buttons.find(button => button.dataset.action === action && button.dataset.extension === id)?.focus(),
+    focusItem: (action,item) => buttons.find(button=>button.dataset.action===action&&button.dataset.item===item)?.focus(),
     settle: () => new Promise(resolve => setImmediate(resolve)),
     click: (action, id, operation) => handlers.click({ target: { closest() { return this; }, dataset: { action, extension: id, operation }, hasAttribute() { return false; } } }),
+    clickItem: (action, item, operation) => handlers.click({ target: { closest() { return this; }, dataset: { action, item, operation }, hasAttribute() { return false; } } }),
+    navigate: route => handlers.click({target:{closest(){return this;},dataset:{route},hasAttribute(){return false;}}}),
     change: (id, checked) => handlers.change({ target: { id, type: 'checkbox', checked, matches() { return true; } } }),
+    input: (id, value) => handlers.input({target:{id,type:'text',value,matches(){return true;}}}),
+    select: (id, value) => handlers.change({target:{id,type:'select-one',value,matches(){return true;}}}),
   };
 }
 
@@ -307,7 +314,7 @@ test('plugin cards read local status, escape version text and wait for an explic
   status.memory.version = '<img src=x>';
   const app = renderApp({ invoke: async action => action === 'inspect' ? { installed: true, running: true } : status });
   await app.settle();
-  assert.deepEqual(app.calls, [['inspect', undefined], ['extensions-status', undefined]]);
+  assert.deepEqual(app.calls, [['inspect', undefined], ['workspace-status', undefined], ['extensions-status', undefined]]);
   assert.match(app.html(), /LivingMemory/);
   assert.match(app.html(), /表情包管理器/);
   assert.match(app.html(), /&lt;img src=x&gt;/);
@@ -350,7 +357,7 @@ test('connection controls save owner-only social choices alongside existing conn
   app.change('signatureEnabled', true);
   app.change('qzoneEnabled', true);
   await app.click('save-settings');
-  assert.deepEqual(app.calls.at(-1), ['settings-save', { ...initial, signatureEnabled: true, qzoneEnabled: true }]);
+  assert.deepEqual(app.calls.at(-1), ['settings-save', { ...initial, dashboardPort:6185, signatureEnabled: true, qzoneEnabled: true }]);
 });
 
 test('a failed repeated check disables an old update candidate until checking succeeds', async () => {
@@ -422,4 +429,209 @@ test('a failed local status read offers retry without leaving the cards in loadi
   await app.click('extensions-status');
   assert.match(app.html(), /1\.0\.0/);
   assert.doesNotMatch(app.html(), /本机状态读取失败/);
+});
+
+test('initial workspace status is offline even before the first environment installation', async()=>{
+  const calls=[];
+  const c=load().createController({bridge:{invoke:async(action,payload)=>{calls.push([action,payload]);return action==='inspect'?{installed:false}:workspaceStatus();},onState:()=>()=>{}}});
+  await c.init();
+  assert.deepEqual(calls,[['inspect',undefined],['workspace-status',undefined]]);
+  assert.equal(c.get().workspace.network,undefined);
+  assert.equal(c.get().workspace.preferences.startAtLogin,false);
+  assert.equal(c.get().state.installed,false);
+});
+
+test('workspace action patches preserve other cards and never enter environment state', async()=>{
+  const c=load().createController({bridge:{invoke:async action=>action==='workspace-status'?workspaceStatus():{health:{checks:[{id:'bili',name:'视频服务',ok:false}],summary:{requiredFailures:1,warnings:0}},privateRaw:'SECRET'},onState:()=>()=>{}}});
+  await c.act('workspace-status');await c.act('health-check');
+  assert.equal(c.get().workspace.health.checks[0].ok,false);
+  assert.equal(c.get().workspace.network,undefined);
+  assert.equal(c.get().state.health,undefined);
+  assert.equal(c.get().workspace.privateRaw,undefined);
+});
+
+test('connection ports include dashboard and reject privileged or colliding local ports',()=>{
+  const {settingsPayload}=load();
+  assert.equal(settingsPayload({onebotPort:6199}).dashboardPort,6185);
+  assert.equal(settingsPayload({onebotPort:6200,dashboardPort:'6186'}).dashboardPort,6186);
+  assert.throws(()=>settingsPayload({onebotPort:80,dashboardPort:6185}),/端口/);
+  assert.throws(()=>settingsPayload({onebotPort:6199,dashboardPort:6199}),/端口/);
+});
+
+test('application updates enforce manager capabilities and strip caller installer URLs',async()=>{
+  const calls=[];
+  const appUpdate={...workspaceStatus().appUpdate,targetVersion:'0.3.0a4',canDownload:true};
+  const c=load().createController({bridge:{invoke:async(action,payload)=>{calls.push([action,payload]);return action==='workspace-status'?workspaceStatus({appUpdate}):action==='inspect'?{installed:true}:{appUpdate:{...appUpdate,phase:'downloaded',canInstall:true}};},onState:()=>()=>{}}});
+  await assert.rejects(c.act('app-update-download'),/检查/);
+  await c.init();
+  await c.act('app-update-download',{url:'https://evil.invalid'});
+  assert.deepEqual(calls.at(-1),['app-update-download',undefined]);
+  await c.act('app-update-install',{file:'/bad'});
+  assert.deepEqual(calls.at(-1),['app-update-install',undefined]);
+  assert.equal(c.get().state.running,false);
+  assert.doesNotMatch(c.get().notice,/更新成功|已安装/);
+  await assert.rejects(c.act('app-update-check',{channel:'nightly'}),/通道/);
+});
+
+test('manual network settings are not exposed by the desktop controller',async()=>{const c=load().createController({bridge:{invoke:async()=>{throw Error('must not invoke');},onState:()=>()=>{}}});await assert.rejects(c.act('network-save',{proxyUrl:'http://127.0.0.1:7890'}));});
+
+test('automatic backup actions accept only a listed local ID and no caller path',async()=>{
+  const calls=[];
+  const c=load().createController({bridge:{invoke:async(action,payload)=>{calls.push([action,payload]);return action==='workspace-status'?workspaceStatus({backups:[{id:'safe.zip',created:'2026-11-01',size:2048,source:'app-update'}]}):{backups:[]};},onState:()=>()=>{}}});
+  await c.act('workspace-status');
+  await assert.rejects(c.act('backup-delete',{id:'../private.zip'}),/备份/);
+  await c.act('backup-delete',{id:'safe.zip',path:'/private'});
+  assert.deepEqual(calls.at(-1),['backup-delete',{id:'safe.zip'}]);
+  assert.deepEqual(c.get().workspace.backups,[]);
+});
+
+test('settings show networking before install without checking updates or enabling startup',async()=>{
+  const app=renderApp({screen:'settings',invoke:async action=>action==='inspect'?{installed:false}:{} });
+  await app.settle();
+  assert.doesNotMatch(app.html(),/id="network-mode"|network-proxyUrl|save-network/);
+  assert.match(app.html(),/Clash/);
+  assert.match(app.html(),/id="pref-startAtLogin"/);
+  assert.doesNotMatch(app.html(),/id="pref-startAtLogin"[^>]* checked/);
+  assert.match(app.html(),/更新清单.*签名|签名.*更新清单/);
+  assert.match(app.html(),/系统签名|系统公证/);
+  assert.equal(app.calls.some(([a])=>a.startsWith('app-update-')),false);
+  assert.deepEqual(app.calls,[['inspect',undefined],['workspace-status',undefined]]);
+});
+
+test('backup restore and delete require inline review and cancellation never invokes a mutation',async()=>{
+  const backup={id:'backup-safe.zip',created:'2026-11-01T00:00:00Z',size:2048,source:'app-update'};
+  const app=renderApp({screen:'settings',workspace:workspaceStatus({backups:[backup]}),invoke:async action=>action==='inspect'?{installed:true,running:true}:{backups:[backup],health:{checks:[],summary:{requiredFailures:0,warnings:0}}}});
+  await app.settle();
+  await app.clickItem('backup-review','backup-safe.zip','backup-restore');
+  assert.match(app.html(),/确认恢复/);
+  await app.click('backup-cancel');
+  assert.equal(app.calls.some(([a])=>a==='backup-restore'),false);
+  await app.clickItem('backup-review','backup-safe.zip','backup-delete');
+  assert.match(app.html(),/确认删除/);
+  await app.click('backup-confirm');
+  assert.deepEqual(app.calls.at(-1),['backup-delete',{id:'backup-safe.zip'}]);
+});
+
+test('app rollback preserves new data unless an explicit restore checkbox and confirm are used',async()=>{
+  const appUpdate={...workspaceStatus().appUpdate,targetVersion:'0.3.0a4',previousVersion:'0.3.0a3',canRollback:true,impact:{runtime:true,dataMigration:false,configuration:false,rollbackCompatible:true}};
+  const app=renderApp({screen:'settings',workspace:workspaceStatus({appUpdate}),invoke:async action=>action==='inspect'?{installed:true,running:false}:{appUpdate}});
+  await app.settle();
+  await app.click('app-rollback-review');
+  assert.match(app.html(),/保留.*当前数据|当前数据.*保留/);
+  await app.click('app-rollback-confirm');
+  assert.deepEqual(app.calls.at(-1),['app-update-rollback',{restoreData:false,confirmDataRestore:false}]);
+  await app.click('app-rollback-review');
+  app.change('rollback-restore-data',true);
+  await app.click('app-rollback-confirm');
+  assert.deepEqual(app.calls.at(-1),['app-update-rollback',{restoreData:true,confirmDataRestore:true}]);
+});
+
+test('environment doctor escapes details and shows actual versus expected versions',async()=>{
+  const health={checks:[{id:'PKG_DSWH',name:'应用组件',ok:false,required:true,detail:'<img src=x>',code:'PKG_MISSING',fix:'准备环境'}],summary:{requiredFailures:1,warnings:0}};
+  const app=renderApp({screen:'environment',workspace:workspaceStatus({health}),invoke:async()=>({installed:true,running:false,versionMatrix:{expected:{dswhale:'0.3.0a3',node:'22.23.4'},actual:{dswhale:'0.3.0a2',node:'24.0.0'}}})});
+  await app.settle();
+  assert.match(app.html(),/环境检查/);
+  assert.match(app.html(),/&lt;img src=x&gt;/);
+  assert.match(app.html(),/预期版本/);
+  assert.match(app.html(),/实际版本/);
+  assert.match(app.html(),/24\.0\.0/);
+});
+
+test('NapCat controls respect platform capabilities and private features stay out of group chats',async()=>{
+  const settings={onebotPort:6199,dashboardPort:6185,ownerQQ:'123456',platformId:'qq'};
+  const app=renderApp({screen:'connect',workspace:workspaceStatus({napcat:{supported:true,configured:false,needsLogin:true,connectionConfigured:false,nextStep:'准备独立连接环境'}}),invoke:async action=>action==='inspect'?{installed:true,platform:{id:'win32-x64',supported:true}}:settings});
+  await app.settle();
+  assert.match(app.html(),/id="dashboardPort"/);
+  assert.match(app.html(),/id="onebotPort"[^>]*min="1024"/);
+  assert.match(app.html(),/data-action="napcat-install"/);
+  assert.match(app.html(),/群聊/);
+  const mac=renderApp({screen:'connect',invoke:async action=>action==='inspect'?{installed:true,platform:{id:'darwin-arm64',supported:true}}:settings});
+  await mac.settle();
+  assert.doesNotMatch(mac.html(),/data-action="napcat-install"/);
+  assert.match(mac.html(),/官方 QQ/);
+});
+
+test('Bilibili doctor exposes package and video check failures with a repair action',async()=>{
+  const health={checks:[{id:'BILI_BRIDGE',name:'视频连接服务',ok:false,required:true,detail:'请修复视频桥接',code:'BILI_FAILED'},{id:'PKG_DSWH',name:'应用组件',ok:true,required:true,detail:'版本可用',code:'OK'}],summary:{requiredFailures:1,warnings:0}};
+  const app=renderApp({screen:'bilibili',workspace:workspaceStatus({health}),invoke:async action=>action==='inspect'?{installed:true,running:false}:{onebotPort:6199,biliEnabled:false}});
+  await app.settle();
+  assert.match(app.html(),/视频连接服务/);
+  assert.match(app.html(),/请修复视频桥接/);
+  assert.match(app.html(),/修复运行环境/);
+});
+
+test('preferences save without adding any network configuration form',async()=>{
+  const app=renderApp({screen:'settings',invoke:async(action,payload)=>action==='inspect'?{installed:false}:action==='preferences-save'?{preferences:payload}:{} });
+  await app.settle();assert.doesNotMatch(app.html(),/network-mode|network-proxyUrl|save-network/);
+  app.change('pref-tray',true);app.change('pref-resumeAfterWake',true);await app.click('save-preferences');
+  assert.deepEqual(app.calls.at(-1),['preferences-save',{tray:true,startAtLogin:false,resumeAfterWake:true}]);
+  assert.equal(app.calls.some(([action])=>action==='settings-save'||action==='network-save'),false);
+});
+
+test('incompatible app rollback requires the restore checkbox before confirmation can invoke IPC',async()=>{
+  const appUpdate={...workspaceStatus().appUpdate,canRollback:true,impact:{dataMigration:true,rollbackCompatible:false},recovery:{rollbackRequiresDataRestore:true}};
+  const app=renderApp({screen:'settings',workspace:workspaceStatus({appUpdate}),invoke:async action=>action==='inspect'?{installed:true}:{appUpdate}});
+  await app.settle();await app.click('app-rollback-review');await app.click('app-rollback-confirm');
+  assert.equal(app.calls.some(([action])=>action==='app-update-rollback'),false);
+  app.change('rollback-restore-data',true);await app.click('app-rollback-confirm');
+  assert.deepEqual(app.calls.at(-1),['app-update-rollback',{restoreData:true,confirmDataRestore:true}]);
+});
+
+test('a failed destructive action requires a new confirmation instead of an unrestricted retry',async()=>{
+  const c=load().createController({bridge:{invoke:async action=>action==='workspace-status'?workspaceStatus({backups:[{id:'safe.zip'}]}):Promise.reject(new Error('删除未完成')),onState:()=>()=>{}}});
+  await c.act('workspace-status');await assert.rejects(c.act('backup-delete',{id:'safe.zip'}));
+  assert.equal(c.get().retry,null);
+  assert.equal(c.get().workspace.backups.length,1);
+});
+
+test('NapCat guide and initial token dialogs never forward caller URLs or retain credentials',async()=>{
+  const calls=[];
+  const c=load().createController({bridge:{invoke:async(action,payload)=>{calls.push([action,payload]);return {displayed:true,token:'PRIVATE_FIXTURE'};},onState:()=>()=>{}}});
+  await c.act('napcat-guide',{url:'https://evil.invalid'});await c.act('napcat-login-code',{token:'PRIVATE_FIXTURE'});
+  assert.deepEqual(calls,[['napcat-guide',undefined],['napcat-login-code',undefined]]);
+  assert.ok(!JSON.stringify(c.get()).includes('PRIVATE_FIXTURE'));
+});
+
+test('managed core guidance stays in the native toolbar and settings expose its version matrix',async()=>{
+  const app=renderApp({screen:'settings',invoke:async action=>action==='inspect'?{installed:true,panel:'models',versionMatrix:{expected:{astrbot:'4.29.3'},actual:{astrbot:'4.29.3'}}}:{}});
+  await app.settle();
+  assert.match(app.html(),/内核由 DSWhale 统一管理，更新请到应用设置/);
+});
+
+test('visiting reliability routes refreshes only local workspace status',async()=>{
+  const app=renderApp({screen:'overview',invoke:async action=>action==='inspect'?{installed:true}:{onebotPort:6199,dashboardPort:6185}});
+  await app.settle();await app.navigate('settings');await app.navigate('environment');
+  assert.equal(app.calls.filter(([action])=>action==='workspace-status').length,3);
+  assert.equal(app.calls.some(([action])=>action.startsWith('app-update-')),false);
+});
+
+test('environment preparation and legacy restore refresh local health immediately without checking updates',async()=>{
+  const calls=[];let installed=false;
+  const health={checks:[{id:'bili-files',name:'B站桥接组件',ok:true}],summary:{requiredFailures:0,warnings:0}};
+  const c=load().createController({bridge:{invoke:async action=>{
+    calls.push(action);
+    if(action==='inspect')return {installed:false};
+    if(action==='install'){installed=true;return {installed:true,phase:'ready'};}
+    if(action==='restore')return {restored:true};
+    return workspaceStatus({health:installed?health:null});
+  },onState:()=>()=>{}}});
+  await c.init();assert.equal(c.get().workspace.health,null);
+  await c.act('install');assert.equal(c.get().state.installed,true);assert.equal(c.get().workspace.health?.checks?.[0]?.ok,true);
+  await c.act('restore');
+  assert.deepEqual(calls,['inspect','workspace-status','install','workspace-status','restore','workspace-status']);
+});
+
+test('canceling a backup review returns keyboard focus to its original control',async()=>{
+  const app=renderApp({screen:'settings',workspace:workspaceStatus({backups:[{id:'safe.zip',created:'2026-11-01',size:1024}]}),invoke:async()=>({installed:true})});
+  await app.settle();app.focusItem('backup-review','safe.zip');await app.clickItem('backup-review','safe.zip','backup-restore');
+  await app.click('backup-cancel');assert.equal(app.focused(),'backup-restore-0');
+});
+
+test('diagnostics can export before environment installation and announce progress',async()=>{
+  let finish;
+  const app=renderApp({screen:'settings',invoke:async action=>action==='inspect'?{installed:false}:action==='workspace-status'?workspaceStatus():action==='diagnostics-export'?new Promise(resolve=>{finish=resolve;}):{}});
+  await app.settle();assert.doesNotMatch(app.html(),/data-action="diagnostics-export"[^>]*disabled/);
+  const saving=app.click('diagnostics-export');await app.settle();
+  assert.match(app.announcement(),/正在准备诊断报告/);
+  finish({saved:true});await saving;
 });

@@ -160,9 +160,72 @@ printf 'DSWHALE_PROGRESS {"step":"dependencies","progress":0.28}\n'
     assert.ok(events.some(event=>event.step==='安装应用依赖'&&event.progress===0.28));
     assert.equal(events.at(-1).phase,'ready');
     assert.equal((await manager.inspect()).installed,true);
+    const prepared=await manager.inspect();
+    assert.equal(prepared.needsPrepare,false);
+    assert.equal(prepared.versionMatrix.expected.dswhale,'0.3.0a1');
+    assert.equal(prepared.versionMatrix.actual.astrbot,'4.29.3');
+    assert.equal(prepared.versionMatrix.actual.python,'3.12.15');
+    assert.equal(prepared.versionMatrix.actual.node,'22.23.4');
+    assert.equal(prepared.versionMatrix.actual.channel,'alpha');
+    await fs.writeFile(path.join(source,'pyproject.toml'),'[project]\nversion = "0.3.0a3"\n');
+    const outdated=await manager.inspect();
+    assert.equal(outdated.installed,false);assert.equal(outdated.needsPrepare,true);
+    assert.equal(outdated.versionMatrix.expected.dswhale,'0.3.0a3');
+    await fs.writeFile(path.join(source,'pyproject.toml'),'[project]\nversion = "0.3.0a1"\n');
     await fs.rm(path.join(data,'astrbot/data/plugins/astrbot_plugin_dswhale/main.py'));
     assert.equal((await manager.inspect()).installed,false);
   }finally {process.env.PATH=oldPath;await fs.rm(dir,{recursive:true,force:true});}
+});
+
+test('runtime follows the current system proxy without reading saved network settings',async()=>{
+  const dir=await fs.mkdtemp(path.join(os.tmpdir(),'dswhale-policy-'));
+  try{
+    await fs.writeFile(path.join(dir,'network.json'),JSON.stringify({mode:'custom',proxyUrl:'http://stale.test:9999'}));
+    let proxy='http://127.0.0.1:7890';
+    const manager=new runtime.RuntimeManager({source:dir,runtime:dir,proxyResolver:async()=>proxy});
+    assert.equal((await manager.environment()).NODE_USE_ENV_PROXY,'1');
+    const env=await manager.environment();
+    assert.equal(env.HTTPS_PROXY,'http://127.0.0.1:7890/');
+    assert.match(env.NO_PROXY,/127\.0\.0\.1/);
+    assert.equal(env.DSWHALE_AUTO_SYSTEM_NETWORK,'1');
+    assert.equal(env.DSWHALE_NETWORK_CONFIG,undefined);
+    proxy='';const direct=await manager.environment();
+    assert.equal(direct.HTTPS_PROXY,undefined);
+  }finally{await fs.rm(dir,{recursive:true,force:true});}
+});
+
+test('child Node fetch uses the resolved proxy while local connections bypass it',async()=>{
+  const http=require('node:http'),net=require('node:net');
+  const dir=await fs.mkdtemp(path.join(os.tmpdir(),'dswhale-child-proxy-'));
+  const sockets=new Set();let tunnels=0;
+  const origin=http.createServer((request,response)=>response.end(request.url));
+  const proxy=http.createServer((_request,response)=>response.end('unexpected plain proxy request'));
+  proxy.on('connect',(_request,client,head)=>{
+    tunnels++;const upstream=net.connect(origin.address().port,'127.0.0.1');sockets.add(client);sockets.add(upstream);
+    upstream.on('connect',()=>{client.write('HTTP/1.1 200 Connection Established\r\n\r\n');if(head.length)upstream.write(head);client.pipe(upstream);upstream.pipe(client);});
+    client.on('error',()=>upstream.destroy());upstream.on('error',()=>client.destroy());
+  });
+  try{
+    await new Promise(resolve=>origin.listen(0,'127.0.0.1',resolve));
+    await new Promise(resolve=>proxy.listen(0,'127.0.0.1',resolve));
+    const manager=new runtime.RuntimeManager({source:dir,runtime:dir,proxyResolver:async()=>`http://127.0.0.1:${proxy.address().port}`});
+    const script=`Promise.all(['http://dswhale-network.invalid/video','http://127.0.0.1:${origin.address().port}/local'].map(async url=>(await fetch(url,{signal:AbortSignal.timeout(5000)})).text())).then(value=>console.log(JSON.stringify(value))).catch(()=>process.exit(1))`;
+    const result=await runtime.runBounded(process.execPath,['-e',script],{env:await manager.environment(),timeout:10000,maxBytes:1024});
+    assert.deepEqual(JSON.parse(result.toString()),['/video','/local']);assert.equal(tunnels,1);
+  }finally{for(const socket of sockets)socket.destroy();await Promise.all([new Promise(resolve=>proxy.close(resolve)),new Promise(resolve=>origin.close(resolve))]);await fs.rm(dir,{recursive:true,force:true});}
+});
+
+test('bootstrap network failures reach progress as safe source codes', {skip:process.platform==='win32'},async()=>{
+  const dir=await fs.mkdtemp(path.join(os.tmpdir(),'dswhale-bootstrap-net-')),events=[];
+  try{
+    const uv=path.join(dir,'uv');
+    await fs.writeFile(uv,'#!/bin/sh\nprintf \'DSWHALE_NETWORK_ERROR {"code":"NET_PROXY","source":"nodejs"}\\n\'\nprintf \'PRIVATE /synthetic-home/private password\\n\' >&2\nexit 1\n',{mode:0o755});
+    const manager=new runtime.RuntimeManager({source:dir,runtime:path.join(dir,'runtime'),onProgress:event=>events.push(event)});
+    manager._uv=async()=>uv;manager._pythonChoice=async()=>null;
+    manager._platform=async()=>({supported:true});
+    await assert.rejects(manager.install(),error=>error.code==='NET_PROXY'&&error.source==='nodejs'&&!error.message.includes('PRIVATE'));
+    assert.equal(events.at(-1).code,'NET_PROXY');assert.ok(!JSON.stringify(events).includes('/synthetic-home/private'));
+  }finally{await fs.rm(dir,{recursive:true,force:true});}
 });
 
 test('media probe exposes only the clean version identifier', {skip:process.platform==='win32'}, async () => {
@@ -174,6 +237,10 @@ test('media probe exposes only the clean version identifier', {skip:process.plat
     const result=await manager._version(file,'ffmpeg',process.env);
     assert.equal(result.version,'9.0.2-essentials_build');
     assert.equal(result.ok,true);
+    await fs.writeFile(file,'#!/bin/sh\nprintf "PRIVATE /synthetic-home/private proxy-password\\n"\n',{mode:0o755});
+    const unsafe=await manager._version(file,'python',process.env);
+    assert.equal(unsafe.version,'未知版本');
+    assert.equal(unsafe.ok,false);
   }finally {await fs.rm(dir,{recursive:true,force:true});}
 });
 

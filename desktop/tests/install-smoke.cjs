@@ -1,16 +1,20 @@
 'use strict';
-// Native CI integration check. Uses synthetic data, never starts or logs into a bot.
+// Native CI integration check. No account login; bridge startup is offline.
 const fs = require('node:fs/promises');
 const os = require('node:os');
 const path = require('node:path');
 const assert = require('node:assert/strict');
 const { RuntimeManager, SetupError } = require('../lib/runtime.cjs');
 const { ExtensionRunner } = require('../lib/extensions.cjs');
+const { execFile } = require('node:child_process');
+const { promisify } = require('node:util');
+const execute = promisify(execFile);
 
 async function main() {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'DSWhale 桌面 验收-'));
   const runtime = path.join(directory, 'runtime');
-  const manager = new RuntimeManager({ source: path.resolve(__dirname, '../..'), runtime,
+  const stagedSource = process.env.DSWHALE_SMOKE_SOURCE || path.resolve(__dirname, '../../desktop-resources/backend');
+  const manager = new RuntimeManager({ source: stagedSource, runtime,
     onProgress: event => { if (event.step) console.log(event.step); } });
   const extensions = new ExtensionRunner(manager);
   try {
@@ -43,6 +47,15 @@ async function main() {
     await fs.access(path.join(manager.host, 'data/plugins/astrbot_plugin_livingmemory/main.py'));
     const env = await manager.environment();
     assert.equal(env.ASTRBOT_ROOT, manager.host);
+    const bridge = path.join(manager.host, 'data/plugins/astrbot_plugin_dswhale/dswhale/bili_bridge');
+    // Run the installed files, not imports from the checkout that hid the a2 defect.
+    await execute(manager.python, [path.resolve(__dirname, '../../scripts/verify_artifact.py'),
+      '--installed-bridge', bridge, '--node', env.DSWHALE_NODE || process.execPath],
+    { cwd: directory, env, timeout: 25000, maxBuffer: 65536, windowsHide: true });
+    console.log('Installed packaged bridge reached ready offline within 15 seconds and stopped.');
+    await execute(process.execPath, ['--test', path.resolve(__dirname, 'services.test.cjs')],
+      { cwd: directory, env: { ...env, DSWHALE_TEST_PYTHON: manager.python }, timeout: 45000, maxBuffer: 65536, windowsHide: true });
+    console.log('Pinned installed AstrBot refuses core updates in the managed host environment.');
     const status = await extensions.run('status');
     assert.equal(status.memory.installed, true);
     assert.equal(status.memes.installed, false);

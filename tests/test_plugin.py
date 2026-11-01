@@ -18,6 +18,18 @@ SCOPE = "qq:FriendMessage:123"
 NOW = datetime(2026, 10, 25, 10, tzinfo=ZoneInfo("Asia/Shanghai"))
 
 
+def test_runtime_health_file_contains_connection_flags_only(companion):
+    import json
+
+    c = companion
+    c.context.client._wsr_api_clients = {"private-account": object()}
+    c.write_health()
+    value = json.loads(c.store.path.with_name("health.json").read_text())
+    assert value["qqConnected"] is True
+    assert set(value) == {"format", "updatedAt", "qqConnected", "biliReady", "biliErrorCode"}
+    assert "private-account" not in json.dumps(value)
+
+
 class Host:
     def __init__(self):
         self.queue = asyncio.Queue()

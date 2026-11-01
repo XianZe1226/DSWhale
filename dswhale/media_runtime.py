@@ -9,14 +9,14 @@ import shutil
 import stat
 import subprocess
 import tempfile
-import time
 import uuid
 import zipfile
 from pathlib import Path, PurePosixPath
-from urllib.parse import urlparse
 
 import httpx
 from filelock import FileLock
+
+from dswhale.network import download_verified, read_network_config
 
 DOWNLOAD_LIMIT = 300 * 1024**2
 UNPACKED_LIMIT = 1024**3
@@ -52,40 +52,10 @@ def usable_media(executable, tool):
         return False
 
 
-def download_asset(asset, destination):
-    destination = Path(destination)
-    partial = destination.with_suffix(destination.suffix + ".part")
-    if urlparse(asset["url"]).scheme != "https" or not re.fullmatch(
-        r"[a-f0-9]{64}", asset["sha256"]
-    ):
-        raise ValueError("下载必须使用 HTTPS 和 SHA256 校验")
-    started = time.monotonic()
-    try:
-        digest, total = hashlib.sha256(), 0
-        with httpx.stream(
-            "GET",
-            asset["url"],
-            timeout=90,
-            follow_redirects=True,
-            headers={"User-Agent": "Mozilla/5.0 DSWhale-Desktop"},
-        ) as response:
-            response.raise_for_status()
-            if urlparse(str(response.url)).scheme != "https":
-                raise ValueError("下载重定向必须使用 HTTPS")
-            if int(response.headers.get("content-length", "0")) > DOWNLOAD_LIMIT:
-                raise ValueError("媒体工具下载大小超过限制")
-            with partial.open("wb") as output:
-                for chunk in response.iter_bytes():
-                    total += len(chunk)
-                    if total > DOWNLOAD_LIMIT or time.monotonic() - started > 600:
-                        raise ValueError("媒体工具下载大小或时间超过限制")
-                    digest.update(chunk)
-                    output.write(chunk)
-        if digest.hexdigest() != asset["sha256"]:
-            raise ValueError("FFmpeg 下载校验失败，未安装")
-        partial.replace(destination)
-    finally:
-        partial.unlink(missing_ok=True)
+def download_asset(asset, destination, *, config=None):
+    download_verified(
+        asset, destination, config=config, stream=httpx.stream, max_bytes=DOWNLOAD_LIMIT
+    )
 
 
 def extract_media_archive(archive, destination, tool, sha256):
@@ -194,8 +164,10 @@ def ensure_media(runtime, *, reuse=True):
                 asset = assets[tool]
                 key = (asset["url"], asset["sha256"])
                 if key not in downloaded:
-                    archive = stage / f"media-{len(downloaded)}.zip"
-                    download_asset(asset, archive)
+                    cache = runtime / "cache/downloads"
+                    cache.mkdir(parents=True, exist_ok=True)
+                    archive = cache / f"media-{asset['sha256']}.zip"
+                    download_asset(asset, archive, config=read_network_config(runtime))
                     downloaded[key] = archive
                 extract_media_archive(downloaded[key], binaries / filename, tool, asset["sha256"])
                 if not usable_media(binaries / filename, tool):

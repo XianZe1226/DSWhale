@@ -450,3 +450,76 @@ def test_legacy_main_leaves_sdk_password_creation_to_start(tmp_path, monkeypatch
     assert not (runtime / "astrbot/data/cmd_config.json").exists()
     assert not (runtime / "desktop-auth.json").exists()
     assert not (runtime / ".desktop-auth.pending.json").exists()
+
+
+def test_bootstrap_receipt_records_expected_and_actual_versions_without_private_environment(
+    tmp_path, monkeypatch
+):
+    module = bootstrap()
+    assert hasattr(module, "runtime_receipt")
+    monkeypatch.setenv("HTTPS_PROXY", "http://user:PRIVATE@localhost:7890")
+    actual = {
+        "dswhale": "0.3.0a3",
+        "astrbot": "4.29.3",
+        "python": "3.12.15",
+        "node": "22.23.4",
+        "ffmpeg": "9.0.2",
+    }
+    monkeypatch.setattr(module, "output", lambda *args, **kwargs: json.dumps(actual))
+    receipt = module.runtime_receipt("0.3.0a3", "python", "node", "ffmpeg", {})
+    assert receipt["format"] == 2
+    assert receipt["versions"] == actual
+    assert receipt["channel"] == "alpha"
+    assert receipt["expected"]["dswhale"] == "0.3.0a3"
+    assert receipt["expected"]["astrbot"] == "4.29.3"
+    assert "PRIVATE" not in json.dumps(receipt)
+
+
+def test_bootstrap_network_policy_is_applied_before_installer_runs(tmp_path, monkeypatch):
+    module, runtime, commands = fake_bootstrap_entry(tmp_path, monkeypatch, desktop=False)
+    runtime.mkdir()
+    (runtime / "network.json").write_text(
+        json.dumps(
+            {
+                "mode": "custom",
+                "proxyUrl": "http://127.0.0.1:7890",
+                "pypiIndex": "https://pypi.test/simple",
+                "npmRegistry": "https://npm.test/",
+            }
+        )
+    )
+    original = module.run
+    environments = []
+
+    def check_environment(args, **kwargs):
+        environments.append(kwargs.get("env", {}))
+        return original(args, **kwargs)
+
+    monkeypatch.setattr(module, "run", check_environment)
+    module.main()
+    assert environments
+    assert all(env.get("HTTPS_PROXY") == "http://127.0.0.1:7890/" for env in environments)
+    assert all(env.get("UV_DEFAULT_INDEX") == "https://pypi.test/simple" for env in environments)
+    assert all(
+        env.get("DSWHALE_NETWORK_CONFIG") == str(runtime / "network.json") for env in environments
+    )
+
+
+def test_bootstrap_propagates_only_allowlisted_network_failure_metadata(monkeypatch):
+    import subprocess
+
+    module = bootstrap()
+
+    def failed_download(*args, **kwargs):
+        raise subprocess.CalledProcessError(
+            1,
+            ["private-path"],
+            output='PRIVATE secret\nDSWHALE_NETWORK_ERROR {"code":"NET_PROXY","source":"nodejs"}\n',
+        )
+
+    monkeypatch.setattr(module.subprocess, "check_output", failed_download)
+    with pytest.raises(ValueError) as failure:
+        module.output(["private-command"])
+    assert getattr(failure.value, "code", "") == "NET_PROXY"
+    assert getattr(failure.value, "source", "") == "nodejs"
+    assert "PRIVATE" not in str(failure.value)

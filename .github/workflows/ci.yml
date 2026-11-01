@@ -39,6 +39,16 @@ jobs:
       - run: python -m ruff check .
       - run: python -m ruff format --check .
       - run: python -m build
+      - name: Verify wheel and source bridge inventory independently
+        shell: python
+        run: |
+          from pathlib import Path
+          from scripts.verify_artifact import verify_artifact
+          artifacts = sorted(Path('dist').glob('*.whl')) + sorted(Path('dist').glob('*.tar.gz'))
+          if len(artifacts) != 2:
+              raise SystemExit('Expected exactly one wheel and source archive')
+          for artifact in artifacts:
+              print(f'{artifact.name}: {verify_artifact(Path.cwd(), artifact)} bridge source files verified')
       - run: python -m scripts.build_release
       - name: Windows PowerShell 5.1 clean installation and repeat upgrade
         if: runner.os == 'Windows'

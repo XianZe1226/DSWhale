@@ -64,3 +64,11 @@ npm run dist
 `pack` 生成解包后的应用；`dist` 生成当前平台安装包，两者均先从公开源码清单准备后端资源，输出位于 `desktop-dist`。macOS 仅构建 arm64，Windows / Linux 仅构建 x86_64。可用 `DSWHALE_BUILD_PYTHON` 指定构建时的 Python 路径。新后端文件应先加入 Git 清单；暂存器不会把未跟踪的本地脚本、数据库或凭据带入应用。
 
 [原生构建工作流](../.github/workflows/desktop.yml)在对应系统执行测试、构建与 SHA-256 计算，仅上传安装包和校验文件；不会自动发布 Release。Mac 正式签名使用仓库的 `MACOS_CERTIFICATE` 和 `MACOS_CERTIFICATE_PASSWORD` secrets。未配置证书时仅作临时签名，不宣称公证。
+
+## 日常运行
+
+「应用设置」可开启托盘、登录系统时启动应用，以及唤醒后的恢复提示。默认均关闭。系统自启只启动 DSWhale，不代替 QQ 登录；关闭到托盘需先开启托盘选项，退出应用会停止自己管理的服务。
+
+启动服务时会先启动 AstrBot，再启动已配置的独立 QQ 组件；停止时按相反顺序处理。外部手动启动的服务由你自行管理，应用不会终止未知进程。
+
+应用更新、自动备份与恢复见[更新指南](updates.md)，体检和 Clash 说明见[排错指南](troubleshooting.md)。

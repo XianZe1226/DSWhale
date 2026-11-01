@@ -13,9 +13,18 @@ import subprocess
 import tempfile
 import zipfile
 from datetime import datetime
+from importlib.util import module_from_spec, spec_from_file_location
 from pathlib import Path
 
 from filelock import FileLock, Timeout
+
+# This file also runs before DSWhale is installed. Load the bundled, standard-
+# library-only policy directly, without relying on cwd or an installed package.
+_network_spec = spec_from_file_location(
+    "dswhale_bootstrap_network", Path(__file__).resolve().parents[1] / "dswhale/network.py"
+)
+_network = module_from_spec(_network_spec)
+_network_spec.loader.exec_module(_network)
 
 
 def run(args, **kwargs):
@@ -23,19 +32,81 @@ def run(args, **kwargs):
 
 
 def output(args, **kwargs):
-    return subprocess.check_output(
-        [str(a) for a in args],
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-        stderr=subprocess.DEVNULL,
-        timeout=900,
-        **kwargs,
+    try:
+        return subprocess.check_output(
+            [str(a) for a in args],
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            stderr=subprocess.DEVNULL,
+            timeout=900,
+            **kwargs,
+        )
+    except subprocess.CalledProcessError as error:
+        for line in (error.output or "").splitlines():
+            if line.startswith("DSWHALE_NETWORK_ERROR "):
+                try:
+                    event = json.loads(line.removeprefix("DSWHALE_NETWORK_ERROR "))
+                    safe = _network.NetworkError(event.get("code"), event.get("source"))
+                except (ValueError, TypeError, AttributeError):
+                    continue
+                raise safe from None
+        raise
+
+
+def network_command(script):
+    return (
+        "import json,sys\nfrom dswhale.network import NetworkError\ntry:\n"
+        f"    exec({script!r})\n"
+        "except NetworkError as error:\n"
+        "    print('DSWHALE_NETWORK_ERROR '+json.dumps({'code':error.code,'source':error.source}),flush=True)\n"
+        "    sys.exit(1)\n"
     )
 
 
 def progress(step, value):
     print("DSWHALE_PROGRESS " + json.dumps({"step": step, "progress": value}), flush=True)
+
+
+def runtime_receipt(version, python, node, ffmpeg, env):
+    script = """
+import importlib.metadata as metadata, json, re, subprocess, sys
+def probe(command, flag, pattern):
+    result = subprocess.check_output([command, flag], text=True, stderr=subprocess.DEVNULL, timeout=10)
+    match = re.match(pattern, result)
+    return match[1] if match else ''
+print(json.dumps({
+    'dswhale': metadata.version('dswhale'), 'astrbot': metadata.version('astrbot'),
+    'python': '.'.join(str(p) for p in sys.version_info[:3]),
+    'node': probe(sys.argv[1], '--version', r'^v(\\d+\\.\\d+\\.\\d+)'),
+    'ffmpeg': probe(sys.argv[2], '-version', r'^ffmpeg version (\\d+\\.\\d+(?:\\.\\d+)?(?:[-\\w.]*)?)'),
+}))
+"""
+    data = json.loads(output([python, "-c", script, node, ffmpeg], env=env))
+    versions = {}
+    for key in ("dswhale", "astrbot", "python", "node", "ffmpeg"):
+        value = data.get(key, "")
+        versions[key] = (
+            value
+            if isinstance(value, str) and re.fullmatch(r"[0-9][0-9a-zA-Z.+_-]{0,119}", value)
+            else ""
+        )
+    channel = "alpha" if re.search(r"[ab]|rc", version) else "stable"
+    expected = {
+        "dswhale": version,
+        "astrbot": "4.29.3",
+        "python": "3.12",
+        "node": "22.23.4",
+        "ffmpeg": "9.0.2",
+        "channel": channel,
+    }
+    return {
+        "version": version,
+        "format": 2,
+        "versions": versions,
+        "expected": expected,
+        "channel": channel,
+    }
 
 
 def runtime_directory(source):
@@ -216,6 +287,12 @@ def main():
         raise SystemExit(
             "AstrBot 或另一个安装正在运行，请先停止服务再准备环境；QQ 无需退出。"
         ) from None
+    except _network.NetworkError as error:
+        print(
+            "DSWHALE_NETWORK_ERROR " + json.dumps({"code": error.code, "source": error.source}),
+            flush=True,
+        )
+        raise SystemExit(error.hint) from None
 
 
 def prepare(source, runtime):
@@ -227,9 +304,10 @@ def prepare(source, runtime):
     environment = runtime / "venv"
     python = environment / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
     env = {
-        **os.environ,
+        **_network.network_environment(_network.read_network_config(runtime)),
         "PYTHONUTF8": "1",
         "DSWHALE_RUNTIME_DIR": str(runtime),
+        "DSWHALE_NETWORK_CONFIG": str(runtime / "network.json"),
         "ASTRBOT_ROOT": str(host),
         "UV_PYTHON_INSTALL_DIR": str(runtime / "tools/python"),
         "UV_CACHE_DIR": str(runtime / "cache/uv"),
@@ -288,7 +366,9 @@ def prepare(source, runtime):
                 [
                     python,
                     "-c",
-                    "from pathlib import Path; from dswhale.runtime import ensure_node; import sys; print(ensure_node(Path(sys.argv[1])))",
+                    network_command(
+                        "from pathlib import Path; from dswhale.runtime import ensure_node; import sys; print(ensure_node(Path(sys.argv[1])))"
+                    ),
                     runtime,
                 ],
                 cwd=host,
@@ -303,7 +383,9 @@ def prepare(source, runtime):
                 [
                     python,
                     "-c",
-                    "from pathlib import Path; from dswhale.media_runtime import ensure_media; import sys,json; print(json.dumps({k:str(v) for k,v in ensure_media(Path(sys.argv[1])).items()}))",
+                    network_command(
+                        "from pathlib import Path; from dswhale.media_runtime import ensure_media; import sys,json; print(json.dumps({k:str(v) for k,v in ensure_media(Path(sys.argv[1])).items()}))"
+                    ),
                     runtime,
                 ],
                 cwd=host,
@@ -369,7 +451,10 @@ def prepare(source, runtime):
         project = (source / "pyproject.toml").read_text(encoding="utf-8")
         version = re.search(r'^version\s*=\s*"([^"]+)"', project, re.MULTILINE)[1]
         receipt = runtime / "desktop-install.json.tmp"
-        receipt.write_text(json.dumps({"version": version, "format": 1}), encoding="utf-8")
+        receipt.write_text(
+            json.dumps(runtime_receipt(version, python, node, media["ffmpeg"], env)),
+            encoding="utf-8",
+        )
         receipt.replace(runtime / "desktop-install.json")
         progress("complete", 0.99)
     finally:

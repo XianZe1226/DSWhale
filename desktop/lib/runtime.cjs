@@ -6,6 +6,7 @@ const path = require('node:path');
 const crypto = require('node:crypto');
 const {spawn} = require('node:child_process');
 const assets = require('./tool-assets.json');
+const {NetworkError,readNetworkConfig,networkEnvironment,resolveAssetUrl,classifySource,safeNetworkError} = require('./network.cjs');
 class SetupError extends Error {}
 
 function platformInfo(system = process.platform, arch = process.arch, release = os.release(), distro = {}) {
@@ -26,32 +27,65 @@ function compatibleVersion(tool, output) {
   const match = output.match(new RegExp(`^${tool} version (\\d+)\\.(\\d+)(?:\\.\\d+)?(?:[-\\s]|$)`));
   return Boolean(match && Number(match[1]) >= 6);
 }
-async function downloadVerified(asset, destination, {fetch: request = globalThis.fetch, maxBytes = 100 * 1024**2, signal, onProgress} = {}) {
-  if (new URL(asset.url).protocol !== 'https:' || !/^[a-f0-9]{64}$/.test(asset.sha256)) throw new SetupError('下载必须使用 HTTPS 和 SHA256 校验');
+async function fileDigest(file) {
+  const digest=crypto.createHash('sha256'),input=await fs.open(file,'r');
+  try{for await(const chunk of input.createReadStream({autoClose:false}))digest.update(chunk);}finally{await input.close();}
+  return digest.digest('hex');
+}
+async function downloadVerified(asset, destination, {fetch: request = globalThis.fetch, network={}, maxBytes = 100 * 1024**2, signal, onProgress, retries=2} = {}) {
+  if (!/^[a-f0-9]{64}$/.test(asset.sha256)) throw new SetupError('下载必须使用 HTTPS 和 SHA256 校验');
+  let url;try{url=resolveAssetUrl(asset.url,network);}catch{throw new SetupError('下载必须使用 HTTPS 和 SHA256 校验');}
+  const source=url===asset.url?classifySource(url):'mirror';
   const partial = `${destination}.part`;
   const timeout = AbortSignal.timeout(180000);
   const combined = signal ? AbortSignal.any([signal, timeout]) : timeout;
-  try {
-    const response = await request(asset.url, {signal:combined,redirect:'follow',headers:{'User-Agent':'DSWhale-Desktop'}});
-    if (!response.ok || (response.url && new URL(response.url).protocol !== 'https:')) throw new SetupError('下载失败，请检查网络后重试');
-    const size = Number(response.headers.get('content-length'));
-    if (size > maxBytes) throw new SetupError('下载大小超过限制');
-    const handle = await fs.open(partial,'w');
-    let count = 0;
-    const digest = crypto.createHash('sha256');
+  const attempts=Math.max(0,Math.min(3,Number.isInteger(retries)?retries:2))+1;
+  for(let attempt=0;attempt<attempts;attempt++) {
     try {
-      for await (const chunk of response.body) {
-        combined.throwIfAborted();
-        count += chunk.length;
-        if (count > maxBytes) throw new SetupError('下载大小超过限制');
-        digest.update(chunk);
-        await handle.write(chunk);
-        onProgress?.(size > 0 ? Math.min(count/size,1) : null);
-      }
-    } finally {await handle.close();}
-    if (digest.digest('hex') !== asset.sha256) throw new SetupError('下载校验失败，请重试');
-    await fs.rename(partial,destination);
-  } finally {await fs.rm(partial,{force:true});}
+      combined.throwIfAborted();
+      let offset=0;
+      try{const stat=await fs.lstat(partial);if(stat.isSymbolicLink()||!stat.isFile())throw new NetworkError('NET_POLICY',source);offset=stat.size;}catch(error){if(error.code!=='ENOENT')throw error;}
+      if(offset>maxBytes)throw new NetworkError('NET_SIZE',source);
+      if(offset&&(await fileDigest(partial))===asset.sha256){await fs.rename(partial,destination);return;}
+      const headers={'User-Agent':'DSWhale-Desktop','Accept-Encoding':'identity',...(offset?{Range:`bytes=${offset}-`}:{})};
+      const response = await request(url, {signal:combined,redirect:'follow',headers,network});
+      if(response.url&&new URL(response.url).protocol!=='https:')throw new NetworkError('NET_POLICY',source);
+      if(!response.ok)throw new NetworkError('NET_HTTP',source);
+      const lengthHeader=response.headers.get('content-length');
+      const length=lengthHeader===null?null:Number(lengthHeader);
+      if(length!==null&&(!Number.isSafeInteger(length)||length<0))throw new NetworkError('NET_RANGE',source);
+      let total=length;
+      if(response.status===206) {
+        const range=response.headers.get('content-range')?.match(/^bytes (\d+)-(\d+)\/(\d+)$/);
+        if(!range)throw new NetworkError('NET_RANGE',source);
+        const [start,end,size]=range.slice(1).map(Number);
+        if(![start,end,size].every(Number.isSafeInteger)||start!==offset||end<start||end>=size||(length!==null&&length!==end-start+1))throw new NetworkError('NET_RANGE',source);
+        total=size;
+      } else if(response.status===200||response.status===undefined)offset=0;
+      else throw new NetworkError('NET_RANGE',source);
+      if(total!==null&&total>maxBytes)throw new NetworkError('NET_SIZE',source);
+      const handle = await fs.open(partial,offset?'a':'w');
+      let count=offset,received=0;
+      try {
+        for await (const chunk of response.body) {
+          combined.throwIfAborted();count+=chunk.length;received+=chunk.length;
+          if(count>maxBytes||(total!==null&&count>total))throw new NetworkError('NET_SIZE',source);
+          await handle.write(chunk);
+          onProgress?.(total>0?Math.min(count/total,1):null);
+        }
+      } finally {await handle.close();}
+      if((length!==null&&received!==length)||(total!==null&&count!==total))throw new NetworkError('NET_INTERRUPTED',source);
+      if((await fileDigest(partial))!==asset.sha256)throw new NetworkError('NET_CHECKSUM',source);
+      await fs.rename(partial,destination);
+      return;
+    } catch(error) {
+      const safe=safeNetworkError(combined.aborted?combined.reason:error,source);
+      if(['NET_CHECKSUM','NET_SIZE','NET_RANGE','NET_POLICY'].includes(safe.code))try{await fs.rm(partial,{force:true});}catch{}
+      if(attempt===attempts-1||combined.aborted||['NET_CHECKSUM','NET_SIZE','NET_RANGE','NET_POLICY','NET_CANCELLED','NET_TLS'].includes(safe.code))throw safe;
+      // Bounded retries remain interruptible; another attempt rehashes the entire file.
+      await new Promise(resolve=>setTimeout(resolve,Math.min(50*2**attempt,200)));
+    }
+  }
 }
 async function withInstallLock(directory, operation) {
   await fs.mkdir(directory,{recursive:true});
@@ -150,8 +184,9 @@ try {
   }
 }
 class RuntimeManager {
-  constructor({source,runtime,onProgress=()=>{}}) {
+  constructor({source,runtime,onProgress=()=>{},fetch:request=globalThis.fetch,proxyResolver}) {
     this.source=path.resolve(source);this.runtime=path.resolve(runtime);this.onProgress=onProgress;
+    this.fetch=request;this.proxyResolver=proxyResolver;
     this.operation=null;this.controller=null;
   }
   get host(){return path.join(this.runtime,'astrbot');}
@@ -167,7 +202,11 @@ class RuntimeManager {
     }
     const common=process.platform==='darwin'?['/opt/homebrew/bin','/usr/local/bin']:process.platform==='win32'&&process.env.LOCALAPPDATA?[path.join(process.env.LOCALAPPDATA,'Microsoft','WinGet','Links')]:[];
     const directories=[...Object.values(tools).map(value=>path.dirname(value)),...common,...(process.env.PATH||'').split(path.delimiter)].filter(Boolean);
-    return {...process.env,PYTHONUTF8:'1',DSWHALE_RUNTIME_DIR:this.runtime,ASTRBOT_ROOT:this.host,
+    const proxy=this.proxyResolver?await this.proxyResolver():undefined;
+    const env=networkEnvironment(proxy===undefined?{mode:'system'}:proxy?{mode:'custom',proxyUrl:proxy}:{mode:'direct'});
+    delete env.DSWHALE_NETWORK_CONFIG;
+    Object.assign(env,{DSWHALE_AUTO_SYSTEM_NETWORK:'1',NODE_USE_ENV_PROXY:'1',NO_PROXY:'localhost,127.0.0.1,::1',no_proxy:'localhost,127.0.0.1,::1'});
+    return {...env,PYTHONUTF8:'1',DSWHALE_RUNTIME_DIR:this.runtime,ASTRBOT_ROOT:this.host,
       ...(tools.node?{DSWHALE_NODE:tools.node}:{}),
       PATH:[...new Set(directories)].join(path.delimiter)};
   }
@@ -182,7 +221,9 @@ class RuntimeManager {
     try {
       const output=(await runBounded(command,[tool==='ffmpeg'||tool==='ffprobe'?'-version':'--version'],{env})).toString('utf8');
       const media=tool==='ffmpeg'||tool==='ffprobe';
-      const version=media?output.match(new RegExp(`^${tool} version ([^\\s]+)`))?.[1]||'未知版本':output.trim().split('\n')[0];
+      const first=output.trim().split('\n')[0];
+      const version=media?first.match(new RegExp(`^${tool} version ([0-9][0-9a-zA-Z._+-]{0,119})(?:\\s|$)`))?.[1]||'未知版本':
+        (tool==='python'?first.match(/^Python \d+\.\d+\.\d+(?:[a-zA-Z0-9.+-]*)?$/)?.[0]:first.match(/^v\d+\.\d+\.\d+(?:[a-zA-Z0-9.+-]*)?$/)?.[0])||'未知版本';
       return {version:version.slice(0,120),ok:compatibleVersion(tool,output)};
     }catch{return null;}
   }
@@ -197,12 +238,19 @@ class RuntimeManager {
   }
   async inspect() {
     const platform=await this._platform(), env=await this.environment(), components=[];
+    let expectedVersion='';
+    try{expectedVersion=(await fs.readFile(path.join(this.source,'pyproject.toml'),'utf8')).match(/^version\s*=\s*"([0-9][0-9a-z.+-]*)"/m)?.[1]||'';}catch{}
+    const expected={dswhale:expectedVersion,astrbot:'4.29.3',python:'3.12',node:'22.23.4',ffmpeg:'9.0.2',channel:/[ab]|rc/.test(expectedVersion)?'alpha':'stable'};
+    const actual={dswhale:'',astrbot:'',python:'',node:'',ffmpeg:'',channel:''};
     const python=await this._pythonChoice(env,{includeIncompatible:true});
     const managed=await this._version(this.python,'python',env);
+    actual.python=python?.version.match(/^Python (\d+\.\d+\.\d+)$/)?.[1]||'';
     components.push({id:'python',label:'Python 3.12',status:python?.ok?'ready':python?'incompatible':'missing',version:python?.version||'',detail:python?.ok?'已找到兼容版本':'将安装专用 Python 3.12'});
     for(const tool of ['node','ffmpeg','ffprobe']) {
       const command=tool==='node'?(env.DSWHALE_NODE||tool):tool;
       const version=await this._version(command,tool,env);
+      if(tool==='node')actual.node=version?.version.match(/^v(\d+\.\d+\.\d+)$/)?.[1]||'';
+      if(tool==='ffmpeg')actual.ffmpeg=version?.version.match(/^(\d+\.\d+(?:\.\d+)?(?:[-\w.]*)?)$/)?.[1]||'';
       const newerNode=tool==='node'&&Number(version?.version.match(/^v(\d+)/)?.[1])>22;
       components.push({id:tool,label:tool==='node'?'Node.js 22':tool==='ffmpeg'?'FFmpeg':'FFprobe',status:version?(version.ok?'ready':newerNode?'incompatible':'outdated'):'missing',version:version?.version||'',detail:version?.ok?'版本可用':'将准备兼容的专用版本'});
     }
@@ -210,11 +258,12 @@ class RuntimeManager {
     if(managed?.ok) {
       try {
         const metadata=JSON.parse((await runBounded(this.python,['-c','import importlib.metadata as m,json; print(json.dumps({"dswhale":m.version("dswhale"),"astrbot":m.version("astrbot")}))'],{env})).toString('utf8'));
-        version=metadata.dswhale;
-        const source=await fs.readFile(path.join(this.source,'pyproject.toml'),'utf8');
-        const expected=source.match(/^version\s*=\s*"([^"]+)"/m)?.[1];
+        version=typeof metadata.dswhale==='string'&&/^[0-9][0-9a-z.+-]{0,79}$/.test(metadata.dswhale)?metadata.dswhale:'';
+        actual.dswhale=version;actual.astrbot=typeof metadata.astrbot==='string'&&/^\d+\.\d+\.\d+$/.test(metadata.astrbot)?metadata.astrbot:'';
+        actual.channel=/[ab]|rc/.test(version)?'alpha':'stable';
         const marker=await readJSON(path.join(this.runtime,'desktop-install.json'),{});
-        backend=metadata.astrbot==='4.29.3'&&version===expected&&marker.version===expected;
+        backend=actual.astrbot===expected.astrbot&&version===expectedVersion&&marker.version===expectedVersion;
+        if(marker.format===2)backend=backend&&marker.versions?.dswhale===version&&marker.versions?.astrbot===actual.astrbot&&marker.channel===expected.channel;
         await fs.access(path.join(this.host,'data/cmd_config.json'));
         await fs.access(path.join(this.host,'data/plugins/astrbot_plugin_livingmemory/requirements.txt'));
         await fs.access(path.join(this.host,'data/plugins/astrbot_plugin_livingmemory/main.py'));
@@ -222,7 +271,8 @@ class RuntimeManager {
       }catch {backend=false;}
     }
     components.push({id:'backend',label:'DSWhale 与 AstrBot',status:backend?'ready':version?'outdated':'missing',version,detail:backend?'已完成安装':'准备应用与记忆插件'});
-    return {platform,components,installed:platform.supported&&components.every(item=>item.status==='ready')};
+    const installed=platform.supported&&components.every(item=>item.status==='ready');
+    return {platform,components,installed,needsPrepare:!installed,versionMatrix:{expected,actual}};
   }
   install() {
     if(this.operation)return this.operation;
@@ -237,20 +287,25 @@ class RuntimeManager {
       environment.PATH=path.dirname(uv)+path.delimiter+environment.PATH;
       const python=await this._pythonChoice(environment);
       this.onProgress({phase:'installing',step:python?'使用兼容的 Python 3.12':'下载专用 Python 3.12',progress:0.12});
+      let networkFailure;
       await runBounded(uv,['run','--no-project','--python',python?.command||'3.12','--with','filelock>=3.17,<4',path.join(this.source,'scripts/bootstrap.py')],{
         cwd:this.source,env:environment,signal,timeout:30*60*1000,maxBytes:8*1024**2,
         onLine:line=>{
+          if(line.startsWith('DSWHALE_NETWORK_ERROR ')){
+            try{const event=JSON.parse(line.slice(22));networkFailure=new NetworkError(event.code,event.source);}catch{}
+            return;
+          }
           if(!line.startsWith('DSWHALE_PROGRESS '))return;
           try {const event=JSON.parse(line.slice(17));const allowed={python:'准备 Python 环境',backup:'备份现有数据',dependencies:'安装应用依赖',media:'准备 FFmpeg 和 FFprobe',node:'准备 Node.js 22',initialize:'初始化应用配置',plugins:'准备记忆与 B站组件',complete:'环境准备完成'};
             if(allowed[event.step])this.onProgress({phase:'installing',step:allowed[event.step],progress:typeof event.progress==='number'?Math.max(.12,Math.min(.99,event.progress)):null});
           }catch{}
         }
-      });
+      }).catch(error=>{throw networkFailure||error;});
       const result=await this.inspect();
       if(!result.installed)throw new SetupError('环境校验尚未完成，请重试准备环境');
       this.onProgress({phase:'ready',step:'环境准备完成',progress:1});
       return result;
-    }).catch(error=>{const safe=signal.aborted?'安装已取消':error instanceof SetupError?error.message:'环境准备失败，请检查可用空间和网络后重试';this.onProgress({phase:'error',step:'环境准备未完成',error:safe});throw new SetupError(safe);}).finally(()=>{this.operation=null;this.controller=null;});
+    }).catch(error=>{const safe=signal.aborted?'安装已取消':error instanceof SetupError||error instanceof NetworkError?error.message:'环境准备失败，请检查可用空间和网络后重试';this.onProgress({phase:'error',step:'环境准备未完成',error:safe,...(error instanceof NetworkError?{code:error.code,source:error.source,hint:error.hint}:{})});if(error instanceof NetworkError)throw error;throw new SetupError(safe);}).finally(()=>{this.operation=null;this.controller=null;});
     return this.operation;
   }
   async _uv(signal) {
@@ -259,10 +314,11 @@ class RuntimeManager {
     const directory=path.join(this.runtime,'tools',`uv-${assets.uvVersion}`), executable=path.join(directory,process.platform==='win32'?'uv.exe':'uv');
     try {if(compatibleVersion('uv',(await runBounded(executable,['--version'],{signal})).toString('utf8')))return executable;}catch{}
     await fs.mkdir(directory,{recursive:true});
+    const cache=path.join(this.runtime,'cache/downloads');await fs.mkdir(cache,{recursive:true});
     const stage=await fs.mkdtemp(path.join(this.runtime,'tools','uv-stage-'));
     try {
-      const archive=path.join(stage,asset.url.endsWith('.zip')?'uv.zip':'uv.tar.gz');
-      await downloadVerified(asset,archive,{signal,onProgress:progress=>this.onProgress({phase:'installing',step:'下载并校验安装工具',progress:progress===null?null:.02+progress*.08})});
+      const archive=path.join(cache,`uv-${asset.sha256}.${asset.url.endsWith('.zip')?'zip':'tar.gz'}`);
+      await downloadVerified(asset,archive,{fetch:this.fetch,network:await readNetworkConfig(this.runtime),signal,onProgress:progress=>this.onProgress({phase:'installing',step:'下载并校验安装工具',progress:progress===null?null:.02+progress*.08})});
       const staged=path.join(stage,process.platform==='win32'?'uv.exe':'uv');
       await extractUVArchive(archive,staged,asset.member,{signal});
       if(!compatibleVersion('uv',(await runBounded(staged,['--version'],{signal})).toString('utf8')))throw new SetupError('安装工具版本校验失败');

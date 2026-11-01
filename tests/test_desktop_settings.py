@@ -27,6 +27,19 @@ def host_files(tmp_path):
     return host
 
 
+def test_dashboard_port_can_change_without_overwriting_existing_private_settings(tmp_path):
+    from dswhale.desktop_settings import read_settings, save_settings
+
+    host = host_files(tmp_path)
+    save_settings(host, {"dashboardPort": 6285})
+    assert read_settings(host)["dashboardPort"] == 6285
+    config = json.loads((host / "data/cmd_config.json").read_text())
+    assert config["dashboard"]["port"] == 6285
+    assert config["provider_sources"][0]["api_key"] == "test-only-secret"
+    with pytest.raises(ValueError):
+        save_settings(host, {"dashboardPort": 6199})
+
+
 def test_save_preserves_models_persona_and_creates_loopback_onebot(tmp_path):
     from dswhale.desktop_settings import read_settings, save_settings
 

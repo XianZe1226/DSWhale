@@ -1,0 +1,253 @@
+'use strict';
+const test = require('node:test');
+const assert = require('node:assert/strict');
+const fs = require('node:fs/promises');
+const os = require('node:os');
+const path = require('node:path');
+const crypto = require('node:crypto');
+const { EventEmitter } = require('node:events');
+const { PassThrough } = require('node:stream');
+
+async function fixture(t, options = {}) {
+  const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'dswhale-napcat-')));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  const folder = path.join(root, 'independent');
+  const files = { 'node.exe': 'synthetic bundled node', 'index.js': 'synthetic canonical entry',
+    'wrapper.node': 'synthetic bundled wrapper', 'napcat/napcat.mjs': 'synthetic official module NAPCAT_QQ_DATA_DIR version4.18.42' };
+  for (const [name, content] of Object.entries(files)) {
+    await fs.mkdir(path.dirname(path.join(folder, name)), { recursive: true });
+    await fs.writeFile(path.join(folder, name), content);
+  }
+  await fs.mkdir(path.join(folder, 'napcat/config'), { recursive: true });
+  const assets = { version: '4.18.42', minimumVersion: '4.18.42', platform: 'win32',
+    guideURL: 'https://napneko.github.io/guide/boot/Shell',
+    files: Object.fromEntries(Object.entries(files).map(([name, content]) => [name, crypto.createHash('sha256').update(content).digest('hex')])) };
+  const changes = [], launches = [], stopped = [];
+  const manager = { runtime: path.join(root, 'userData/runtime'), host: path.join(root, 'host'), environment: async () => ({ PATH: process.env.PATH, NODE_OPTIONS: '--require=untrusted.js' }) };
+  const config = { musicSignUrl: 'keep-me', network: { httpServers: [{ name: 'other-server', token: 'other-secret' }],
+    websocketClients: [{ name: 'another-app', url: 'ws://127.0.0.1:7000/ws', token: 'keep-token', debug: true }] } };
+  const accountFile = path.join(folder, 'napcat/config/onebot11_12345678.json');
+  if (options.account !== false) await fs.writeFile(accountFile, JSON.stringify(config));
+  const { NapCatManager } = require('../lib/napcat.cjs');
+  const app = new NapCatManager({ manager, userData: path.join(root, 'userData'), platform: options.platform || 'win32', assets,
+    getConnection: async () => ({ port: 6199, token: 'synthetic-host-private-token' }), onChange: event => changes.push(event),
+    spawn(command, args, launchOptions) {
+      launches.push({ command, args, options: launchOptions });
+      const child = new EventEmitter(); child.pid = 987654321; child.exitCode = null;
+      child.stdout = new PassThrough(); child.stderr = new PassThrough();
+      process.nextTick(() => child.emit('spawn'));
+      return child;
+    }, stopOwned: async child => { stopped.push(child.pid); child.exitCode = 0; child.emit('close', 0); } });
+  return { root, folder, app, manager, config, accountFile, changes, launches, stopped };
+}
+
+test('configure isolates data, preserves env and other OneBot clients, and is idempotent', async t => {
+  const f = await fixture(t);
+  const envFile = path.join(f.folder, 'napcat/config/.env');
+  await fs.writeFile(envFile, '# keep comment\r\nCUSTOM_KEEP=a=b\r\nNAPCAT_QQ_DATA_DIR=old\r\nNAPCAT_QQ_DATA_DIR=duplicate\r\n');
+  const first = await f.app.configure(f.folder);
+  assert.equal(first.isolationApplied, true);
+  assert.equal(first.connectionConfigured, true);
+  const webui = JSON.parse(await fs.readFile(path.join(f.root, 'userData/napcat/work/config/webui.json'), 'utf8'));
+  assert.equal(webui.host, '127.0.0.1');
+  assert.ok(webui.token.length >= 32);
+  const env = await fs.readFile(envFile, 'utf8');
+  assert.match(env, /# keep comment\r\nCUSTOM_KEEP=a=b\r\n/);
+  assert.equal(env.match(/^NAPCAT_QQ_DATA_DIR=/gm).length, 1);
+  assert.ok(env.includes(`NAPCAT_QQ_DATA_DIR=${path.join(f.root, 'userData/napcat/qq-data')}`));
+  const target = path.join(f.root, 'userData/napcat/work/config/onebot11_12345678.json');
+  const configured = JSON.parse(await fs.readFile(target, 'utf8'));
+  assert.deepEqual(configured.network.httpServers, f.config.network.httpServers);
+  assert.deepEqual(configured.network.websocketClients[0], f.config.network.websocketClients[0]);
+  assert.equal(configured.musicSignUrl, 'keep-me');
+  assert.equal(configured.network.websocketClients[1].url, 'ws://127.0.0.1:6199/ws');
+  assert.equal(configured.network.websocketClients[1].token, 'synthetic-host-private-token');
+  const bytes = await fs.readFile(target);
+  await f.app.configure();
+  assert.deepEqual(await fs.readFile(target), bytes);
+  assert.deepEqual(JSON.parse(await fs.readFile(f.accountFile, 'utf8')), f.config);
+  const publicStatus = JSON.stringify(await f.app.status());
+  for (const privateValue of ['12345678', 'synthetic-host-private-token', f.root, 'other-secret']) assert.equal(publicStatus.includes(privateValue), false);
+});
+
+test('WebUI login credentials are available only to the native main-process action', async t => {
+  const f = await fixture(t);
+  await f.app.configure(f.folder);
+  const file = path.join(f.root, 'userData/napcat/work/config/webui.json');
+  await fs.writeFile(file, JSON.stringify({ host: '127.0.0.1', port: 6099, token: 'synthetic-webui-secret', theme: { keep: true } }));
+  assert.equal(typeof f.app.loginInfo, 'function');
+  assert.deepEqual(await f.app.loginInfo(), { url: 'http://127.0.0.1:6099/webui/', token: 'synthetic-webui-secret' });
+  assert.equal(JSON.stringify(await f.app.status()).includes('synthetic-webui-secret'), false);
+  assert.equal(JSON.stringify(f.changes).includes('synthetic-webui-secret'), false);
+  await f.app.configure();
+  assert.deepEqual(JSON.parse(await fs.readFile(file, 'utf8')).theme, { keep: true });
+  if (process.platform !== 'win32') assert.equal((await fs.stat(file)).mode & 0o777, 0o600);
+  await fs.writeFile(file, JSON.stringify({ host: '0.0.0.0', port: 6099, token: 'synthetic-webui-secret' }));
+  await assert.rejects(f.app.loginInfo(), /本机|隔离|登录/);
+});
+
+test('multiple account configurations require WebUI selection without account disclosure', async t => {
+  const f = await fixture(t);
+  await fs.writeFile(path.join(f.folder, 'napcat/config/onebot11_87654321.json'), JSON.stringify(f.config));
+  const state = await f.app.configure(f.folder);
+  assert.equal(state.needsAccountSelection, true);
+  assert.equal(state.connectionConfigured, false);
+  assert.equal((await f.app.status()).needsAccountSelection, true);
+  assert.equal(JSON.stringify(state).includes('87654321'), false);
+  assert.equal(JSON.stringify(state).includes('12345678'), false);
+  await assert.rejects(f.app.start(), /选择|多个/);
+  assert.equal(f.launches.length, 0);
+});
+
+test('first login remains manual and is not invented from the owner account', async t => {
+  const f = await fixture(t, { account: false });
+  const state = await f.app.configure(f.folder);
+  assert.equal(state.needsLogin, true);
+  assert.equal(state.connectionConfigured, false);
+  assert.deepEqual((await fs.readdir(path.join(f.root, 'userData/napcat/work/config'))).filter(name => name.startsWith('onebot11_')), []);
+});
+
+test('configuration refuses symlinks and changed executable code without writing external data', async t => {
+  const f = await fixture(t);
+  const foreign = path.join(f.root, 'official-QQ-data');
+  await fs.mkdir(foreign);
+  await fs.writeFile(path.join(foreign, '.env'), 'OFFICIAL_UNCHANGED=1');
+  await fs.symlink(path.join(foreign, '.env'), path.join(f.folder, 'napcat/config/.env'));
+  await assert.rejects(f.app.configure(f.folder), /链接|目录|安全/);
+  assert.equal(await fs.readFile(path.join(foreign, '.env'), 'utf8'), 'OFFICIAL_UNCHANGED=1');
+  await fs.unlink(path.join(f.folder, 'napcat/config/.env'));
+  await fs.writeFile(path.join(f.folder, 'index.js'), 'arbitrary executable');
+  await assert.rejects(f.app.configure(f.folder), /校验|官方|版本/);
+  assert.equal(f.launches.length, 0);
+});
+
+test('start rechecks isolation and code, launches only the owned standalone entry, and drains output privately', async t => {
+  const f = await fixture(t);
+  await assert.rejects(f.app.start(), /选择|配置/);
+  await f.app.configure(f.folder);
+  await f.app.start();
+  assert.equal(f.launches.length, 1);
+  const launched = f.launches[0];
+  assert.equal(launched.command, path.join(f.folder, 'node.exe'));
+  assert.deepEqual(launched.args, [path.join(f.folder, 'index.js')]);
+  assert.equal(launched.options.shell, false);
+  assert.equal(launched.options.env.NODE_OPTIONS, undefined);
+  assert.equal(launched.options.env.NAPCAT_QQ_DATA_DIR, path.join(f.root, 'userData/napcat/qq-data'));
+  assert.equal((await f.app.status()).running, true);
+  await f.app.stop();
+  await f.app.stop();
+  assert.deepEqual(f.stopped, [987654321]);
+  assert.equal((await f.app.status()).running, false);
+  assert.equal(JSON.stringify(f.changes).includes(f.root), false);
+});
+
+test('tampered .env or plugin code blocks launch and stop never discovers foreign processes', async t => {
+  const f = await fixture(t);
+  await f.app.configure(f.folder);
+  await fs.appendFile(path.join(f.folder, 'napcat/config/.env'), '\nNAPCAT_QQ_DATA_DIR=/foreign/QQ\n');
+  await assert.rejects(f.app.start(), /隔离|配置/);
+  assert.equal(f.launches.length, 0);
+  await f.app.stop();
+  assert.deepEqual(f.stopped, []);
+});
+
+test('macOS exposes only external connection guidance and never inspects or launches QQ', async t => {
+  const f = await fixture(t, { platform: 'darwin' });
+  const status = await f.app.status();
+  assert.equal(status.externalOnly, true);
+  assert.equal(status.canStart, false);
+  await assert.rejects(f.app.configure('/Applications/QQ.app'), /外部|独立/);
+  await assert.rejects(f.app.start(), /外部|独立/);
+  assert.equal(f.launches.length, 0);
+});
+
+test('unrecognized extra executable dependencies cannot be adopted by the trusted entrypoint', async t => {
+  const f = await fixture(t);
+  await f.app.configure(f.folder);
+  const extra = path.join(f.folder, 'napcat/node_modules/optional-untrusted/index.js');
+  await fs.mkdir(path.dirname(extra), { recursive: true });
+  await fs.writeFile(extra, 'untrusted optional module');
+  await assert.rejects(f.app.start(), /校验|额外|官方/);
+  assert.equal(f.launches.length, 0);
+});
+
+test('Linux can configure verified standalone files but launches only through the external guide', async t => {
+  const f = await fixture(t, { platform: 'linux' });
+  await fs.rename(path.join(f.folder, 'napcat'), path.join(f.root, 'linux-shell'));
+  f.app.assets = { ...f.app.assets, files: Object.fromEntries(Object.entries(f.app.assets.files).filter(([name]) => name.startsWith('napcat/'))) };
+  const configured = await f.app.configure(path.join(f.root, 'linux-shell'));
+  assert.equal(configured.isolationApplied, true);
+  assert.equal(configured.externalOnly, true);
+  assert.equal(configured.canStart, false);
+  await assert.rejects(f.app.start(), /外部|独立/);
+  assert.equal(f.launches.length, 0);
+});
+
+test('stop cancels an in-flight component download before extraction or launch', async t => {
+  const f = await fixture(t);
+  f.app.assets = { ...f.app.assets, asset: { url: 'https://github.com/NapNeko/NapCatQQ/releases/download/v4.18.42/NapCat.Shell.Windows.Node.zip', sha256: '0'.repeat(64) } };
+  let entered, extracted = false;
+  const downloading = new Promise(resolve => { entered = resolve; });
+  f.app.fetch = async (url, options) => { entered(); return new Promise((resolve, reject) => options.signal.addEventListener('abort', () => reject(options.signal.reason), { once: true })); };
+  f.app.runner = async () => { extracted = true; };
+  const pending = f.app.install(); pending.catch(() => {});
+  await downloading;
+  await f.app.stop();
+  await assert.rejects(pending, /取消/);
+  assert.equal(extracted, false);
+  assert.equal(f.launches.length, 0);
+});
+
+test('stop fences a pending independent start before the owned process can spawn', async t => {
+  const f = await fixture(t);
+  await f.app.configure(f.folder);
+  let entered, release;
+  const inEnvironment = new Promise(resolve => { entered = resolve; });
+  const waiting = new Promise(resolve => { release = resolve; });
+  f.manager.environment = async () => { entered(); return waiting; };
+  const pending = f.app.start(); pending.catch(() => {});
+  await inEnvironment;
+  const stopping = f.app.stop(); release({});
+  await stopping;
+  await assert.rejects(pending, /取消/);
+  assert.equal(f.launches.length, 0);
+  assert.deepEqual(f.stopped, []);
+});
+
+test('explicit installation verifies the official download and extracts privately without launching', async t => {
+  const f = await fixture(t, { account: false });
+  const payload = Buffer.from('synthetic ZIP content validated by the extractor boundary');
+  const requested = [], commands = [];
+  f.app.assets = { ...f.app.assets, asset: { url: 'https://github.com/NapNeko/NapCatQQ/releases/download/v4.18.42/NapCat.Shell.Windows.Node.zip',
+    sha256: crypto.createHash('sha256').update(payload).digest('hex'), size: payload.length } };
+  f.app.fetch = async (url, options) => { requested.push({ url, options }); return new Response(payload, { headers: { 'content-length': String(payload.length) } }); };
+  f.app.runner = async (command, args, options) => {
+    commands.push({ command, args, options });
+    const privateRoot = args[args.indexOf('--private-root') + 1];
+    await fs.cp(f.folder, path.join(privateRoot, 'package-4.18.42'), { recursive: true });
+    return Buffer.from('{"installed":true}');
+  };
+  f.manager.python = 'trusted-managed-python';
+  assert.equal(typeof f.app.install, 'function');
+  const installed = await f.app.install();
+  assert.equal(installed.configured, true);
+  assert.equal(installed.isolationApplied, true);
+  assert.equal(installed.running, false);
+  assert.equal(f.launches.length, 0);
+  assert.equal(requested.length, 1);
+  assert.equal(requested[0].url, f.app.assets.asset.url);
+  assert.equal(commands[0].command, 'trusted-managed-python');
+  assert.deepEqual(commands[0].args.slice(0, 2), ['-m', 'dswhale.napcat_install']);
+  assert.equal(commands[0].args.includes(f.root + '/official-QQ'), false);
+});
+
+test('installation refuses tampered downloads before extraction or launch', async t => {
+  const f = await fixture(t);
+  f.app.assets = { ...f.app.assets, asset: { url: 'https://github.com/NapNeko/NapCatQQ/releases/download/v4.18.42/NapCat.Shell.Windows.Node.zip', sha256: '0'.repeat(64), size: 10 } };
+  f.app.fetch = async () => new Response('bad bytes', { headers: { 'content-length': '9' } });
+  let extracted = false; f.app.runner = async () => { extracted = true; };
+  assert.equal(typeof f.app.install, 'function');
+  await assert.rejects(f.app.install(), /校验/);
+  assert.equal(extracted, false);
+  assert.equal(f.launches.length, 0);
+});

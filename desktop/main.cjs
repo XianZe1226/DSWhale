@@ -1,17 +1,26 @@
 'use strict';
-const { app, BrowserWindow, WebContentsView, ipcMain, protocol, net, session, dialog, shell, clipboard } = require('electron');
+const { app, BrowserWindow, WebContentsView, ipcMain, protocol, net, session, dialog, shell, clipboard, Tray, Menu, nativeImage, powerMonitor } = require('electron');
 const path = require('node:path');
 const fs = require('node:fs/promises');
 const { pathToFileURL } = require('node:url');
 const { spawn } = require('node:child_process');
-const { RuntimeManager } = require('./lib/runtime.cjs');
+const { RuntimeManager, SetupError } = require('./lib/runtime.cjs');
 const { validateRequest, permittedNavigation, biliURL, consolePopupTarget } = require('./lib/security.cjs');
 const { ServiceSupervisor, settingsCommand, portOpen } = require('./lib/services.cjs');
 const { ExtensionRunner, runExtensionAction } = require('./lib/extensions.cjs');
+const { Operations } = require('./lib/operations.cjs');
+const { Workspace, WORKSPACE_ACTIONS } = require('./lib/workspace.cjs');
+const { AppUpdater, UpdateError } = require('./lib/app-updater.cjs');
+const { NapCatManager, NapCatError } = require('./lib/napcat.cjs');
+const { Preferences, PreferencesError } = require('./lib/preferences.cjs');
+const { DiagnosticsError } = require('./lib/diagnostics.cjs');
+const { readNetworkConfig, createElectronTransport, systemProxyURL, NetworkError } = require('./lib/network.cjs');
+class UserActionError extends Error {}
 
 app.setName('DSWhale');
 if (!app.isPackaged && process.env.DSWHALE_DESKTOP_TEST_DATA) app.setPath('userData', path.resolve(process.env.DSWHALE_DESKTOP_TEST_DATA));
 protocol.registerSchemesAsPrivileged([{ scheme: 'dswhale', privileges: { standard: true, secure: true, supportFetchAPI: true } }]);
+let operations, appUpdater, napcat, workspace, preferenceStore, tray, preferences = {tray:false,startAtLogin:false,resumeAfterWake:false}, installerHandedOff = false;
 let window, panelView, manager, supervisor, extensions, quitting = false, shutdownRequested = false, activeAction;
 const activeCommands = new Set();
 let state = { version: app.getVersion(), platform: { id: '', label: '本机', supported: true, detail: '' }, phase: 'idle', installed: false, running: false, components: [], setup: { ownerConfigured: false, qqConfigured: false, modelConfigured: false, memoryConfigured: false, biliEnabled: false } };
@@ -34,11 +43,13 @@ async function refresh() {
   return publish({ ...result, setup, running: supervisor.running, phase: result.installed ? 'ready' : 'idle' });
 }
 async function openPanel(panel) {
-  if (!supervisor.running) throw new Error('请先启动对话服务');
+  if (!supervisor.running) throw new UserActionError('请先启动对话服务');
   let url = await supervisor.dashboard();
   if (panel === 'napcat') {
-    if (!await portOpen(6099)) throw new Error('尚未检测到 NapCat，请先按连接指南安装并启动它');
-    url = 'http://127.0.0.1:6099/';
+    const managed=await napcat.status();
+    if(managed.configured&&!managed.externalOnly){if(!napcat.running)throw new UserActionError('请先启动独立 QQ 组件');url=(await napcat.loginInfo()).url;}
+    else if (!await portOpen(6099)) throw new UserActionError('尚未检测到 NapCat，请先按连接指南安装并启动它');
+    else url = 'http://127.0.0.1:6099/';
   }
   if (panel === 'bilibili') {
     const file = path.join(manager.host, 'data/plugin_data/astrbot_plugin_dswhale/bilibili/control.json');
@@ -50,7 +61,7 @@ async function openPanel(panel) {
     url = biliURL(control);
   }
   closePanel();
-  const view = new WebContentsView({ webPreferences: { sandbox: true, contextIsolation: true, nodeIntegration: false, webSecurity: true, partition: 'persist:dswhale-consoles' } });
+  const view = new WebContentsView({ webPreferences: { sandbox: true, contextIsolation: true, nodeIntegration: false, webSecurity: true, partition: panel==='napcat'?'persist:dswhale-napcat-console':panel==='bilibili'?'persist:dswhale-bili-console':'persist:dswhale-consoles' } });
   panelView = view;
   view.webContents.setWindowOpenHandler(details => {
     const target = consolePopupTarget(details.url, url);
@@ -62,17 +73,17 @@ async function openPanel(panel) {
   window.contentView.addChildView(view); resizePanel();
   publish({ panel });
   try { await view.webContents.loadURL(url); }
-  catch { closePanel(); throw new Error('页面尚未就绪，请稍后重试'); }
+  catch { closePanel(); throw new UserActionError('页面尚未就绪，请稍后重试'); }
 }
 async function backup() {
-  if (!state.installed) throw new Error('请先完成环境安装');
+  if (!state.installed) throw new UserActionError('请先完成环境安装');
   const selected = await dialog.showSaveDialog(window, { title: '保存私人备份（包含账号配置和记忆）', defaultPath: `DSWhale-backup-${new Date().toISOString().slice(0, 10)}.zip`, filters: [{ name: 'ZIP 备份', extensions: ['zip'] }] });
   if (selected.canceled) return { canceled: true };
-  const wasRunning = supervisor.running; closePanel(); await supervisor.stop();
+  const wasRunning = supervisor.running; await stopAll();
   try {
     await snapshotTo(selected.filePath);
     return { saved: true };
-  } finally { if (wasRunning && !shutdownRequested) await supervisor.start(); }
+  } finally { if (wasRunning && !shutdownRequested) await startAll(); }
 }
 async function snapshotTo(file) {
   await settingsCommand(manager, 'prepare-backup');
@@ -81,7 +92,7 @@ async function snapshotTo(file) {
 }
 async function hostCommand(args) {
   const environment = await manager.environment();
-  if (shutdownRequested) throw new Error('应用正在退出');
+  if (shutdownRequested) throw new UserActionError('应用正在退出');
   return new Promise((resolve, reject) => {
     const child = spawn(manager.python, ['-m', 'dswhale', ...args], { cwd: manager.host, env: environment, windowsHide: true, stdio: 'ignore' });
     activeCommands.add(child);
@@ -91,47 +102,75 @@ async function hostCommand(args) {
     child.once('close', code => { cleanup(); code === 0 ? resolve() : reject(new Error('数据操作未完成，原数据或操作前的备份会保留')); });
   });
 }
-async function restore() {
-  if (!state.installed) throw new Error('请先准备运行环境，再导入自己的备份');
-  const selected = await dialog.showOpenDialog(window, { title: '导入自己创建的 DSWhale ZIP 备份', properties: ['openFile'], filters: [{ name: 'DSWhale ZIP 备份', extensions: ['zip'] }] });
-  if (selected.canceled || !selected.filePaths.length) return { canceled: true };
-  closePanel(); await supervisor.stop();
-  publish({ phase: 'installing', step: '备份当前数据并导入旧配置', progress: null, error: undefined });
-  const folder = path.join(manager.runtime, 'backups');
-  await fs.mkdir(folder, { recursive: true });
-  await snapshotTo(path.join(folder, `before-import-${Date.now()}.zip`));
-  // A failed/cancelled rebuild must not be mistaken for a startable installation.
-  await fs.writeFile(path.join(manager.runtime, 'desktop-install.json'), JSON.stringify({ version: 'needs-import-repair' }));
-  await hostCommand(['restore', '--astrbot-dir', manager.host, selected.filePaths[0]]);
-  await settingsCommand(manager, 'prepare-import');
-  await fs.rm(path.join(manager.runtime, '.desktop-auth.pending.json'), { force: true });
+async function stopAll() { closePanel(); await napcat?.stop(); await supervisor.stop(); }
+async function startAll() {
+  if (!state.installed) throw new UserActionError('请先准备运行环境');
+  const recovery = appUpdater ? (await appUpdater.status()).recovery : null;
+  if (recovery?.servicesMustRemainStopped) throw new UserActionError('更新或回退尚未完成，请先在应用设置中修复并体检');
+  await extensions.run('status');
+  if (shutdownRequested) throw new UserActionError('应用正在退出');
+  await supervisor.start();
+  try { if (napcat && (await napcat.status()).canStart) {if(!napcat.running)await napcat.configure();await napcat.start();} }
+  catch (error) { await napcat.stop(); await supervisor.stop(); throw error; }
+  return refresh();
+}
+async function restoreFile(file, {rebuild = true} = {}) {
+  if (!state.installed) throw new UserActionError('请先准备运行环境，再导入自己的备份');
+  await stopAll();
+  publish({phase:'installing',step:'备份当前数据并恢复所选配置',progress:null,error:undefined});
+  await operations.snapshot({reason:'import'});
+  await fs.writeFile(path.join(manager.runtime,'desktop-install.json'),JSON.stringify({version:'needs-import-repair'}));
+  await hostCommand(['restore','--astrbot-dir',manager.host,file]);
+  await settingsCommand(manager,'prepare-import');
+  await fs.rm(path.join(manager.runtime,'.desktop-auth.pending.json'),{force:true});
   await session.fromPartition('persist:dswhale-consoles').clearStorageData();
-  await manager.install();
-  await refresh();
-  return { restored: true };
+  if (rebuild) { await manager.install();const nc=await napcat.status();if(nc.configured&&!nc.externalOnly)await napcat.configure(); await refresh(); }
+  return {restored:true};
+}
+async function restore() {
+  const selected = await dialog.showOpenDialog(window,{title:'导入自己创建的 DSWhale ZIP 备份',properties:['openFile'],filters:[{name:'DSWhale ZIP 备份',extensions:['zip']}]});
+  if (selected.canceled || !selected.filePaths.length) return {canceled:true};
+  return restoreFile(selected.filePaths[0]);
+}
+function showWindow() { if (window && !window.isDestroyed()) { window.show(); if(window.isMinimized())window.restore();window.focus(); } }
+function applyPreferences(value) {
+  preferences=value;
+  if(!value.tray) { tray?.destroy();tray=null;return; }
+  if(!tray) { const icon=nativeImage.createFromPath(path.join(__dirname,'assets/icon.png')).resize({width:process.platform==='darwin'?18:20,height:process.platform==='darwin'?18:20}); if(process.platform==='darwin')icon.setTemplateImage(true); tray=new Tray(icon);tray.setToolTip('DSWhale');tray.on('click',showWindow); }
+  tray.setContextMenu(Menu.buildFromTemplate([{label:'打开 DSWhale',click:showWindow},{label:'启动全部',click:()=>perform('start').catch(()=>publish({error:'启动未完成，请打开窗口查看体检结果'}))},{label:'停止全部',click:()=>perform('stop').catch(()=>{})},{type:'separator'},{label:'退出',click:()=>app.quit()}]));
+}
+async function finishPendingUpdate() {
+  const status=await appUpdater.status();
+  if(!['awaiting-verification','awaiting-rollback-verification'].includes(status.phase))return;
+  if(activeAction||shutdownRequested)return;
+  activeAction='install';
+  try { await manager.install();await refresh();const health=await operations.health();await appUpdater.completeVerification({healthy:health.summary.requiredFailures===0});publish({error:health.summary.requiredFailures?'[UPD-001] 更新后的体检未通过，请在应用设置查看恢复选项':undefined}); }
+  catch { await appUpdater.completeVerification({healthy:false}).catch(()=>{});publish({phase:'error',error:'[UPD-001] 更新准备未完成，备份已保留，请重试修复或回退'}); }
+  finally {activeAction=null;}
 }
 async function perform(action, payload) {
-  if (shutdownRequested) throw new Error('应用正在退出');
+  if (shutdownRequested) throw new UserActionError('应用正在退出');
   if (action === 'inspect') return activeAction ? state : refresh();
   if (action === 'home') { closePanel(); return state; }
   if (action === 'settings-get') return settingsCommand(manager, 'read');
-  if (activeAction) throw new Error('当前操作尚未完成，请稍候');
+  if (activeAction) throw new UserActionError('当前操作尚未完成，请稍候');
   activeAction = action;
   try {
+    if (WORKSPACE_ACTIONS.has(action)) return await workspace.perform(action,payload);
     if (action === 'extensions-status' || action.startsWith('extension-')) {
-      if (!state.installed) throw new Error('请先准备运行环境');
+      if (!state.installed) throw new UserActionError('请先准备运行环境');
       return await runExtensionAction({ runner: extensions, supervisor, closePanel, publish, refresh, isClosing: () => shutdownRequested }, action === 'extensions-status' ? 'status' : action.slice(10), payload?.id);
     }
-    if (action === 'install') { closePanel(); await supervisor.stop(); await manager.install(); return await refresh(); }
-    if (action === 'start') { if (!state.installed) throw new Error('请先准备运行环境'); await extensions.run('status'); if (shutdownRequested) throw new Error('应用正在退出'); publish({ step: '正在启动对话服务', progress: null, error: undefined }); await supervisor.start(); return await refresh(); }
-    if (action === 'stop') { closePanel(); await supervisor.stop(); return publish({ running: false, error: undefined }); }
+    if (action === 'install') { await stopAll(); await manager.install(); await refresh(); const pending=appUpdater?await appUpdater.status():null; if(pending?.recovery?.requiresHealthVerification){const health=await operations.health();await appUpdater.completeVerification({healthy:health.summary.requiredFailures===0});} return state; }
+    if (action === 'start') return await startAll();
+    if (action === 'stop') { await stopAll();return publish({running:false,error:undefined}); }
     if (action === 'open-panel') { await openPanel(payload.panel); return state; }
     if (action === 'settings-save') {
-      closePanel(); const wasRunning = supervisor.running; await supervisor.stop();
+      closePanel(); const wasRunning = supervisor.running; await stopAll();
       try { return await settingsCommand(manager, 'save', payload); }
-      finally { if (wasRunning && !shutdownRequested) await supervisor.start(); if (!shutdownRequested) await refresh(); }
+      finally { if(napcat){const nc=await napcat.status();if(nc.configured&&!nc.externalOnly)await napcat.configure();}if (wasRunning && !shutdownRequested) await startAll(); if (!shutdownRequested) await refresh(); }
     }
-    if (action === 'open-data') { await fs.mkdir(manager.runtime, { recursive: true }); const error = await shell.openPath(manager.runtime); if (error) throw new Error('无法打开数据目录'); return {}; }
+    if (action === 'open-data') { await fs.mkdir(manager.runtime, { recursive: true }); const error = await shell.openPath(manager.runtime); if (error) throw new UserActionError('无法打开数据目录'); return {}; }
     if (action === 'initial-login') {
       const file = path.join(manager.runtime, 'desktop-auth.json');
       let value;
@@ -154,12 +193,30 @@ async function perform(action, payload) {
 }
 async function createWindow() {
   const source = app.isPackaged ? path.join(process.resourcesPath, 'backend') : path.resolve(__dirname, '..');
-  manager = new RuntimeManager({ source, runtime: path.join(app.getPath('userData'), 'runtime'), onProgress: patch => publish(patch) });
+  const downloadSession=session.fromPartition('persist:dswhale-downloads');
+  const transport=createElectronTransport(downloadSession);
+  manager = new RuntimeManager({ source, runtime: path.join(app.getPath('userData'), 'runtime'), fetch:transport,proxyResolver:()=>systemProxyURL(downloadSession),onProgress: patch => publish(patch) });
   extensions = new ExtensionRunner(manager);
   supervisor = new ServiceSupervisor({ manager, onChange: patch => { if (!patch.running && panelView) closePanel(); publish(patch); } });
-  const consoleSession = session.fromPartition('persist:dswhale-consoles');
-  consoleSession.setPermissionRequestHandler((_contents, _permission, callback) => callback(false));
-  consoleSession.setPermissionCheckHandler(() => false);
+  preferenceStore=new Preferences({userData:app.getPath('userData'),app});
+  napcat=new NapCatManager({manager,userData:app.getPath('userData'),fetch:transport,onChange:()=>{}});
+  operations=new Operations({manager,supervisor,snapshotTo});
+  const distro={};if(process.platform==='linux'){try{for(const line of(await fs.readFile('/etc/os-release','utf8')).split('\n')){const m=line.match(/^(ID|VERSION_ID)=["']?([^"']+)["']?$/);if(m)distro[m[1]]=m[2];}}catch{}}
+  appUpdater=new AppUpdater({runtime:manager.runtime,currentVersion:app.getVersion(),distro,
+    fetch:async(url,options)=>transport(url,{...options,network:await readNetworkConfig(manager.runtime)}),
+    download:async(asset,file,options)=>require('./lib/runtime.cjs').downloadVerified(asset,file,{...options,fetch:transport,network:await readNetworkConfig(manager.runtime)}),
+    stopServices:stopAll,snapshot:({reason})=>operations.snapshot({reason:reason.includes('rollback')?'rollback':'update'}),
+    restoreSnapshot:async(id)=>restoreFile(await operations.backupFile(id),{rebuild:false}),
+    launchInstaller:async({file})=>{const error=await shell.openPath(file);if(error)throw new UserActionError('安装程序未打开，请重试；备份已保留');installerHandedOff=true;},
+    onProgress:patch=>publish({step:patch.step,progress:null})});
+  workspace=new Workspace({manager,operations,appUpdater,napcat,preferences:preferenceStore,
+    isInstalled:()=>state.installed,isClosing:()=>shutdownRequested,stopServices:stopAll,getState:()=>state,restoreFile,trash:file=>shell.trashItem(file),applyPreferences,
+    chooseDiagnostic:async()=>{const preview=await dialog.showMessageBox(window,{type:'info',message:'导出诊断元信息',detail:'包含 health.json、events.json、versions.json、README.txt。只记录版本、状态和事件代码，不包含账号、路径、聊天、记忆、人格、密钥或原始日志。',buttons:['继续保存','取消'],defaultId:1,cancelId:1});if(preview.response!==0)return null;const choice=await dialog.showSaveDialog(window,{defaultPath:'DSWhale-diagnostics.zip',filters:[{name:'诊断 ZIP',extensions:['zip']}]});return choice.canceled?null:choice.filePath;},
+    chooseNapCat:async()=>{const choice=await dialog.showOpenDialog(window,{title:'选择官方独立 NapCat 包的解压目录',properties:['openDirectory']});return choice.canceled?null:choice.filePaths[0];},
+    openGuide:()=>shell.openExternal('https://napneko.github.io/guide/boot/Shell'),
+    showLoginInfo:async(info)=>{const choice=await dialog.showMessageBox(window,{type:'info',title:'独立 QQ 组件登录口令',message:'口令仅用于本机 NapCat 管理页面',detail:info.token,buttons:['复制口令','关闭'],defaultId:1,cancelId:1});if(choice.response===0)clipboard.writeText(info.token);},
+    afterInstaller:async()=>{if(installerHandedOff)setTimeout(()=>app.quit(),500);}});
+  for(const name of ['persist:dswhale-consoles','persist:dswhale-napcat-console','persist:dswhale-bili-console']){const consoleSession=session.fromPartition(name);consoleSession.setPermissionRequestHandler((_contents,_permission,callback)=>callback(false));consoleSession.setPermissionCheckHandler(()=>false);}
   session.defaultSession.setPermissionRequestHandler((_contents, _permission, callback) => callback(false));
   session.defaultSession.setPermissionCheckHandler(() => false);
   window = new BrowserWindow({ width: 1220, height: 850, minWidth: 980, minHeight: 700, title: 'DSWhale', backgroundColor: '#f5f7fb', icon: path.join(__dirname, 'assets/icon.png'), webPreferences: { preload: path.join(__dirname, 'preload.cjs'), sandbox: true, contextIsolation: true, nodeIntegration: false, webSecurity: true } });
@@ -170,10 +227,16 @@ async function createWindow() {
   ipcMain.handle('dswhale:action', async (event, action, payload) => {
     validateRequest(event, window.webContents, action, payload);
     try { return await perform(action, payload); }
-    catch (error) { const message = typeof error.message === 'string' && !/[\\/]|token=|key=/.test(error.message) ? error.message : '操作未完成，请检查环境和配置后重试'; publish({ error: message, ...(['install', 'restore'].includes(action) ? { phase: 'error', installed: false, progress: null } : {}) }); throw new Error(message); }
+    catch (error) { const safe=error instanceof UserActionError||error instanceof UpdateError||error instanceof NapCatError||error instanceof NetworkError||error instanceof SetupError||error instanceof PreferencesError||error instanceof DiagnosticsError||error?.code==='PORT-001'; const code=error instanceof UpdateError?'UPD-001':error instanceof NapCatError?'NAP-001':error instanceof NetworkError?'NET-001':error?.code==='PORT-001'?'PORT-001':'APP-001';const message=`[${code}] ${safe?error.message:'操作未完成，请重新检查状态或导出诊断'}`;await operations.events.write({component:error instanceof UpdateError?'update':'app',action:['start','stop','install','restore'].includes(action)?action:'check',code});publish({error:message,...(['install','restore'].includes(action)?{phase:'error',installed:false,progress:null}:{})});throw new UserActionError(message); }
   });
   await window.loadURL('dswhale://desktop/index.html');
-  refresh().catch(() => publish({ phase: 'error', error: '无法读取运行环境，请重试检测' }));
+  applyPreferences(await preferenceStore.read());
+  const openedAtLogin=process.platform==='darwin'&&app.getLoginItemSettings().wasOpenedAtLogin;
+  if(preferences.tray&&(process.argv.includes('--hidden')||openedAtLogin))window.hide();
+  window.on('close',event=>{if(preferences.tray&&!shutdownRequested&&!quitting){event.preventDefault();window.hide();}});
+  await refresh().catch(()=>publish({phase:'error',error:'无法读取运行环境，请重试检测'}));
+  await finishPendingUpdate();
+  let wasRunning=false;powerMonitor.on('suspend',()=>{wasRunning=supervisor.running;});powerMonitor.on('resume',()=>{if(shutdownRequested)return;if(preferences.resumeAfterWake&&wasRunning&&!supervisor.running&&!activeAction)perform('start').catch(()=>publish({error:'系统已唤醒，请重新检查连接'}));else publish({notice:'系统已唤醒，可重新检查连接状态'});});
   window.on('closed', () => { window = null; });
 }
 if (!app.requestSingleInstanceLock()) app.quit();
@@ -194,6 +257,6 @@ else {
     if (shutdownRequested) return;
     shutdownRequested = true;
     for (const child of activeCommands) child.kill();
-    Promise.resolve().then(() => extensions?.close()).then(() => manager?.cancel()).then(() => supervisor?.stop()).finally(() => { quitting = true; app.quit(); });
+    Promise.resolve().then(async()=>{for(const close of [()=>appUpdater?.cancel(),()=>operations?.close(),()=>extensions?.close(),()=>manager?.cancel(),()=>napcat?.stop(),()=>supervisor?.stop()]){try{await close();}catch{}}}).finally(()=>{quitting=true;app.quit();});
   });
 }

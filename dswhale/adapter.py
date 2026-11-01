@@ -4,7 +4,9 @@ import asyncio
 import json
 import logging
 import os
+import tempfile
 from datetime import UTC, datetime
+from pathlib import Path
 from types import SimpleNamespace
 from weakref import WeakValueDictionary
 
@@ -39,6 +41,7 @@ class Companion:
         )
         self.pending = WeakValueDictionary()  # retain identity while queue/host holds the event
         self.task = None
+        self.health_task = None
         self.workers = set()
         self.closed = False
         self.last_error = ""
@@ -59,6 +62,51 @@ class Companion:
                 is_synthetic=lambda event: self.closed or bool(self.internal_id(event)),
             )
         return self._social
+
+    def write_health(self):
+        """Expose connection flags, never adapter account IDs or error text."""
+        try:
+            ident = self.settings.owner_umo.split(":", 1)[0]
+            platform = self.context.get_platform_inst(ident)
+            client = platform.get_client() if platform else None
+            connected = bool(getattr(client, "_wsr_api_clients", {})) and not self.closed
+            process = getattr(self.bili, "process", None)
+            ready = bool(
+                self.bili
+                and self.bili.ready.is_set()
+                and process
+                and process.returncode is None
+                and not self.closed
+            )
+            missing = not (
+                Path(__file__).parent / "bili_bridge/upstream/lib/credentials.js"
+            ).is_file()
+            value = {
+                "format": 1,
+                "updatedAt": now_utc().timestamp(),
+                "qqConnected": connected,
+                "biliReady": ready,
+                "biliErrorCode": "PKG-001"
+                if missing
+                else "BILI-001"
+                if self.settings.bili_enabled and not ready
+                else "",
+            }
+            target = self.store.path.with_name("health.json")
+            fd, name = tempfile.mkstemp(prefix=".health-", dir=target.parent)
+            try:
+                with os.fdopen(fd, "w", encoding="utf-8") as stream:
+                    json.dump(value, stream)
+                Path(name).replace(target)
+            finally:
+                Path(name).unlink(missing_ok=True)
+        except Exception:
+            pass
+
+    async def _health_loop(self):
+        while True:
+            self.write_health()
+            await asyncio.sleep(15)
 
     def authorized(self, event):
         return self.settings.matches(
@@ -404,6 +452,8 @@ class Companion:
     def start(self):
         if not self.task:
             self.task = asyncio.create_task(self._loop(), name="dswhale-scheduler")
+        if not self.health_task:
+            self.health_task = asyncio.create_task(self._health_loop(), name="dswhale-health")
 
     async def start_bili(self):
         if (
@@ -444,6 +494,10 @@ class Companion:
         if self.closed:
             return
         self.closed = True
+        if self.health_task:
+            self.health_task.cancel()
+            await asyncio.gather(self.health_task, return_exceptions=True)
+        self.write_health()
         if self.task:
             self.task.cancel()
             await asyncio.gather(self.task, return_exceptions=True)
