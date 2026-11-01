@@ -635,3 +635,12 @@ test('diagnostics can export before environment installation and announce progre
   assert.match(app.announcement(),/正在准备诊断报告/);
   finish({saved:true});await saving;
 });
+
+test('automatic update publications reach workspace without changing global errors or notices',async()=>{
+ let listener;const c=load().createController({bridge:{invoke:async action=>action==='inspect'?{installed:true}:workspaceStatus(),onState:cb=>{listener=cb;return()=>{};}}});await c.init();
+ const update={phase:'available',targetVersion:'0.3.0a6',canDownload:true};listener({appUpdate:update});assert.deepEqual(c.get().workspace.appUpdate,update);assert.equal(c.get().error,'');assert.equal(c.get().notice,'');assert.equal(c.get().pending,'');
+});
+test('available update appears in navigation outside settings and opens update controls',async()=>{
+ const app=renderApp({screen:'overview',invoke:async()=>({installed:true}),workspace:workspaceStatus({appUpdate:{phase:'available',targetVersion:'0.3.0a6',canDownload:true}})});await app.settle();
+ assert.match(app.html(),/data-route="settings"[^>]*>[\s\S]*?aria-label="有应用更新"/);await app.navigate('settings');assert.match(app.html(),/id="app-update-title"/);assert.match(app.html(),/data-action="app-update-download"/);assert.equal(app.calls.some(([action])=>action==='app-update-check'),false);
+});

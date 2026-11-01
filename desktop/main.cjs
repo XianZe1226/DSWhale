@@ -11,6 +11,7 @@ const { ExtensionRunner, runExtensionAction } = require('./lib/extensions.cjs');
 const { Operations } = require('./lib/operations.cjs');
 const { Workspace, WORKSPACE_ACTIONS } = require('./lib/workspace.cjs');
 const { AppUpdater, UpdateError } = require('./lib/app-updater.cjs');
+const { UpdateScheduler } = require('./lib/update-scheduler.cjs');
 const { NapCatManager, NapCatError } = require('./lib/napcat.cjs');
 const { Preferences, PreferencesError } = require('./lib/preferences.cjs');
 const { DiagnosticsError } = require('./lib/diagnostics.cjs');
@@ -20,7 +21,7 @@ class UserActionError extends Error {}
 app.setName('DSWhale');
 if (!app.isPackaged && process.env.DSWHALE_DESKTOP_TEST_DATA) app.setPath('userData', path.resolve(process.env.DSWHALE_DESKTOP_TEST_DATA));
 protocol.registerSchemesAsPrivileged([{ scheme: 'dswhale', privileges: { standard: true, secure: true, supportFetchAPI: true } }]);
-let operations, appUpdater, napcat, workspace, preferenceStore, tray, preferences = {tray:false,startAtLogin:false,resumeAfterWake:false}, installerHandedOff = false;
+let operations, appUpdater, updateScheduler, napcat, workspace, preferenceStore, tray, preferences = {tray:false,startAtLogin:false,resumeAfterWake:false}, installerHandedOff = false;
 let window, panelView, manager, supervisor, extensions, quitting = false, shutdownRequested = false, activeAction;
 const activeCommands = new Set();
 let state = { version: app.getVersion(), platform: { id: '', label: '本机', supported: true, detail: '' }, phase: 'idle', installed: false, running: false, components: [], setup: { ownerConfigured: false, qqConfigured: false, modelConfigured: false, memoryConfigured: false, biliEnabled: false } };
@@ -156,6 +157,9 @@ async function perform(action, payload) {
   if (activeAction) throw new UserActionError('当前操作尚未完成，请稍候');
   activeAction = action;
   try {
+    // Metadata checks never claim activeAction. Conflicting updater mutations
+    // cancel and settle that check while retaining the normal action fence.
+    if (action.startsWith('app-update-') || action === 'install') await updateScheduler?.cancel();
     if (WORKSPACE_ACTIONS.has(action)) return await workspace.perform(action,payload);
     if (action === 'extensions-status' || action.startsWith('extension-')) {
       if (!state.installed) throw new UserActionError('请先准备运行环境');
@@ -189,7 +193,14 @@ async function perform(action, payload) {
     }
     if (action === 'backup') return await backup();
     if (action === 'restore') return await restore();
-  } finally { activeAction = null; }
+  } finally {
+    // publish() sends the whole main state. Keep its updater snapshot current so
+    // later service events cannot replace the renderer's newer manual result.
+    if (action.startsWith('app-update-') || action === 'install') {
+      try { publish({appUpdate:await appUpdater.status()}); } catch {}
+    }
+    activeAction = null;
+  }
 }
 async function createWindow() {
   const source = app.isPackaged ? path.join(process.resourcesPath, 'backend') : path.resolve(__dirname, '..');
@@ -236,7 +247,14 @@ async function createWindow() {
   window.on('close',event=>{if(preferences.tray&&!shutdownRequested&&!quitting){event.preventDefault();window.hide();}});
   await refresh().catch(()=>publish({phase:'error',error:'无法读取运行环境，请重试检测'}));
   await finishPendingUpdate();
-  let wasRunning=false;powerMonitor.on('suspend',()=>{wasRunning=supervisor.running;});powerMonitor.on('resume',()=>{if(shutdownRequested)return;if(preferences.resumeAfterWake&&wasRunning&&!supervisor.running&&!activeAction)perform('start').catch(()=>publish({error:'系统已唤醒，请重新检查连接'}));else publish({notice:'系统已唤醒，可重新检查连接状态'});});
+  updateScheduler=new UpdateScheduler({
+    shouldRun:()=>!activeAction&&!shutdownRequested,
+    check:()=>appUpdater.check({automatic:true}),
+    cancelCheck:()=>appUpdater.cancel(),
+    onResult:appUpdate=>publish({appUpdate}),
+  });
+  updateScheduler.start();
+  let wasRunning=false;powerMonitor.on('suspend',()=>{wasRunning=supervisor.running;});powerMonitor.on('resume',()=>{if(shutdownRequested)return;updateScheduler?.resume();if(preferences.resumeAfterWake&&wasRunning&&!supervisor.running&&!activeAction)perform('start').catch(()=>publish({error:'系统已唤醒，请重新检查连接'}));else publish({notice:'系统已唤醒，可重新检查连接状态'});});
   window.on('closed', () => { window = null; });
 }
 if (!app.requestSingleInstanceLock()) app.quit();
@@ -256,6 +274,7 @@ else {
     event.preventDefault();
     if (shutdownRequested) return;
     shutdownRequested = true;
+    updateScheduler?.stop();
     for (const child of activeCommands) child.kill();
     Promise.resolve().then(async()=>{for(const close of [()=>appUpdater?.cancel(),()=>operations?.close(),()=>extensions?.close(),()=>manager?.cancel(),()=>napcat?.stop(),()=>supervisor?.stop()]){try{await close();}catch{}}}).finally(()=>{quitting=true;app.quit();});
   });

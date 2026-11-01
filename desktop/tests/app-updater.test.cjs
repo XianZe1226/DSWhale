@@ -339,3 +339,89 @@ test('checking and downloading a newer candidate preserve the last completed rol
   await restored.rollback();
   assert.ok(f.events.includes('rollback:0.3.0a3'));
 });
+
+test('automatic checks use the selected channel and only fetch signed metadata',async t=>{
+ const f=await fixture(t,{releases:['0.3.0a4','0.3.0']});await f.manager.check({channel:'stable'});
+ const next=new updater.AppUpdater(f.config);assert.equal((await next.check({automatic:true})).targetVersion,'0.3.0'); // metadata-only target can be refreshed after restart
+ assert.equal((await next.status()).channel,'stable');assert.equal((await next.status()).targetVersion,'0.3.0');assert.deepEqual(f.events,[]);
+});
+test('automatic failures preserve offline state while manual failures remain explicit',async t=>{
+ const f=await fixture(t,{fetch:async()=>{throw Error('network failure');}});const before=await f.manager.status();
+ await assert.rejects(f.manager.check({automatic:true}),e=>e.code==='NETWORK_FAILED');assert.deepEqual(await f.manager.status(),before);
+ await assert.rejects(f.manager.check({channel:'alpha'}),e=>e.code==='NETWORK_FAILED');assert.equal((await f.manager.status()).error.code,'NETWORK_FAILED');
+});
+test('automatic checks preserve downloaded installers and all interrupted recovery phases',async t=>{
+ const f=await prepared(t);const before=await f.manager.status(),count=f.requests.length;
+ assert.equal(await f.manager.check({automatic:true}),null);assert.deepEqual(await f.manager.status(),before);assert.equal(f.requests.length,count);
+ for(const phase of ['downloading','snapshotting','install-ready','install-launched','awaiting-verification','rolling-back','rollback-launched','awaiting-rollback-verification','repair-required']){
+  const state={format:1,channel:'stable',phase};await fs.writeFile(path.join(f.directory,'app-updates/state.json'),JSON.stringify(state));const next=new updater.AppUpdater(f.config);
+  assert.equal(await next.check({automatic:true}),null);assert.equal((await next.status()).phase,phase);assert.equal(f.requests.length,count);
+ }
+});
+test('automatic discovery can be cancelled before a manual channel check without a stale error',async t=>{
+ const f=await fixture(t);let began;const started=new Promise(resolve=>{began=resolve;});
+ f.manager.request=async(_url,{signal})=>{began();return new Promise((_,reject)=>signal.addEventListener('abort',()=>reject(Error('aborted')),{once:true}));};
+ const checking=f.manager.check({automatic:true});await started;const rejected=assert.rejects(checking,e=>e.code==='CANCELLED');await f.manager.cancel();await rejected;
+ assert.equal((await f.manager.status()).error,null);f.manager.request=f.config.fetch;assert.equal((await f.manager.check({channel:'stable'})).phase,'up-to-date');
+});
+test('automatic checks skip unsupported platforms without writing a recovery error',async t=>{
+ const f=await fixture(t,{platform:'linux',arch:'arm64'});assert.equal(await f.manager.check({automatic:true}),null);assert.equal((await f.manager.status()).error,null);assert.deepEqual(f.requests,[]);
+});
+
+test('automatic success follows persisted stable selection without publishing manual progress',async t=>{
+ const progress=[];const f=await fixture(t,{releases:[],onProgress:value=>progress.push(value)});await f.manager.check({channel:'stable'});progress.length=0;
+ const next=new updater.AppUpdater({...f.config,fetch:async(url,options)=>url.startsWith('https://api.github.com/')?new Response(JSON.stringify([{tag_name:'v0.3.0',draft:false,prerelease:false},{tag_name:'v0.3.0a4',draft:false,prerelease:true}])):f.config.fetch(url,options)});
+ const status=await next.check({automatic:true});assert.equal(status.targetVersion,'0.3.0');assert.equal(status.channel,'stable');assert.deepEqual(progress,[]);assert.deepEqual(f.events,[]);
+});
+
+test('automatic discovery preserves verified rollback evidence after a completed update',async t=>{
+ const f=await prepared(t);await f.manager.install();const next=new updater.AppUpdater({...f.config,currentVersion:'0.3.0-alpha.4'});await next.completeVerification({healthy:true});
+ const record=JSON.parse(await fs.readFile(path.join(f.directory,'app-updates/state.json'),'utf8')).rollbackRecord;
+ f.docs.set('0.3.0a5',signed(manifest('0.3.0a5')));next.request=async(url,options)=>url.startsWith('https://api.github.com/')?new Response(JSON.stringify([{tag_name:'v0.3.0a5',draft:false,prerelease:true}])):f.config.fetch(url,options);
+ const status=await next.check({automatic:true});assert.equal(status.targetVersion,'0.3.0a5');assert.equal(status.canRollback,true);assert.equal(status.previousVersion,'0.3.0a3');
+ assert.deepEqual(JSON.parse(await fs.readFile(path.join(f.directory,'app-updates/state.json'),'utf8')).rollbackRecord,record);assert.deepEqual(f.events.filter(value=>value==='stop'),['stop']);
+});
+
+test('manual channel selection survives restart when completed-update backup remains and no release matches',async t=>{
+ const f=await prepared(t);await f.manager.install();const next=new updater.AppUpdater({...f.config,currentVersion:'0.3.0-alpha.4'});await next.completeVerification({healthy:true});next.request=async()=>new Response('[]');
+ await next.check({channel:'stable'});const restarted=new updater.AppUpdater({...f.config,currentVersion:'0.3.0-alpha.4'});assert.equal((await restarted.status()).channel,'stable');assert.equal((await restarted.status()).canRollback,true);
+});
+test('manual channel selection survives restart when completed-update backup remains and release is current',async t=>{
+ const f=await prepared(t,{releases:['0.3.0']});await f.manager.check({channel:'stable'});await f.manager.download();await f.manager.install();const next=new updater.AppUpdater({...f.config,currentVersion:'0.3.0'});await next.completeVerification({healthy:true});
+ await next.check({channel:'alpha'});const restarted=new updater.AppUpdater({...f.config,currentVersion:'0.3.0'});assert.equal((await restarted.status()).channel,'alpha');assert.equal((await restarted.status()).canRollback,true);
+});
+
+test('automatic recheck advances a signed metadata-only available target to a newer release',async t=>{
+ const f=await fixture(t);await f.manager.check({channel:'alpha'});f.docs.set('0.3.0a5',signed(manifest('0.3.0a5')));
+ f.manager.request=async(url,options)=>url.startsWith('https://api.github.com/')?new Response(JSON.stringify([{tag_name:'v0.3.0a5',draft:false,prerelease:true}])):f.config.fetch(url,options);
+ const result=await f.manager.check({automatic:true});assert.equal(result?.targetVersion,'0.3.0a5');assert.equal(result.phase,'available');assert.deepEqual(f.events,[]);
+});
+test('automatic recheck retains signed available target on network failure, empty or replayed discovery',async t=>{
+ const f=await fixture(t);await f.manager.check({channel:'alpha'});const before=await f.manager.status(),saved=await fs.readFile(path.join(f.directory,'app-updates/state.json'),'utf8');
+ f.manager.request=async()=>{throw Error('network failure');};await assert.rejects(f.manager.check({automatic:true}),e=>e.code==='NETWORK_FAILED');assert.deepEqual(await f.manager.status(),before);
+ f.manager.request=async()=>new Response('[]');assert.deepEqual(await f.manager.check({automatic:true}),before);
+ f.manager.request=async()=>new Response(JSON.stringify([{tag_name:'v0.3.0a3',draft:false,prerelease:true}]));await assert.rejects(f.manager.check({automatic:true}),e=>e.code==='DOWNGRADE_BLOCKED');
+ assert.deepEqual(await f.manager.status(),before);assert.equal(await fs.readFile(path.join(f.directory,'app-updates/state.json'),'utf8'),saved);assert.deepEqual(f.events,[]);
+});
+
+test('automatic equal-target check preserves authenticated cache through signature-write failure without refetch',async t=>{
+ const f=await fixture(t);await f.manager.check({channel:'alpha'});
+ const directory=path.join(f.directory,'app-updates/manifests/0.3.0a4');
+ const rawFile=path.join(directory,'release-manifest.json'),sigFile=path.join(directory,'release-manifest.sig');
+ const before={raw:await fs.readFile(rawFile),signature:await fs.readFile(sigFile),status:await f.manager.status()};
+ const revised=manifest();revised.impact.configuration=true;f.docs.set('0.3.0a4',signed(revised));
+ const atomic=f.manager._atomic;f.manager._atomic=async function(file,bytes){
+  if(file===sigFile)throw Object.assign(Error('signature storage full'),{code:'ENOSPC'});
+  return atomic.call(this,file,bytes);
+ };
+ const requestsBefore=f.requests.length;
+ const result=await f.manager.check({automatic:true});
+ assert.deepEqual(f.requests.slice(requestsBefore),['https://api.github.com/repos/XianZe1226/DSWhale/releases?per_page=100']);
+ assert.deepEqual(await fs.readFile(rawFile),before.raw);assert.deepEqual(await fs.readFile(sigFile),before.signature);
+ assert.deepEqual(result,before.status);assert.equal(result.canDownload,true);assert.equal(result.error,null);
+ const restarted=new updater.AppUpdater(f.config);assert.deepEqual(await restarted.status(),before.status);
+ // Equal-version manual checks still refresh the official signed metadata.
+ f.manager._atomic=atomic;const manualStart=f.requests.length;
+ const manual=await f.manager.check({channel:'alpha'});assert.equal(f.requests.length-manualStart,3);assert.equal(manual.impact.configuration,true);assert.equal(manual.canDownload,true);
+ assert.notDeepEqual(await fs.readFile(rawFile),before.raw);assert.notDeepEqual(await fs.readFile(sigFile),before.signature);
+});

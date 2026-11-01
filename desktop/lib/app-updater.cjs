@@ -1,5 +1,6 @@
 'use strict';
-// Manual desktop application updates. This module never starts an installer,
+// Signed desktop updates; automatic checks fetch metadata only.
+// This module never starts an installer,
 // restores private data, quits Electron, or prepares the backend by itself.
 // The root process supplies those capabilities as explicit callbacks.
 const fs = require('node:fs/promises');
@@ -193,23 +194,26 @@ class AppUpdater {
   }
   _abort() {if(this.controller?.signal.aborted)fail('CANCELLED');}
   _progress(phase) {try{this.onProgress({phase,step:phase==='downloading'?'下载并校验安装包':'准备应用更新'});}catch{}}
-  _run(action,work) {
+  _run(action,work,{quiet=false}={}) {
     if(this.operation)return Promise.reject(new UpdateError('UPDATER_BUSY'));
     this.controller=new AbortController();
     this.operation=(async()=>{
-      await this._load();if(this.corrupt)fail('STATE_INVALID');
+      await this._load();if(this.corrupt&&!quiet)fail('STATE_INVALID');
+      const before=quiet?structuredClone(this.state):null;
       try {
         const result=await work();return result;
       }catch(error) {
         const code=this.controller.signal.aborted?'CANCELLED':error instanceof UpdateError?error.code:'STORAGE_FAILED';
-        this.state.errorCode=code;this.state.failedAction=action;
-        try{await this._save();}catch{}
+        if(quiet)this.state=before;
+        else {this.state.errorCode=code;this.state.failedAction=action;
+          try{await this._save();}catch{}
+        }
         throw new UpdateError(code);
       }
     })().finally(()=>{this.operation=null;this.controller=null;});
     return this.operation;
   }
-  async _checkpoint(phase) {this._abort();this.state.phase=phase;delete this.state.errorCode;delete this.state.failedAction;await this._save();this._progress(phase);}
+  async _checkpoint(phase,{notify=true}={}) {this._abort();this.state.phase=phase;delete this.state.errorCode;delete this.state.failedAction;await this._save();if(notify)this._progress(phase);}
   async _metadata(url,maxBytes) {
     const signal=this.controller?.signal;
     const timeout=AbortSignal.timeout(30000),combined=signal?AbortSignal.any([signal,timeout]):timeout;
@@ -296,8 +300,14 @@ class AppUpdater {
       error:code?{code,message:MESSAGES[code]||MESSAGES.STORAGE_FAILED}:null,
       recovery:{interrupted,continueAction:canInstall?'install':canDownload?'download':null,requiresHealthVerification:['awaiting-verification','awaiting-rollback-verification','repair-required'].includes(this.state.phase),servicesMustRemainStopped:['snapshotting','install-ready','install-launched','awaiting-verification','rolling-back','rollback-launched','awaiting-rollback-verification','repair-required'].includes(this.state.phase),rollbackRequiresDataRestore:Boolean(rollbackTarget&&(rollbackTarget.impact.dataMigration||!rollbackTarget.impact.rollbackCompatible)),guidance:code?MESSAGES[code]:this.state.phase==='install-launched'?'请完成系统安装并重新打开应用；保留的旧版安装包和备份可用于回退。':this.state.phase==='rollback-launched'?'请完成旧版系统安装，重新打开应用后检查环境。':interrupted?'操作尚未完成，可继续下载或安装；备份保留在本机。':'更新仅在你明确操作时进行。'}};
   }
-  check({channel}={}) {
+  _automaticCheckAllowed() {
+    if(this.corrupt||this.state.errorCode||!['idle','up-to-date','available','installed','rolled-back'].includes(this.state.phase))return false;
+    if(this.state.phase!=='available'&&this.state.targetVersion&&compareVersions(this.state.targetVersion,this.currentVersion)>0)return false;
+    try{this._platform();return true;}catch{return false;}
+  }
+  check({channel,automatic=false}={}) {
     return this._run('check',async()=>{
+      if(automatic&&!this._automaticCheckAllowed())return null;
       channel=channel===undefined?this.state.channel:channel;
       this._platform();if(!['alpha','stable'].includes(channel))fail('CHANNEL_INVALID');
       if(['snapshotting','install-ready','install-launched','awaiting-verification','rolling-back','rollback-launched','awaiting-rollback-verification','repair-required'].includes(this.state.phase))fail('UPDATE_PENDING');
@@ -310,15 +320,21 @@ class AppUpdater {
         if(release.tag_name!==`v${version}`||release.prerelease!==version.includes('a')||channel==='stable'&&version.includes('a'))continue;
         versions.push(version);
       }
-      versions.sort((a,b)=>compareVersions(b,a));this.state.channel=channel;
-      if(!versions.length){if(!this.state.backup)await this._checkpoint('up-to-date');return this.status();}
+      this._abort();versions.sort((a,b)=>compareVersions(b,a));this.state.channel=channel;
+      // Metadata-only discoveries can advance, but an empty/replayed release
+      // list must never dismiss the already authenticated available target.
+      if(automatic&&this.state.phase==='available'&&!versions.length)return this.status();
+      if(!versions.length){if(!this.state.backup)await this._checkpoint('up-to-date',{notify:!automatic});else await this._save();return this.status();}
       const version=versions[0];
       if(compareVersions(version,this.currentVersion)<0||this.state.highestVersion&&compareVersions(version,this.state.highestVersion)<0)fail('DOWNGRADE_BLOCKED');
-      if(version===this.currentVersion){if(!this.state.backup)await this._checkpoint('up-to-date');return this.status();}
-      await this._fetchManifest(version);
+      // Retain the authenticated pair for an unchanged available target;
+      // replacing its JSON and signature independently could break that cache.
+      if(automatic&&this.state.phase==='available'&&version===this.state.targetVersion)return this.status();
+      if(version===this.currentVersion){if(!this.state.backup)await this._checkpoint('up-to-date',{notify:!automatic});else await this._save();return this.status();}
+      await this._fetchManifest(version);this._abort();
       this.state={...this.state,format:1,phase:'available',channel,highestVersion:version,targetVersion:version};
-      await this._checkpoint('available');return this.status();
-    });
+      await this._checkpoint('available',{notify:!automatic});return this.status();
+    },{quiet:automatic});
   }
   download() {
     return this._run('download',async()=>{
