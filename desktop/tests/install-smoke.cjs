@@ -4,7 +4,9 @@ const fs = require('node:fs/promises');
 const os = require('node:os');
 const path = require('node:path');
 const assert = require('node:assert/strict');
-const { RuntimeManager, SetupError } = require('../lib/runtime.cjs');
+const { RuntimeManager, SetupError, runBounded } = require('../lib/runtime.cjs');
+const { takeReadToken, extensionRunner } = require('./github-access.cjs');
+const ciReadToken=takeReadToken();
 const { ExtensionRunner } = require('../lib/extensions.cjs');
 const { execFile } = require('node:child_process');
 const { promisify } = require('node:util');
@@ -18,7 +20,7 @@ async function main() {
   const stagedSource = process.env.DSWHALE_SMOKE_SOURCE || path.resolve(__dirname, '../../desktop-resources/backend');
   const manager = new RuntimeManager({ source: stagedSource, runtime,
     onProgress: event => { if (event.step) console.log(event.step); } });
-  const extensions = new ExtensionRunner(manager);
+  const extensions = new ExtensionRunner(manager,extensionRunner(runBounded,ciReadToken));
   try {
     const installed = await manager.install();
     assert.equal(installed.installed, true);

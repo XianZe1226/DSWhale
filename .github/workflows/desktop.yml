@@ -59,6 +59,9 @@ jobs:
         run: python -m scripts.verify_artifact desktop-resources/backend
       - name: Fresh and repeated desktop installation with synthetic data
         run: node desktop/tests/install-smoke.cjs
+        env:
+          # Scoped to the test adapter's official API reads; never installers.
+          DSWHALE_SMOKE_GITHUB_TOKEN: ${{ github.token }}
       - name: Build native installer
         run: npm run dist -- ${{ matrix.target }}
         env:
