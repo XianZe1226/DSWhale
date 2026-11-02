@@ -10,7 +10,7 @@ function mainHarness(options) {
  const dialog=options?.dialog||{showOpenDialog:async()=>({canceled:true}),showMessageBox:async()=>({response:1})};
  const electron={app:{setName(){},getVersion:()=> '0.3.0-alpha.5',requestSingleInstanceLock:()=>true,whenReady:()=>new Promise(()=>{}),on(){}},protocol:{registerSchemesAsPrivileged(){}},powerMonitor:{},dialog};
  const context={updateScheduler:null,require:name=>name==='electron'?electron:realRequire(name),__dirname:path.dirname(file),process,console,Buffer,setTimeout,clearTimeout};
- vm.runInNewContext(fs.readFileSync(file,'utf8')+`;globalThis.hooks={perform,reportActionError,restore,configure(value){appUpdater=value.updater;updateScheduler=value.scheduler;workspace=value.workspace;supervisor=value.supervisor;napcat=value.napcat;}};`,context);
+ vm.runInNewContext(fs.readFileSync(file,'utf8')+`;globalThis.hooks={perform,reportActionError,restore,configure(value){operations=value.operations;appUpdater=value.updater;updateScheduler=value.scheduler;workspace=value.workspace;supervisor=value.supervisor;napcat=value.napcat;}};`,context);
  context.hooks.configure({updater:{},scheduler:{cancel:async()=>events.push('cancel-auto')},workspace:{perform:async(action,payload)=>{events.push([action,payload]);return {ok:true};}},supervisor:{stop:async()=>events.push('stop')},napcat:{stop:async()=>events.push('stop-qq')},...options});return {...context.hooks,events};
 }
 test('manual update mutations await automatic cancellation while ordinary stop remains available',async()=>{
@@ -43,4 +43,14 @@ test('backup import requires an explicit trusted-source confirmation',async()=>{
  const result=await h.restore();
  assert.equal(result.canceled,true);
  assert.deepEqual(calls,['confirm']);
+});
+
+
+test('action failures stay user-safe when the operations log write fails',async()=>{
+ const rows=[];
+ const h=mainHarness({operations:{events:{write:async row=>{rows.push({...row});throw Error('private log failure');}}}});
+ const message=await h.reportActionError(new TypeError('private original failure'),'unsupported-action');
+ assert.equal(message,'[APP-001] 操作未完成，请重新检查状态或导出诊断');
+ assert.deepEqual(rows,[{component:'app',action:'check',code:'APP-001'}]);
+ assert.deepEqual(h.events,[]);
 });

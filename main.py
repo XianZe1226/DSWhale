@@ -13,12 +13,14 @@ if __package__:
     from .dswhale.adapter import Companion
     from .dswhale.bili_agent import read_config
     from .dswhale.config import Settings
+    from .dswhale.persona import untrusted_block
     from .dswhale.reply_cleanup import clean_content, clean_history, clean_stream, clean_text
     from .dswhale.store import Store
 else:  # local SDK smoke tests
     from dswhale.adapter import Companion
     from dswhale.bili_agent import read_config
     from dswhale.config import Settings
+    from dswhale.persona import untrusted_block
     from dswhale.reply_cleanup import clean_content, clean_history, clean_stream, clean_text
     from dswhale.store import Store
 
@@ -323,8 +325,6 @@ class DSWhale(Star):
         self.companion.require_owner(event)
         if not self.companion.bili:
             return "B站整合未启动；当前不能读取本机视频笔记。"
-        from dswhale.persona import untrusted_block
-
         return untrusted_block("bili-notes", self.companion.bili.notes())
 
     @filter.llm_tool(name="dswhale_find_videos")

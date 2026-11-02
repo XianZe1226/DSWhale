@@ -7,7 +7,9 @@ import re
 import secrets
 import shutil
 import sqlite3
+import stat
 import subprocess
+import tempfile
 import time
 import uuid
 from pathlib import Path
@@ -28,13 +30,99 @@ def bridge_environment(base, *, root, timezone):
     return env
 
 
+def _protect_windows_control(path):
+    """Apply the vendored owner-only policy in one DACL update, without ACL reset."""
+    system = Path(os.environ.get("SystemRoot", r"C:\Windows")) / "System32"
+    # Build a fresh protected DACL in memory. Resetting a populated directory to
+    # inherited ACLs first would expose its existing files on failure/interruption.
+    # Paths are supplied through the environment, never interpolated as script.
+    script = (
+        '$ErrorActionPreference = "Stop"; '
+        "$path = $env:DSWHALE_ACL_PATH; "
+        "$target = Get-Item -LiteralPath $path -Force; "
+        "$sid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User; "
+        "$owner = (Get-Acl -LiteralPath $path).GetOwner("
+        "[System.Security.Principal.SecurityIdentifier]); "
+        "if ($owner.Value -ne $sid.Value) { throw 'Unexpected owner' }; "
+        "if ($target.PSIsContainer) { "
+        "$acl = New-Object System.Security.AccessControl.DirectorySecurity; "
+        "$inherit = [System.Security.AccessControl.InheritanceFlags]'ContainerInherit,ObjectInherit' "
+        "} else { "
+        "$acl = New-Object System.Security.AccessControl.FileSecurity; "
+        "$inherit = [System.Security.AccessControl.InheritanceFlags]::None }; "
+        "$acl.SetOwner($sid); $acl.SetAccessRuleProtection($true, $false); "
+        "$rule = [System.Security.AccessControl.FileSystemAccessRule]::new("
+        "$sid, [System.Security.AccessControl.FileSystemRights]::FullControl, $inherit, "
+        "[System.Security.AccessControl.PropagationFlags]::None, "
+        "[System.Security.AccessControl.AccessControlType]::Allow); "
+        "$acl.AddAccessRule($rule); "
+        "if ($target.PSIsContainer) { "
+        "[System.IO.Directory]::SetAccessControl($path, $acl) "
+        "} else { [System.IO.File]::SetAccessControl($path, $acl) }"
+    )
+    try:
+        subprocess.run(
+            [
+                str(system / "WindowsPowerShell/v1.0/powershell.exe"),
+                "-NoProfile",
+                "-NonInteractive",
+                "-Command",
+                script,
+            ],
+            env={**os.environ, "DSWHALE_ACL_PATH": str(path)},
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=10,
+            check=True,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
+    except (OSError, subprocess.SubprocessError):
+        raise OSError("无法保护 Windows 控制文件，未保存控制令牌。") from None
+
+
 def write_control_file(path, payload):
-    """Write the loopback control token with owner-only permissions from creation."""
-    flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC | getattr(os, "O_NOFOLLOW", 0)
-    descriptor = os.open(path, flags, 0o600)
-    with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
-        json.dump(payload, stream)
-    os.chmod(path, 0o600)
+    """Stage privately in an owned directory, then atomically replace a regular target."""
+    path = Path(path)
+    parent = path.parent.lstat()
+    if not stat.S_ISDIR(parent.st_mode):
+        raise ValueError("Control directory must be a real owned directory")
+    if os.name == "nt":
+        _protect_windows_control(path.parent)
+    elif parent.st_uid != os.getuid() or stat.S_IMODE(parent.st_mode) & 0o077:
+        raise ValueError("Control directory must be private and owned by this user")
+
+    def validate_target():
+        try:
+            target = path.lstat()
+        except FileNotFoundError:
+            return
+        if not stat.S_ISREG(target.st_mode):
+            raise ValueError("Control target must be a regular file")
+
+    validate_target()
+    stage = None
+    try:
+        # NamedTemporaryFile uses exclusive creation and POSIX mode 0600. On
+        # Windows mode bits do not provide privacy: restrict its DACL first.
+        with tempfile.NamedTemporaryFile(
+            mode="w",
+            encoding="utf-8",
+            dir=path.parent,
+            prefix=".control-",
+            suffix=".tmp",
+            delete=False,
+        ) as stream:
+            stage = Path(stream.name)
+            if os.name == "nt":
+                _protect_windows_control(stage)
+            json.dump(payload, stream)
+            stream.flush()
+            os.fsync(stream.fileno())
+        validate_target()
+        os.replace(stage, path)
+    finally:
+        if stage is not None:
+            stage.unlink(missing_ok=True)
 
 
 class BiliLedger:
@@ -208,7 +296,14 @@ class BiliService:
     def spawn(self, coroutine):
         task = asyncio.create_task(coroutine)
         self.tasks.add(task)
-        task.add_done_callback(self.tasks.discard)
+
+        def completed(task):
+            self.tasks.discard(task)
+            if not task.cancelled() and task.exception() is not None and not self.closed:
+                self.companion.last_error = "B站整合进程已退出，请检查依赖并重载插件。"
+                self.spawn(self.close())
+
+        task.add_done_callback(completed)
         return task
 
     def notes(self):
@@ -247,12 +342,21 @@ class BiliService:
             limit=1024 * 1024,
             **options,
         )
-        self.spawn(self._read())
+        reader = self.spawn(self._read())
+        ready = asyncio.create_task(self.ready.wait())
         try:
-            await asyncio.wait_for(self.ready.wait(), 15)
+            await asyncio.wait({reader, ready}, timeout=15, return_when=asyncio.FIRST_COMPLETED)
+            if self.closed or reader.done():
+                raise RuntimeError("B站整合进程已退出，请检查依赖并重载插件。")
+            if not self.ready.is_set():
+                raise TimeoutError("B站整合进程启动超时。")
         except BaseException:
             await self.close()
+            await asyncio.gather(reader, return_exceptions=True)
             raise
+        finally:
+            ready.cancel()
+            await asyncio.gather(ready, return_exceptions=True)
         self.spawn(self._work())
 
     async def _reply(self, ident, ok, result=None):
@@ -265,36 +369,98 @@ class BiliService:
             await self.process.stdin.drain()
 
     async def _read(self):
-        while line := await self.process.stdout.readline():
-            try:
-                packet = json.loads(line)
-            except (TypeError, ValueError):
-                # A malformed or truncated host line must not stop the reader.
-                continue
-            if not isinstance(packet, dict):
-                continue
-            kind = packet.get("type")
-            if kind == "ready":
-                port = packet.get("port")
-                if isinstance(port, bool) or not isinstance(port, int) or not 1 <= port <= 65535:
-                    continue
-                self.port = port
-                write_control_file(
-                    self.root / "control.json", {"port": self.port, "token": self.token}
-                )
-                self.ready.set()
-            elif kind == "prompt":
+        try:
+            while line := await self.process.stdout.readline():
+                # A partial last line is not a complete protocol packet. Oversized
+                # lines raise at readline's existing limit and stop the owned tree.
+                if not line.endswith(b"\n"):
+                    break
                 try:
-                    if not self.allowed():
-                        raise ValueError("Paused or quiet")
-                    self.ledger.enqueue(packet["request"])
-                    await self._reply(packet["id"], True)
-                except Exception:
-                    await self._reply(packet["id"], False)
-            elif kind == "manual":
-                self.spawn(self._manual(packet))
-        if not self.closed:
-            self.companion.last_error = "B站整合进程已退出，请检查依赖并重载插件。"
+                    packet = json.loads(line)
+                except (TypeError, ValueError):
+                    continue
+                if not isinstance(packet, dict):
+                    continue
+                kind = packet.get("type")
+                if not isinstance(kind, str):
+                    continue
+                if kind == "ready":
+                    port = packet.get("port")
+                    if type(port) is not int or not 1 <= port <= 65535:
+                        continue
+                    write_control_file(
+                        self.root / "control.json", {"port": port, "token": self.token}
+                    )
+                    self.port = port
+                    self.ready.set()
+                    continue
+                if kind not in {"prompt", "manual"}:
+                    continue
+                ident = packet.get("id")
+                if not self._valid_id(ident):
+                    continue
+                if kind == "prompt":
+                    request = packet.get("request")
+                    if not self._valid_request(request) or not self.allowed():
+                        await self._reply(ident, False)
+                        continue
+                    try:
+                        self.ledger.enqueue(request)
+                    except (ValueError, TypeError):
+                        await self._reply(ident, False)
+                    else:
+                        await self._reply(ident, True)
+                elif self._valid_args(packet.get("args")):
+                    self.spawn(self._manual(packet))
+                else:
+                    await self._reply(ident, False)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            # IPC/transport failures reveal no child output or private payloads.
+            pass
+        finally:
+            if not self.closed:
+                self.companion.last_error = "B站整合进程已退出，请检查依赖并重载插件。"
+                await self.close()
+
+    @staticmethod
+    def _valid_id(value):
+        return (
+            isinstance(value, str)
+            and 0 < len(value) <= 300
+            and not re.search(r"[\x00-\x1f\x7f]", value)
+        )
+
+    @classmethod
+    def _valid_request(cls, request):
+        if not isinstance(request, dict) or not cls._valid_id(request.get("requestId")):
+            return False
+        content = request.get("content")
+        return (
+            isinstance(content, list)
+            and len(content) <= 100
+            and all(
+                isinstance(part, dict)
+                and part.get("type", "text") == "text"
+                and isinstance(part.get("text"), str)
+                for part in content
+            )
+            and ("sessionId" not in request or cls._valid_id(request["sessionId"]))
+            and ("mode" not in request or request["mode"] == "queue")
+        )
+
+    @staticmethod
+    def _valid_args(args):
+        # Command allowlisting and manual authority remain in cli.mjs/policy.mjs.
+        return (
+            isinstance(args, list)
+            and 0 < len(args) <= 40
+            and all(
+                isinstance(arg, str) and len(arg) <= 12000 and not re.search(r"[\x00\r\n]", arg)
+                for arg in args
+            )
+        )
 
     async def _manual(self, packet):
         try:
