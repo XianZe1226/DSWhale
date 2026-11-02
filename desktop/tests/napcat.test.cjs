@@ -29,7 +29,9 @@ async function fixture(t, options = {}) {
   const accountFile = path.join(folder, 'napcat/config/onebot11_12345678.json');
   if (options.account !== false) await fs.writeFile(accountFile, JSON.stringify(config));
   const { NapCatManager } = require('../lib/napcat.cjs');
+  const session = options.session || { inspect: async () => ({ loginState: 'unknown' }), reset() {} };
   const app = new NapCatManager({ manager, userData: path.join(root, 'userData'), platform: options.platform || 'win32', assets,
+    session, now: options.now,
     getConnection: async () => ({ port: 6199, token: 'synthetic-host-private-token' }), onChange: event => changes.push(event),
     spawn(command, args, launchOptions) {
       launches.push({ command, args, options: launchOptions });
@@ -38,7 +40,7 @@ async function fixture(t, options = {}) {
       process.nextTick(() => child.emit('spawn'));
       return child;
     }, stopOwned: async child => { stopped.push(child.pid); child.exitCode = 0; child.emit('close', 0); } });
-  return { root, folder, app, manager, config, accountFile, changes, launches, stopped };
+  return { root, folder, app, manager, config, accountFile, changes, launches, stopped, session };
 }
 
 test('configure isolates data, preserves env and other OneBot clients, and is idempotent', async t => {
@@ -138,7 +140,7 @@ test('reconstruction and repeated prepare preserve identity data and the saved b
   await fs.writeFile(session, saved);
   const next = new f.app.constructor({ manager: { ...f.manager, runtime: path.join(f.root, 'replacement-runtime') },
     userData: path.join(f.root, 'userData'), platform: 'win32', assets: f.app.assets,
-    getConnection: f.app.getConnection, spawn: f.app.spawn, stopOwned: f.app.stopOwned });
+    getConnection: f.app.getConnection, spawn: f.app.spawn, stopOwned: f.app.stopOwned, session: f.session });
   await next.configure();
   await next.configure();
   await next.start();
@@ -171,10 +173,121 @@ test('invalid saved account data cannot become a launch argument or automatic lo
   assert.equal(f.launches.length, 0);
 });
 
+test('only a verified online bot is saved privately and public status never includes account or API details', async t => {
+  const session = { inspect: async () => ({ loginState: 'online', account: '87654321', token: 'synthetic-private-api-token', rawError: 'synthetic-private-error' }), reset() {} };
+  const f = await fixture(t, { session });
+  await f.app.configure(f.folder);
+  const status = await f.app.start();
+  assert.equal(status.loginState, 'online');
+  assert.equal(status.connectionConfigured, false, 'a different account cannot inherit the old account connection flag');
+  assert.deepEqual(JSON.parse(await fs.readFile(path.join(f.app.base, 'session.json'), 'utf8')), { schema: 1, account: '87654321' });
+  for (const value of ['87654321', 'synthetic-private-api-token', 'synthetic-private-error']) {
+    assert.equal(JSON.stringify(status).includes(value), false);
+    assert.equal(JSON.stringify(f.changes).includes(value), false);
+  }
+  await f.app.stop();
+});
+
+test('saved sessions get time to resume and unknown observations do not become a new scan requirement', async t => {
+  let now = 0, loginState = 'scan-required';
+  const f = await fixture(t, { now: () => now, session: { inspect: async () => ({ loginState }), reset() {} } });
+  await f.app.configure(f.folder);
+  assert.equal((await f.app.start()).loginState, 'resuming');
+  now = 20000;
+  loginState = 'unknown';
+  const unknown = await f.app.status();
+  assert.equal(unknown.loginState, 'unknown');
+  assert.equal(unknown.needsLogin, false);
+  loginState = 'scan-required';
+  assert.equal((await f.app.status()).needsLogin, true);
+  await f.app.stop();
+});
+
+test('stopping during a live probe cannot save an old account or publish a late online event', async t => {
+  let entered, finish;
+  const waiting = new Promise(resolve => { entered = resolve; });
+  const response = new Promise(resolve => { finish = resolve; });
+  const f = await fixture(t, { session: { inspect: async () => { entered(); return response; }, reset() {} } });
+  await f.app.configure(f.folder);
+  const starting = f.app.start(); starting.catch(() => {});
+  let timer;
+  t.after(async () => { finish({ loginState: 'unknown' }); await f.app.stop(); });
+  try { await Promise.race([waiting, new Promise((_resolve, reject) => { timer = setTimeout(() => reject(Error('owned live status probe was not started')), 100); })]); }
+  finally { clearTimeout(timer); }
+  const stopping = f.app.stop();
+  finish({ loginState: 'online', account: '87654321' });
+  await stopping;
+  await assert.rejects(starting, /取消/);
+  await assert.rejects(fs.stat(path.join(f.app.base, 'session.json')), { code: 'ENOENT' });
+  assert.equal(f.changes.some(change => change.loginState === 'online'), false);
+});
+
+test('an unchanged OneBot connection does not write config or restart QQ', async t => {
+  let config, writes = 0;
+  const session = { inspect: async () => ({ loginState: 'online', account: '12345678' }), reset() {},
+    getConfig: async () => structuredClone(config), setConfig: async () => { writes++; } };
+  const f = await fixture(t, { session });
+  await f.app.configure(f.folder);
+  config = JSON.parse(await fs.readFile(path.join(f.app.work, 'config/onebot11_12345678.json'), 'utf8'));
+  await f.app.start();
+  await f.app.wire();
+  assert.equal(writes, 0);
+  assert.equal(f.launches.length, 1);
+  assert.deepEqual(f.stopped, []);
+  await f.app.stop();
+});
+
+test('changed OneBot settings hot-apply while other connections and QQ login stay intact', async t => {
+  let config, f, writes = 0;
+  const session = { inspect: async () => ({ loginState: 'online', account: '12345678' }), reset() {},
+    getConfig: async () => structuredClone(config), setConfig: async (_context, next) => {
+      writes++; config = structuredClone(next);
+      await fs.writeFile(path.join(f.app.work, 'config/onebot11_12345678.json'), JSON.stringify(config));
+    } };
+  f = await fixture(t, { session });
+  await f.app.configure(f.folder);
+  config = JSON.parse(await fs.readFile(path.join(f.app.work, 'config/onebot11_12345678.json'), 'utf8'));
+  await f.app.start();
+  f.app.getConnection = async () => ({ port: 6299, token: 'synthetic-new-host-token' });
+  const status = await f.app.wire();
+  assert.equal(writes, 1);
+  assert.equal(config.network.websocketClients[1].url, 'ws://127.0.0.1:6299/ws');
+  assert.equal(config.network.websocketClients[1].token, 'synthetic-new-host-token');
+  assert.deepEqual(config.network.websocketClients[0], f.config.network.websocketClients[0]);
+  assert.deepEqual(config.network.httpServers, f.config.network.httpServers);
+  assert.equal(status.connectionConfigured, true);
+  assert.equal(f.launches.length, 1);
+  assert.deepEqual(f.stopped, []);
+  await f.app.stop();
+});
+
+test('an uncertain configuration write is not retried or turned into a QQ restart', async t => {
+  let config, f, writes = 0;
+  const session = { inspect: async () => ({ loginState: 'online', account: '12345678' }), reset() {},
+    getConfig: async () => structuredClone(config), setConfig: async (_context, next) => {
+      writes++; config = structuredClone(next);
+      await fs.writeFile(path.join(f.app.work, 'config/onebot11_12345678.json'), JSON.stringify(config));
+      throw Error('synthetic private response lost');
+    } };
+  f = await fixture(t, { session });
+  await f.app.configure(f.folder);
+  config = JSON.parse(await fs.readFile(path.join(f.app.work, 'config/onebot11_12345678.json'), 'utf8'));
+  await f.app.start();
+  f.app.getConnection = async () => ({ port: 6299, token: 'synthetic-new-host-token' });
+  await assert.rejects(f.app.wire(), error => !error.message.includes('synthetic private') && /连接|确认/.test(error.message));
+  assert.equal(writes, 1);
+  assert.deepEqual(f.stopped, []);
+  await f.app.wire();
+  assert.equal(writes, 1, 'explicit follow-up reads the already applied config instead of repeating the uncertain write');
+  await f.app.stop();
+});
+
 test('first login remains manual and is not invented from the owner account', async t => {
   const f = await fixture(t, { account: false });
   const state = await f.app.configure(f.folder);
-  assert.equal(state.needsLogin, true);
+  assert.equal(state.hasSavedLogin, false);
+  assert.equal(state.loginState, 'stopped');
+  assert.equal(state.needsLogin, false, 'a stopped component cannot establish a current QR requirement');
   assert.equal(state.connectionConfigured, false);
   assert.deepEqual((await fs.readdir(path.join(f.root, 'userData/napcat/work/config'))).filter(name => name.startsWith('onebot11_')), []);
 });

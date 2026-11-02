@@ -14,7 +14,7 @@ function mainHarness(options) {
  context.hooks.configure({updater:{},scheduler:{cancel:async()=>events.push('cancel-auto')},workspace:{perform:async(action,payload)=>{events.push([action,payload]);return {ok:true};}},supervisor:{stop:async()=>events.push('stop')},napcat:{stop:async()=>events.push('stop-qq')},...options});return {...context.hooks,events};
 }
 test('manual update mutations await automatic cancellation while ordinary stop remains available',async()=>{
- const h=mainHarness();await h.perform('stop');assert.deepEqual(h.events,['stop-qq','stop']);h.events.length=0;
+ const h=mainHarness();await h.perform('stop');assert.deepEqual(h.events,['stop']);h.events.length=0;
  for(const action of ['app-update-check','app-update-download','app-update-install','app-update-rollback']){
   await h.perform(action,{channel:'stable'});assert.equal(h.events[0],'cancel-auto');assert.equal(h.events[1][0],action);h.events.length=0;
  }

@@ -6,6 +6,7 @@ const path = require('node:path');
 const crypto = require('node:crypto');
 const childProcess = require('node:child_process');
 const officialAssets = require('./napcat-assets.json');
+const { NapCatSession } = require('./napcat-session.cjs');
 const CLIENT_NAME = 'DSWhale';
 const GUIDE = 'https://napneko.github.io/guide/boot/Shell';
 class NapCatError extends Error {
@@ -26,11 +27,11 @@ async function readText(file, fallback, limit = 1024 * 1024) {
   try { const stat = await fs.stat(file); if (!stat.isFile() || stat.size > limit) throw unsafe(); return (await fs.readFile(file, 'utf8')).replace(/^\uFEFF/, ''); }
   catch (error) { if (error.code === 'ENOENT' && fallback !== undefined) return fallback; throw error; }
 }
-async function atomic(file, text) {
+async function atomic(file, text, guard = () => {}) {
   await safePath(file); await fs.mkdir(path.dirname(file), { recursive: true, mode: 0o700 });
   await safePath(path.dirname(file));
   const temporary = `${file}.${crypto.randomUUID()}.tmp`;
-  try { await fs.writeFile(temporary, text, { flag: 'wx', mode: 0o600 }); await safePath(file); await fs.rename(temporary, file); await fs.chmod(file, 0o600); }
+  try { await fs.writeFile(temporary, text, { flag: 'wx', mode: 0o600 }); await safePath(file); guard(); await fs.rename(temporary, file); await fs.chmod(file, 0o600); }
   finally { await fs.rm(temporary, { force: true }); }
 }
 function environmentValues(text) {
@@ -58,6 +59,18 @@ async function accountConfigs(directory) {
   for (const name of matches) await safePath(path.join(directory, name));
   return matches.sort();
 }
+function applyConnection(config, connection) {
+  if (!config || Array.isArray(config) || typeof config !== 'object' || (config.network && (typeof config.network !== 'object' || Array.isArray(config.network)))) throw unsafe();
+  const before = JSON.stringify(config);
+  config.network ||= {}; config.network.websocketClients ||= [];
+  if (!Array.isArray(config.network.websocketClients)) throw unsafe();
+  const matches = config.network.websocketClients.filter(client => client && (client.name === CLIENT_NAME || client.url === connection.url));
+  if (matches.length > 1) throw new NapCatError('NAP-CLIENTS', '存在多个 DSWhale 连接，请先在登录管理中保留一个');
+  const client = matches[0] || { name: CLIENT_NAME, messagePostFormat: 'array', reportSelfMessage: false, reconnectInterval: 5000, heartInterval: 30000, debug: false };
+  Object.assign(client, { name: CLIENT_NAME, enable: true, url: connection.url, token: connection.token });
+  if (!matches.length) config.network.websocketClients.push(client);
+  return JSON.stringify(config) !== before;
+}
 async function defaultStopOwned(child) {
   if (!Number.isSafeInteger(child.pid) || child.pid <= 0 || child.exitCode !== null) return;
   const closed = new Promise(resolve => child.once('close', resolve));
@@ -71,9 +84,11 @@ async function defaultStopOwned(child) {
 }
 class NapCatManager {
   constructor({ manager, userData, platform = process.platform, assets = officialAssets, getConnection,
-    spawn = childProcess.spawn, stopOwned = defaultStopOwned, onChange = () => {}, fetch = globalThis.fetch, runner } = {}) {
+    spawn = childProcess.spawn, stopOwned = defaultStopOwned, onChange = () => {}, fetch = globalThis.fetch, runner,
+    session = new NapCatSession(), now = Date.now } = {}) {
     this.manager = manager; this.platform = platform; this.assets = assets; this.getConnection = getConnection;
     this.spawn = spawn; this.stopOwned = stopOwned; this.onChange = onChange; this.fetch = fetch; this.runner = runner;
+    this.session = session; this.now = now; this.monitor = null; this.livePending = null; this.polling = null; this.startedAt = null; this.stopping = null;
     this.base = path.resolve(userData ? path.join(userData, 'napcat') : path.join(manager.runtime, 'napcat'));
     this.data = path.join(this.base, 'qq-data'); this.work = path.join(this.base, 'work');
     this.receipt = path.join(this.base, 'receipt.json'); this.child = null; this.starting = null; this.installing = null; this.generation = 0; this.controller = null;
@@ -97,6 +112,49 @@ class NapCatManager {
     // record: only an unambiguous historical component config can supply it.
     // Never use the owner's ordinary QQ or enumerate desktop QQ data.
     return session?.account || (names.length === 1 ? names[0].slice(9, -5) : null);
+  }
+  async _observe() {
+    if (!this.running) return { loginState: 'stopped' };
+    if (this.livePending) return this.livePending;
+    const generation = this.generation, child = this.child;
+    const guard = () => { this._active(generation); if (!this.running || this.child !== child) throw new NapCatError('NAP-CANCELLED', '独立组件已停止'); };
+    const pending = (async () => {
+      try {
+        const observed = await this.session.inspect(await this._webui()); guard();
+        const phases = ['online', 'offline', 'connecting', 'confirming', 'scan-required', 'unknown'];
+        const loginState = phases.includes(observed?.loginState) ? observed.loginState : 'unknown';
+        if (loginState !== 'online') return { loginState };
+        if (typeof observed.account !== 'string' || !/^[1-9]\d{4,19}$/.test(observed.account)) return { loginState: 'unknown' };
+        const file = path.join(this.base, 'session.json');
+        const prior = JSON.parse(await readText(file, 'null', 16384)); guard();
+        if (prior?.schema !== 1 || prior?.account !== observed.account) {
+          await atomic(file, JSON.stringify({ schema: 1, account: observed.account }) + '\n', guard); guard();
+        }
+        return { loginState: 'online', account: observed.account };
+      } catch { return { loginState: generation !== this.generation || this.child !== child ? 'stopped' : 'unknown' }; }
+    })().finally(() => { if (this.livePending === pending) this.livePending = null; });
+    this.livePending = pending; return pending;
+  }
+  async _connectionSaved(account) {
+    if (!account) return false;
+    const file = path.join(this.work, 'config', `onebot11_${account}.json`);
+    let config; try { config = JSON.parse(await readText(file)); } catch (error) { if (error.code === 'ENOENT') return false; throw error; }
+    const connection = await this._connection();
+    const clients = config?.network?.websocketClients;
+    if (!Array.isArray(clients)) return false;
+    const matches = clients.filter(client => client && (client.name === CLIENT_NAME || client.url === connection.url));
+    return matches.length === 1 && matches[0].name === CLIENT_NAME && matches[0].enable === true && matches[0].url === connection.url && matches[0].token === connection.token;
+  }
+  _monitor() {
+    clearInterval(this.monitor);
+    const generation = this.generation;
+    this.monitor = setInterval(() => {
+      if (this.polling || !this.running || generation !== this.generation) return;
+      const pending = this.status().then(status => { if (this.running && generation === this.generation) this.onChange(status); })
+        .catch(() => {}).finally(() => { if (this.polling === pending) this.polling = null; });
+      this.polling = pending;
+    }, 5000);
+    this.monitor.unref?.();
   }
   _values(folder) { return { NAPCAT_QQ_DATA_DIR: this.data, NAPCAT_WORKDIR: this.work,
     NAPCAT_DISABLE_PIPE: '1', NAPCAT_DISABLE_MULTI_PROCESS: '1',
@@ -168,7 +226,7 @@ class NapCatManager {
   async status() {
     const externalOnly = this.platform !== 'win32';
     const state = { supported: ['win32', 'linux'].includes(this.platform), externalOnly, configured: false, isolationApplied: false,
-      version: '', needsLogin: true, hasSavedLogin: false, needsAccountSelection: false, connectionConfigured: false,
+      version: '', loginState: 'stopped', needsLogin: false, hasSavedLogin: false, needsAccountSelection: false, connectionConfigured: false,
       canStart: false, canInstall: !externalOnly, running: this.running, code: externalOnly ? 'NAP-EXTERNAL' : null,
       nextStep: externalOnly ? '按指南连接外部独立协议端' : '安装官方独立组件或选择已解压的受支持目录', guideURL: GUIDE };
     if (this.platform === 'darwin') return state;
@@ -176,12 +234,15 @@ class NapCatManager {
       const record = await this._record(); if (!record) return state;
       const names = await accountConfigs(path.join(this.work, 'config'));
       const resume = await this._resumeAccount(names);
+      const live = await this._observe();
       state.configured = true; state.version = this.assets.version; state.isolationApplied = await this._isolation(record.folder);
-      state.hasSavedLogin = Boolean(resume);
-      state.needsLogin = names.length === 0; state.needsAccountSelection = !resume && (names.length > 1 || record.needsAccountSelection === true);
-      state.connectionConfigured = Boolean(resume) && record.connectionConfigured === true;
+      state.loginState = live.loginState;
+      if (state.loginState === 'scan-required' && resume && Number.isFinite(this.startedAt) && this.now() - this.startedAt < 15000) state.loginState = 'resuming';
+      state.hasSavedLogin = Boolean(live.account || resume);
+      state.needsLogin = state.loginState === 'scan-required'; state.needsAccountSelection = !live.account && !resume && (names.length > 1 || record.needsAccountSelection === true);
+      state.connectionConfigured = await this._connectionSaved(live.account || resume);
       state.canStart = !externalOnly && state.isolationApplied;
-      state.nextStep = state.needsAccountSelection ? '在 NapCat WebUI 中确认所用账号与 DSWhale 反向连接' : state.needsLogin ? '启动独立组件后在 NapCat WebUI 手动扫码登录，再点连接配置' : '先启动对话服务，再启动独立组件';
+      state.nextStep = state.needsAccountSelection ? '在登录管理中选择机器人账号' : state.needsLogin ? '打开登录管理，完成 QQ 要求的验证；不要连续扫码' : this.running ? '已保留登录数据，按当前登录状态继续' : '启动连接后优先恢复此前登录的机器人账号';
       return state;
     } catch { return { ...state, configured: true, code: 'NAP-002', nextStep: '请重新选择安全的官方独立组件目录并检查隔离配置' }; }
   }
@@ -221,15 +282,8 @@ class NapCatManager {
         await atomic(file, text);
       }
       try { config = JSON.parse(await readText(file)); } catch { throw unsafe(); }
-      if (!config || Array.isArray(config) || typeof config !== 'object' || (config.network && (typeof config.network !== 'object' || Array.isArray(config.network)))) throw unsafe();
-      config.network ||= {}; config.network.websocketClients ||= [];
-      if (!Array.isArray(config.network.websocketClients)) throw unsafe();
       const connection = await this._connection();
-      const matches = config.network.websocketClients.filter(client => client && (client.name === CLIENT_NAME || client.url === connection.url));
-      if (matches.length > 1) throw new NapCatError('NAP-CLIENTS', '存在多个 DSWhale 连接，请先在 NapCat WebUI 中保留一个');
-      const client = matches[0] || { name: CLIENT_NAME, messagePostFormat: 'array', reportSelfMessage: false, reconnectInterval: 5000, heartInterval: 30000, debug: false };
-      Object.assign(client, { name: CLIENT_NAME, enable: true, url: connection.url, token: connection.token });
-      if (!matches.length) config.network.websocketClients.push(client);
+      applyConnection(config, connection);
       await atomic(file, JSON.stringify(config, null, 2) + '\n'); connectionConfigured = true;
     }
     const webuiFile = path.join(destination, 'webui.json');
@@ -280,6 +334,7 @@ class NapCatManager {
     return this.configure(destination);
   }
   start() {
+    if (this.stopping) return Promise.reject(new NapCatError('NAP-STOPPING', '独立组件正在停止，请稍候'));
     if (this.installing) return Promise.reject(new NapCatError('NAP-INSTALLING', '独立组件正在安装，请等待完成'));
     if (this.starting) return this.starting;
     if (this.running) return this.status();
@@ -306,17 +361,41 @@ class NapCatManager {
     const child = this.spawn(path.join(record.folder, 'node.exe'), [path.join(record.folder, 'index.js')],
       { cwd: record.folder, env: environment, shell: false, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
     this.child = child; child.stdout?.resume(); child.stderr?.resume();
-    child.once('close', () => { if (this.child === child) { this.child = null; this.onChange({ running: false }); } });
+    child.once('close', () => { if (this.child === child) { this.child = null; clearInterval(this.monitor); this.session.reset(); this.status().then(status => this.onChange(status)).catch(() => {}); } });
     await new Promise((resolve, reject) => { child.once('spawn', resolve); child.once('error', () => reject(new NapCatError('NAP-START', '独立组件无法启动，请检查官方组件文件'))); });
-    this._active(generation); const result = await this.status(); this.onChange(result); return result;
+    this._active(generation); this.startedAt = this.now(); const result = await this.status(); this._active(generation); this._monitor(); this.onChange(result); return result;
   }
-  async stop() {
+  async wire() {
+    this._supported(true);
+    if (!this.running) return this.configure();
+    const generation = this.generation, child = this.child;
+    try {
+      const webui = await this._webui(), connection = await this._connection();
+      const config = await this.session.getConfig(webui); this._active(generation);
+      if (!this.running || this.child !== child) throw new NapCatError('NAP-CANCELLED', '独立组件已停止');
+      if (applyConnection(config, connection)) await this.session.setConfig(webui, config);
+      this._active(generation);
+      const result = await this.status(); this.onChange(result); return result;
+    } catch (error) {
+      if (error instanceof NapCatError) throw error;
+      throw new NapCatError('NAP-WIRE', '连接配置尚未确认；QQ 保持运行，请刷新状态后再处理。');
+    }
+  }
+  stop() {
+    if (this.stopping) return this.stopping;
+    const pending = this._stop().finally(() => { if (this.stopping === pending) this.stopping = null; });
+    this.stopping = pending; return pending;
+  }
+  async _stop() {
     ++this.generation; this.controller?.abort();
-    const pending = this.starting, installing = this.installing, child = this.child; this.child = null;
+    clearInterval(this.monitor); this.session.reset();
+    const pending = this.starting, installing = this.installing, child = this.child, observing = this.livePending, polling = this.polling; this.child = null;
     if (child) await this.stopOwned(child);
     if (pending) await pending.catch(() => {});
     if (installing) await installing.catch(() => {});
-    this.onChange({ running: false }); return this.status();
+    if (observing) await observing.catch(() => {});
+    if (polling) await polling.catch(() => {});
+    const result = await this.status(); this.onChange(result); return result;
   }
 }
 module.exports = { NapCatManager, NapCatError };

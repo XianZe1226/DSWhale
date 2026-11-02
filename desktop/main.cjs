@@ -26,6 +26,10 @@ let window, panelView, manager, supervisor, extensions, quitting = false, shutdo
 const activeCommands = new Set();
 let state = { version: app.getVersion(), platform: { id: '', label: '本机', supported: true, detail: '' }, phase: 'idle', installed: false, running: false, components: [], setup: { ownerConfigured: false, qqConfigured: false, modelConfigured: false, memoryConfigured: false, biliEnabled: false } };
 function publish(patch = {}) { state = { ...state, ...patch }; if (window && !window.isDestroyed()) window.webContents.send('dswhale:state', state); return state; }
+function publishQQ(patch) {
+  if (patch.phase === 'installing') return publish({ step: patch.step, progress: patch.progress });
+  return publish({ workspace: { ...state.workspace, napcat: patch } });
+}
 function closePanel() {
   if (panelView) { if (window && !window.isDestroyed()) window.contentView.removeChildView(panelView); panelView.webContents.close(); panelView = null; }
   publish({ panel: undefined });
@@ -104,6 +108,8 @@ async function hostCommand(args) {
   });
 }
 async function stopAll() { closePanel(); await napcat?.stop(); await supervisor.stop(); }
+// QQ login has its own lifetime. A backend restart must not become a new QQ login.
+async function stopConversation() { closePanel(); await supervisor.stop(); }
 async function startAll() {
   if (!state.installed) throw new UserActionError('请先准备运行环境');
   const recovery = appUpdater ? (await appUpdater.status()).recovery : null;
@@ -164,19 +170,22 @@ async function perform(action, payload) {
     // Metadata checks never claim activeAction. Conflicting updater mutations
     // cancel and settle that check while retaining the normal action fence.
     if (action.startsWith('app-update-') || action === 'install') await updateScheduler?.cancel();
-    if (WORKSPACE_ACTIONS.has(action)) return await workspace.perform(action,payload);
+    if (WORKSPACE_ACTIONS.has(action)) { const result = await workspace.perform(action,payload); if(result?.napcat)publishQQ(result.napcat); return result; }
     if (action === 'extensions-status' || action.startsWith('extension-')) {
       if (!state.installed) throw new UserActionError('请先准备运行环境');
       return await runExtensionAction({ runner: extensions, supervisor, closePanel, publish, refresh, isClosing: () => shutdownRequested }, action === 'extensions-status' ? 'status' : action.slice(10), payload?.id);
     }
-    if (action === 'install') { await stopAll(); await manager.install(); await refresh(); const pending=appUpdater?await appUpdater.status():null; if(pending?.recovery?.requiresHealthVerification){const health=await operations.health();await appUpdater.completeVerification({healthy:health.summary.requiredFailures===0});} return state; }
+    if (action === 'install') { const prior=appUpdater?await appUpdater.status():null; if(prior?.recovery?.servicesMustRemainStopped)await stopAll();else await stopConversation(); await manager.install(); await refresh(); const pending=appUpdater?await appUpdater.status():null; if(pending?.recovery?.requiresHealthVerification){const health=await operations.health();await appUpdater.completeVerification({healthy:health.summary.requiredFailures===0});} return state; }
     if (action === 'start') return await startAll();
-    if (action === 'stop') { await stopAll();return publish({running:false,error:undefined}); }
+    if (action === 'stop') { await stopConversation();return publish({running:false,error:undefined}); }
     if (action === 'open-panel') { await openPanel(payload.panel); return state; }
     if (action === 'settings-save') {
-      closePanel(); const wasRunning = supervisor.running; await stopAll();
-      try { return await settingsCommand(manager, 'save', payload); }
-      finally { if(napcat){const nc=await napcat.status();if(nc.configured&&!nc.externalOnly)await napcat.configure();}if (wasRunning && !shutdownRequested) await startAll(); if (!shutdownRequested) await refresh(); }
+      const before = await settingsCommand(manager, 'read');
+      const connectionChanged = ['onebotPort', 'onebotToken'].some(key => Object.hasOwn(payload, key) && payload[key] !== before[key]);
+      const wasRunning = supervisor.running; await stopConversation();
+      let saved = false;
+      try { const result = await settingsCommand(manager, 'save', payload); saved = true; return result; }
+      finally { if(saved && connectionChanged && napcat?.running && !shutdownRequested)await napcat.wire(); if (wasRunning && !shutdownRequested) await startAll(); if (!shutdownRequested) await refresh(); }
     }
     if (action === 'open-data') { await fs.mkdir(manager.runtime, { recursive: true }); const error = await shell.openPath(manager.runtime); if (error) throw new UserActionError('无法打开数据目录'); return {}; }
     if (action === 'initial-login') {
@@ -224,7 +233,7 @@ async function createWindow() {
   extensions = new ExtensionRunner(manager);
   supervisor = new ServiceSupervisor({ manager, onChange: patch => { if (!patch.running && panelView) closePanel(); publish(patch); } });
   preferenceStore=new Preferences({userData:app.getPath('userData'),app});
-  napcat=new NapCatManager({manager,userData:app.getPath('userData'),fetch:transport,onChange:()=>{}});
+  napcat=new NapCatManager({manager,userData:app.getPath('userData'),fetch:transport,onChange:publishQQ});
   operations=new Operations({manager,supervisor,snapshotTo});
   const distro={};if(process.platform==='linux'){try{for(const line of(await fs.readFile('/etc/os-release','utf8')).split('\n')){const m=line.match(/^(ID|VERSION_ID)=["']?([^"']+)["']?$/);if(m)distro[m[1]]=m[2];}}catch{}}
   appUpdater=new AppUpdater({runtime:manager.runtime,currentVersion:app.getVersion(),distro,

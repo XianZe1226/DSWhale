@@ -32,6 +32,7 @@ const config = {
     "desktop/lib/preferences.cjs",
     "desktop/lib/diagnostics.cjs",
     "desktop/lib/napcat.cjs",
+    "desktop/lib/napcat-session.cjs",
     "desktop/lib/napcat-assets.json",
     "desktop/lib/release-trust.json",
     "desktop/lib/tool-assets.json",

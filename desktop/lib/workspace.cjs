@@ -17,7 +17,7 @@ class Workspace{
   if(action==='napcat-login-code'){await this.showLoginInfo(await this.napcat.loginInfo());return {};}
   if(action==='napcat-install'){if(!this.isInstalled())throw new Error('请先准备运行环境');await this.stopServices();return {napcat:await this.napcat.install()};}
   if(action==='napcat-configure'){const folder=await this.chooseNapCat();if(!folder)return {canceled:true};await this.napcat.stop();return {napcat:await this.napcat.configure(folder)};}
-  if(action==='napcat-wire'){const wasRunning=this.napcat.running;await this.napcat.stop();await this.napcat.configure();if(wasRunning&&!this.isClosing())await this.napcat.start();return {napcat:await this.napcat.status()};}
+  if(action==='napcat-wire')return {napcat:await this.napcat.wire()};
   if(action==='app-update-check')return {appUpdate:await this.appUpdater.check(payload)};
   if(action==='app-update-download')return {appUpdate:await this.appUpdater.download()};
   if(action==='app-update-install'){if(!this.isInstalled())throw new Error('请先准备运行环境');await this.appUpdater.install();await this.afterInstaller();return {appUpdate:await this.appUpdater.status()};}
