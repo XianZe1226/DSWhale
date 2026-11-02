@@ -40,10 +40,14 @@ def _protect_windows_control(path):
         '$ErrorActionPreference = "Stop"; '
         "$path = $env:DSWHALE_ACL_PATH; "
         "$target = Get-Item -LiteralPath $path -Force; "
-        "$sid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User; "
+        "$identity = [System.Security.Principal.WindowsIdentity]::GetCurrent(); "
+        "$sid = $identity.User; "
+        # Elevated Windows tokens can legitimately default new objects to their
+        # exact token owner (e.g. Administrators); this is not any group match.
         "$owner = (Get-Acl -LiteralPath $path).GetOwner("
         "[System.Security.Principal.SecurityIdentifier]); "
-        "if ($owner.Value -ne $sid.Value) { throw 'Unexpected owner' }; "
+        "if ($owner.Value -ne $sid.Value -and $owner.Value -ne $identity.Owner.Value) "
+        "{ throw 'Unexpected owner' }; "
         "if ($target.PSIsContainer) { "
         "$acl = New-Object System.Security.AccessControl.DirectorySecurity; "
         "$inherit = [System.Security.AccessControl.InheritanceFlags]'ContainerInherit,ObjectInherit' "
@@ -69,7 +73,12 @@ def _protect_windows_control(path):
                 "-Command",
                 script,
             ],
-            env={**os.environ, "DSWHALE_ACL_PATH": str(path)},
+            # A PowerShell 7 parent can pass incompatible modules through Python.
+            # Let Windows PowerShell reconstruct its own native module defaults.
+            env={
+                **{k: v for k, v in os.environ.items() if k.upper() != "PSMODULEPATH"},
+                "DSWHALE_ACL_PATH": str(path),
+            },
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
             timeout=10,

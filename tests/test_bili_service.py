@@ -353,23 +353,30 @@ def test_windows_control_file_native_owner_only_dacl(tmp_path, monkeypatch):
         script = (
             '$ErrorActionPreference = "Stop"; '
             "$acl = [System.IO.File]::GetAccessControl($env:WHALE_TEST_ACL_FILE); "
+            "$user = [System.Security.Principal.WindowsIdentity]::GetCurrent().User; "
+            "$rules = @($acl.GetAccessRules($true, $true, [System.Security.Principal.SecurityIdentifier])); "
             "[pscustomobject]@{ protected = $acl.AreAccessRulesProtected; "
-            "sids = @($acl.GetAccessRules($true, $true, "
-            "[System.Security.Principal.SecurityIdentifier]) | "
-            "ForEach-Object { $_.IdentityReference.Value }); "
-            "current = [System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value } "
-            "| ConvertTo-Json -Compress"
+            "currentUserOnly = ($rules.Count -eq 1 -and "
+            "$rules[0].IdentityReference.Equals($user) -and "
+            "$rules[0].AccessControlType -eq [System.Security.AccessControl.AccessControlType]::Allow -and "
+            "$rules[0].FileSystemRights -eq [System.Security.AccessControl.FileSystemRights]::FullControl); "
+            "ownerIsCurrent = $acl.GetOwner([System.Security.Principal.SecurityIdentifier]).Equals($user) "
+            "} | ConvertTo-Json -Compress"
         )
         acl = json.loads(
             subprocess.check_output(
                 ["powershell.exe", "-NoProfile", "-Command", script],
-                env={**os.environ, "WHALE_TEST_ACL_FILE": str(stream.name)},
+                env={
+                    **{k: v for k, v in os.environ.items() if k.upper() != "PSMODULEPATH"},
+                    "WHALE_TEST_ACL_FILE": str(stream.name),
+                },
                 text=True,
                 timeout=10,
             )
         )
         assert acl["protected"] is True
-        assert acl["sids"] == [acl["current"]]
+        assert acl["currentUserOnly"] is True
+        assert acl["ownerIsCurrent"] is True
         assert __import__("pathlib").Path(stream.name).stat().st_size == 0
         original_dump(payload, stream)
 
@@ -489,7 +496,10 @@ def test_windows_failed_acl_application_preserves_prior_private_dacl(tmp_path, m
                 "-Command",
                 "(Get-Acl -LiteralPath $env:WHALE_TEST_ACL_FILE).Sddl",
             ],
-            env={**os.environ, "WHALE_TEST_ACL_FILE": str(tmp_path)},
+            env={
+                **{k: v for k, v in os.environ.items() if k.upper() != "PSMODULEPATH"},
+                "WHALE_TEST_ACL_FILE": str(tmp_path),
+            },
             text=True,
             timeout=10,
         ).strip()
@@ -518,3 +528,79 @@ def test_windows_failed_acl_application_preserves_prior_private_dacl(tmp_path, m
     assert directory_dacl() == before
     assert json.loads(path.read_text())["token"] == "old synthetic token"
     assert credentials.read_text() == "synthetic credentials"
+
+
+@pytest.mark.parametrize("key", ["PSModulePath", "psmodulepath", "PsMoDuLePaTh"])
+def test_windows_control_child_uses_native_module_defaults_only(tmp_path, monkeypatch, key):
+    import os
+    import subprocess
+
+    from dswhale.bili import _protect_windows_control
+
+    monkeypatch.setenv(key, "synthetic-incompatible-powershell-7-modules")
+    monkeypatch.setenv("HTTPS_PROXY", "http://127.0.0.1:7890")
+    monkeypatch.setenv("NO_PROXY", "localhost")
+    monkeypatch.setenv("TZ", "Asia/Shanghai")
+    parent = dict(os.environ)
+    children = []
+
+    def run(args, **kwargs):
+        children.append(kwargs["env"])
+        return SimpleNamespace(returncode=0)
+
+    monkeypatch.setattr(subprocess, "run", run)
+    _protect_windows_control(tmp_path)
+    assert len(children) == 1
+    child = children[0]
+    assert not any(name.upper() == "PSMODULEPATH" for name in child)
+    assert child["DSWHALE_ACL_PATH"] == str(tmp_path)
+    for name, value in parent.items():
+        if name.upper() != "PSMODULEPATH" and name != "DSWHALE_ACL_PATH":
+            assert child[name] == value
+    assert dict(os.environ) == parent
+
+
+@pytest.mark.skipif(__import__("os").name != "nt", reason="native Windows owner-policy execution")
+@pytest.mark.parametrize("owner", ["user", "token-default", "unrelated"])
+def test_windows_control_owner_policy_uses_exact_identity_owners(tmp_path, monkeypatch, owner):
+    import subprocess
+
+    from dswhale.bili import _protect_windows_control
+
+    path = tmp_path / "empty-synthetic-file"
+    path.touch()
+    original_run = subprocess.run
+    replacement = {
+        "user": "$owner = [System.Security.Principal.WindowsIdentity]::GetCurrent().User; ",
+        "token-default": "$owner = [System.Security.Principal.WindowsIdentity]::GetCurrent().Owner; ",
+        "unrelated": "$owner = [System.Security.Principal.SecurityIdentifier]::new('S-1-5-21-112233-445566-778899-12345'); ",
+    }[owner]
+
+    def fixture_owner(args, **kwargs):
+        # Substitute only the ownership observation. Execute the real policy and
+        # ACL application on an empty fixture; never assign an unrelated owner.
+        marker = "[System.Security.Principal.SecurityIdentifier]); "
+        script = args[-1].replace(marker, marker + replacement, 1)
+        assert script != args[-1]
+        if owner != "unrelated":
+            # Verify the actual resulting DACL/owner without emitting their SIDs.
+            script += (
+                "; $actual = [System.IO.File]::GetAccessControl($path); "
+                "$user = [System.Security.Principal.WindowsIdentity]::GetCurrent().User; "
+                "$rules = @($actual.GetAccessRules($true, $true, [System.Security.Principal.SecurityIdentifier])); "
+                "if (-not $actual.AreAccessRulesProtected -or $rules.Count -ne 1 -or "
+                "-not $rules[0].IdentityReference.Equals($user) -or "
+                "$rules[0].AccessControlType -ne [System.Security.AccessControl.AccessControlType]::Allow -or "
+                "$rules[0].FileSystemRights -ne [System.Security.AccessControl.FileSystemRights]::FullControl -or "
+                "-not $actual.GetOwner([System.Security.Principal.SecurityIdentifier]).Equals($user)) "
+                "{ throw 'Synthetic final ACL verification failed' }"
+            )
+        return original_run([*args[:-1], script], **kwargs)
+
+    monkeypatch.setattr(subprocess, "run", fixture_owner)
+    if owner == "unrelated":
+        with pytest.raises(OSError, match="Windows"):
+            _protect_windows_control(path)
+    else:
+        _protect_windows_control(path)
+    assert path.read_bytes() == b""
