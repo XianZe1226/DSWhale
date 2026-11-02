@@ -7,9 +7,10 @@ const vm=require('node:vm');
 const {createRequire}=require('node:module');
 function mainHarness(options) {
  const file=path.resolve(__dirname,'../main.cjs'),realRequire=createRequire(file),events=[];
- const electron={app:{setName(){},getVersion:()=> '0.3.0-alpha.5',requestSingleInstanceLock:()=>true,whenReady:()=>new Promise(()=>{}),on(){}},protocol:{registerSchemesAsPrivileged(){}},powerMonitor:{}};
+ const dialog=options?.dialog||{showOpenDialog:async()=>({canceled:true}),showMessageBox:async()=>({response:1})};
+ const electron={app:{setName(){},getVersion:()=> '0.3.0-alpha.5',requestSingleInstanceLock:()=>true,whenReady:()=>new Promise(()=>{}),on(){}},protocol:{registerSchemesAsPrivileged(){}},powerMonitor:{},dialog};
  const context={updateScheduler:null,require:name=>name==='electron'?electron:realRequire(name),__dirname:path.dirname(file),process,console,Buffer,setTimeout,clearTimeout};
- vm.runInNewContext(fs.readFileSync(file,'utf8')+`;globalThis.hooks={perform,configure(value){appUpdater=value.updater;updateScheduler=value.scheduler;workspace=value.workspace;supervisor=value.supervisor;napcat=value.napcat;}};`,context);
+ vm.runInNewContext(fs.readFileSync(file,'utf8')+`;globalThis.hooks={perform,reportActionError,restore,configure(value){appUpdater=value.updater;updateScheduler=value.scheduler;workspace=value.workspace;supervisor=value.supervisor;napcat=value.napcat;}};`,context);
  context.hooks.configure({updater:{},scheduler:{cancel:async()=>events.push('cancel-auto')},workspace:{perform:async(action,payload)=>{events.push([action,payload]);return {ok:true};}},supervisor:{stop:async()=>events.push('stop')},napcat:{stop:async()=>events.push('stop-qq')},...options});return {...context.hooks,events};
 }
 test('manual update mutations await automatic cancellation while ordinary stop remains available',async()=>{
@@ -27,4 +28,19 @@ test('manual cancellation reserves the action fence until completion',async()=>{
 test('manual updater results replace the automatic snapshot used by later state publications',async()=>{
  const appUpdate={phase:'downloaded',canInstall:true};const h=mainHarness({updater:{status:async()=>appUpdate},workspace:{perform:async()=>({appUpdate})}});
  await h.perform('app-update-download');assert.deepEqual((await h.perform('home')).appUpdate,appUpdate);
+});
+
+test('action failures stay user-safe before the operations log exists',async()=>{
+ const h=mainHarness();
+ const message=await h.reportActionError(new TypeError('boom'),'stop');
+ assert.match(message,/^\[APP-001\] 操作未完成，请重新检查状态或导出诊断$/);
+ assert.deepEqual(h.events,[]);
+});
+
+test('backup import requires an explicit trusted-source confirmation',async()=>{
+ const calls=[];
+ const h=mainHarness({dialog:{showOpenDialog:async()=>({canceled:false,filePaths:['/tmp/backup.zip']}),showMessageBox:async()=>{calls.push('confirm');return {response:1};}}});
+ const result=await h.restore();
+ assert.equal(result.canceled,true);
+ assert.deepEqual(calls,['confirm']);
 });

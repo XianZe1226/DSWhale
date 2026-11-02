@@ -9,7 +9,13 @@ description = "A QQ companion for AstrBot with shared memory and evidence-based 
 readme = "README.md"
 requires-python = ">=3.12,<3.13"
 license = "AGPL-3.0-only"
-dependencies = ["httpx>=0.28,<0.29", "yt-dlp==2026.10.21", "tzdata>=2025.1", "filelock>=3.17"]
+dependencies = [
+    "httpx>=0.28,<0.29",
+    "yt-dlp==2026.10.21",
+    "tzdata>=2025.1",
+    "filelock>=3.17",
+    "packaging>=24.2",
+]
 
 [project.optional-dependencies]
 host = ["astrbot==4.29.3"]

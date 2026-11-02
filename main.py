@@ -323,7 +323,9 @@ class DSWhale(Star):
         self.companion.require_owner(event)
         if not self.companion.bili:
             return "B站整合未启动；当前不能读取本机视频笔记。"
-        return self.companion.bili.notes()
+        from dswhale.persona import untrusted_block
+
+        return untrusted_block("bili-notes", self.companion.bili.notes())
 
     @filter.llm_tool(name="dswhale_find_videos")
     async def find_tool(self, event: AstrMessageEvent) -> str:
@@ -331,6 +333,8 @@ class DSWhale(Star):
         import json
 
         self.companion.require_owner(event)
+        if self.companion.content is None:
+            return "OpenBiliClaw 地址配置无效，自动发现不可用；请填写本机 HTTP 或 HTTPS 地址后重载插件。"
         try:
             videos = await self.companion.content.recommend()
             return json.dumps(

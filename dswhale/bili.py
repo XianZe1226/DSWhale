@@ -3,6 +3,7 @@
 import asyncio
 import json
 import os
+import re
 import secrets
 import shutil
 import sqlite3
@@ -14,6 +15,26 @@ from pathlib import Path
 from .process import owned_command, run_process
 
 BRIDGE = Path(__file__).with_name("bili_bridge")
+NODE_INJECTION = re.compile(r"(?i)(?:node_options|node_path|electron_run_as_node)")
+
+
+def bridge_environment(base, *, root, timezone):
+    """Start the pinned Node bridge without inheriting node hook injection."""
+    env = dict(os.environ if base is None else base)
+    for key in [key for key in env if NODE_INJECTION.fullmatch(key)]:
+        del env[key]
+    env["DSWHALE_BILI_HOME"] = str(Path(root).resolve())
+    env["TZ"] = timezone
+    return env
+
+
+def write_control_file(path, payload):
+    """Write the loopback control token with owner-only permissions from creation."""
+    flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC | getattr(os, "O_NOFOLLOW", 0)
+    descriptor = os.open(path, flags, 0o600)
+    with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+        json.dump(payload, stream)
+    os.chmod(path, 0o600)
 
 
 class BiliLedger:
@@ -209,10 +230,8 @@ class BiliService:
 
     async def start(self):
         env = {
-            **os.environ,
-            "DSWHALE_BILI_HOME": str(self.root.resolve()),
+            **bridge_environment(os.environ, root=self.root, timezone=self.settings.timezone),
             "DSWHALE_BILI_TOKEN": self.token,
-            "TZ": self.settings.timezone,
         }
         options = (
             {"start_new_session": True}
@@ -247,15 +266,24 @@ class BiliService:
 
     async def _read(self):
         while line := await self.process.stdout.readline():
-            packet = json.loads(line)
-            if packet.get("type") == "ready":
-                self.port = int(packet["port"])
-                control = self.root / "control.json"
-                with control.open("w", encoding="utf-8") as stream:
-                    os.chmod(control, 0o600)
-                    json.dump({"port": self.port, "token": self.token}, stream)
+            try:
+                packet = json.loads(line)
+            except (TypeError, ValueError):
+                # A malformed or truncated host line must not stop the reader.
+                continue
+            if not isinstance(packet, dict):
+                continue
+            kind = packet.get("type")
+            if kind == "ready":
+                port = packet.get("port")
+                if isinstance(port, bool) or not isinstance(port, int) or not 1 <= port <= 65535:
+                    continue
+                self.port = port
+                write_control_file(
+                    self.root / "control.json", {"port": self.port, "token": self.token}
+                )
                 self.ready.set()
-            elif packet.get("type") == "prompt":
+            elif kind == "prompt":
                 try:
                     if not self.allowed():
                         raise ValueError("Paused or quiet")
@@ -263,7 +291,7 @@ class BiliService:
                     await self._reply(packet["id"], True)
                 except Exception:
                     await self._reply(packet["id"], False)
-            elif packet.get("type") == "manual":
+            elif kind == "manual":
                 self.spawn(self._manual(packet))
         if not self.closed:
             self.companion.last_error = "B站整合进程已退出，请检查依赖并重载插件。"
@@ -288,11 +316,7 @@ class BiliService:
                 ],
                 timeout=200,
                 cwd=self.root,
-                env={
-                    **os.environ,
-                    "DSWHALE_BILI_HOME": str(self.root.resolve()),
-                    "TZ": self.settings.timezone,
-                },
+                env=bridge_environment(os.environ, root=self.root, timezone=self.settings.timezone),
                 disk_limit=1024**3,
             )
             return json.loads(raw)

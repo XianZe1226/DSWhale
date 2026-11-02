@@ -131,6 +131,10 @@ async function restoreFile(file, {rebuild = true} = {}) {
 async function restore() {
   const selected = await dialog.showOpenDialog(window,{title:'导入自己创建的 DSWhale ZIP 备份',properties:['openFile'],filters:[{name:'DSWhale ZIP 备份',extensions:['zip']}]});
   if (selected.canceled || !selected.filePaths.length) return {canceled:true};
+  // A backup is a trusted artefact: it replaces data/ and any plugin code inside
+  // runs the next time services start. Make that an explicit confirmation.
+  const confirm = await dialog.showMessageBox(window,{type:'warning',title:'确认导入备份',message:'备份会替换当前数据，其中的插件代码会在下次启动服务时加载',detail:'请只导入你本人创建的 DSWhale 备份；来源不明的备份可能包含会运行的插件代码。',buttons:['继续导入','取消'],defaultId:1,cancelId:1});
+  if (confirm.response !== 0) return {canceled:true};
   return restoreFile(selected.filePaths[0]);
 }
 function showWindow() { if (window && !window.isDestroyed()) { window.show(); if(window.isMinimized())window.restore();window.focus(); } }
@@ -202,6 +206,16 @@ async function perform(action, payload) {
     activeAction = null;
   }
 }
+async function reportActionError(error, action) {
+  const safe=error instanceof UserActionError||error instanceof UpdateError||error instanceof NapCatError||error instanceof NetworkError||error instanceof SetupError||error instanceof PreferencesError||error instanceof DiagnosticsError||error?.code==='PORT-001';
+  const code=error instanceof UpdateError?'UPD-001':error instanceof NapCatError?'NAP-001':error instanceof NetworkError?'NET-001':error?.code==='PORT-001'?'PORT-001':'APP-001';
+  const message=`[${code}] ${safe?error.message:'操作未完成，请重新检查状态或导出诊断'}`;
+  // Reporting must never replace the user-facing action error: the event log or
+  // the operations object may be unavailable during an early failure.
+  try { await operations?.events?.write({component:error instanceof UpdateError?'update':'app',action:['start','stop','install','restore'].includes(action)?action:'check',code}); } catch {}
+  publish({error:message,...(['install','restore'].includes(action)?{phase:'error',installed:false,progress:null}:{})});
+  return message;
+}
 async function createWindow() {
   const source = app.isPackaged ? path.join(process.resourcesPath, 'backend') : path.resolve(__dirname, '..');
   const downloadSession=session.fromPartition('persist:dswhale-downloads');
@@ -238,7 +252,7 @@ async function createWindow() {
   ipcMain.handle('dswhale:action', async (event, action, payload) => {
     validateRequest(event, window.webContents, action, payload);
     try { return await perform(action, payload); }
-    catch (error) { const safe=error instanceof UserActionError||error instanceof UpdateError||error instanceof NapCatError||error instanceof NetworkError||error instanceof SetupError||error instanceof PreferencesError||error instanceof DiagnosticsError||error?.code==='PORT-001'; const code=error instanceof UpdateError?'UPD-001':error instanceof NapCatError?'NAP-001':error instanceof NetworkError?'NET-001':error?.code==='PORT-001'?'PORT-001':'APP-001';const message=`[${code}] ${safe?error.message:'操作未完成，请重新检查状态或导出诊断'}`;await operations.events.write({component:error instanceof UpdateError?'update':'app',action:['start','stop','install','restore'].includes(action)?action:'check',code});publish({error:message,...(['install','restore'].includes(action)?{phase:'error',installed:false,progress:null}:{})});throw new UserActionError(message); }
+    catch (error) { throw new UserActionError(await reportActionError(error, action)); }
   });
   await window.loadURL('dswhale://desktop/index.html');
   applyPreferences(await preferenceStore.read());
