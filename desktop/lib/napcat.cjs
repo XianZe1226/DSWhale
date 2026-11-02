@@ -88,6 +88,16 @@ class NapCatManager {
     if (value !== null && (value.schema !== 1 || typeof value.folder !== 'string' || !path.isAbsolute(value.folder))) throw unsafe();
     return value;
   }
+  async _resumeAccount(names) {
+    let session;
+    try { session = JSON.parse(await readText(path.join(this.base, 'session.json'), 'null', 16384)); }
+    catch { throw unsafe(); }
+    if (session !== null && (session.schema !== 1 || typeof session.account !== 'string' || !/^[1-9]\d{4,19}$/.test(session.account))) throw unsafe();
+    // A saved online account is authoritative. Legacy versions have no session
+    // record: only an unambiguous historical component config can supply it.
+    // Never use the owner's ordinary QQ or enumerate desktop QQ data.
+    return session?.account || (names.length === 1 ? names[0].slice(9, -5) : null);
+  }
   _values(folder) { return { NAPCAT_QQ_DATA_DIR: this.data, NAPCAT_WORKDIR: this.work,
     NAPCAT_DISABLE_PIPE: '1', NAPCAT_DISABLE_MULTI_PROCESS: '1',
     ...(this.platform === 'win32' ? { NAPCAT_WRAPPER_PATH: path.join(folder, 'wrapper.node'),
@@ -158,17 +168,19 @@ class NapCatManager {
   async status() {
     const externalOnly = this.platform !== 'win32';
     const state = { supported: ['win32', 'linux'].includes(this.platform), externalOnly, configured: false, isolationApplied: false,
-      version: '', needsLogin: true, needsAccountSelection: false, connectionConfigured: false,
+      version: '', needsLogin: true, hasSavedLogin: false, needsAccountSelection: false, connectionConfigured: false,
       canStart: false, canInstall: !externalOnly, running: this.running, code: externalOnly ? 'NAP-EXTERNAL' : null,
       nextStep: externalOnly ? '按指南连接外部独立协议端' : '安装官方独立组件或选择已解压的受支持目录', guideURL: GUIDE };
     if (this.platform === 'darwin') return state;
     try {
       const record = await this._record(); if (!record) return state;
       const names = await accountConfigs(path.join(this.work, 'config'));
+      const resume = await this._resumeAccount(names);
       state.configured = true; state.version = this.assets.version; state.isolationApplied = await this._isolation(record.folder);
-      state.needsLogin = names.length === 0; state.needsAccountSelection = names.length > 1 || record.needsAccountSelection === true;
-      state.connectionConfigured = names.length === 1 && record.connectionConfigured === true;
-      state.canStart = !externalOnly && state.isolationApplied && !state.needsAccountSelection;
+      state.hasSavedLogin = Boolean(resume);
+      state.needsLogin = names.length === 0; state.needsAccountSelection = !resume && (names.length > 1 || record.needsAccountSelection === true);
+      state.connectionConfigured = Boolean(resume) && record.connectionConfigured === true;
+      state.canStart = !externalOnly && state.isolationApplied;
       state.nextStep = state.needsAccountSelection ? '在 NapCat WebUI 中确认所用账号与 DSWhale 反向连接' : state.needsLogin ? '启动独立组件后在 NapCat WebUI 手动扫码登录，再点连接配置' : '先启动对话服务，再启动独立组件';
       return state;
     } catch { return { ...state, configured: true, code: 'NAP-002', nextStep: '请重新选择安全的官方独立组件目录并检查隔离配置' }; }
@@ -197,9 +209,17 @@ class NapCatManager {
       } else if (sourceNames.length > 1) names = sourceNames;
     }
     await fs.mkdir(this.data, { recursive: true, mode: 0o700 }); await fs.mkdir(destination, { recursive: true, mode: 0o700 });
+    const resume = await this._resumeAccount(names);
+    const selected = resume && names.find(name => name === `onebot11_${resume}.json`);
     let connectionConfigured = false;
-    if (names.length === 1) {
-      const file = path.join(destination, names[0]); let config;
+    if (selected) {
+      const file = path.join(destination, selected); let config;
+      try { await fs.stat(file); } catch (error) {
+        if (error.code !== 'ENOENT') throw error;
+        const text = await readText(path.join(this._binary(folder), 'config', selected));
+        try { JSON.parse(text); } catch { throw unsafe(); }
+        await atomic(file, text);
+      }
       try { config = JSON.parse(await readText(file)); } catch { throw unsafe(); }
       if (!config || Array.isArray(config) || typeof config !== 'object' || (config.network && (typeof config.network !== 'object' || Array.isArray(config.network)))) throw unsafe();
       config.network ||= {}; config.network.websocketClients ||= [];
@@ -222,9 +242,9 @@ class NapCatManager {
     await atomic(webuiFile, JSON.stringify(webui, null, 2) + '\n');
     await atomic(envFile, updateEnvironment(env, { ...this._values(folder), NAPCAT_WEBUI_PREFERRED_PORT: String(webui.port) }));
     await atomic(this.receipt, JSON.stringify({ schema: 1, folder, version: this.assets.version, connectionConfigured,
-      needsAccountSelection: names.length > 1 }) + '\n');
+      needsAccountSelection: names.length > 1 && !resume }) + '\n');
     const result = await this.status();
-    if (names.length > 1) Object.assign(result, { needsAccountSelection: true, connectionConfigured: false, canStart: false, nextStep: '存在多个账号配置，请在 NapCat WebUI 中选择并确认连接' });
+    if (names.length > 1 && !resume) Object.assign(result, { needsAccountSelection: true, connectionConfigured: false, nextStep: '启动连接后，在登录面板中选择机器人账号' });
     this.onChange(result); return result;
   }
   install() {
@@ -270,7 +290,7 @@ class NapCatManager {
   async _start(generation) {
     this._supported(); const record = await this._record();
     if (!record) throw new NapCatError('NAP-SELECT', '请先选择并配置官方独立组件');
-    if (record.needsAccountSelection) throw new NapCatError('NAP-ACCOUNTS', '存在多个账号配置，请先在 NapCat WebUI 中选择');
+    const resume = await this._resumeAccount(await accountConfigs(path.join(this.work, 'config')));
     if (!await this._isolation(record.folder)) throw new NapCatError('NAP-ISOLATION', '隔离配置已变化，请重新完成连接配置后再启动');
     await this._verify(record.folder); this._active(generation);
     const webui = await this._webui();
@@ -282,6 +302,7 @@ class NapCatManager {
     const environment = { ...await this.manager.environment() };
     for (const key of Object.keys(environment)) if (/^(NODE_OPTIONS|NODE_PATH|ELECTRON_RUN_AS_NODE|NAPCAT_|QQ_)/i.test(key)) delete environment[key];
     Object.assign(environment, this._values(record.folder), { NAPCAT_WEBUI_PREFERRED_PORT: String(webui.port) }); this._active(generation);
+    if (resume) environment.NAPCAT_QUICK_ACCOUNT = resume;
     const child = this.spawn(path.join(record.folder, 'node.exe'), [path.join(record.folder, 'index.js')],
       { cwd: record.folder, env: environment, shell: false, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
     this.child = child; child.stdout?.resume(); child.stderr?.resume();

@@ -95,7 +95,79 @@ test('multiple account configurations require WebUI selection without account di
   assert.equal((await f.app.status()).needsAccountSelection, true);
   assert.equal(JSON.stringify(state).includes('87654321'), false);
   assert.equal(JSON.stringify(state).includes('12345678'), false);
-  await assert.rejects(f.app.start(), /选择|多个/);
+  await f.app.start();
+  assert.equal(f.launches[0].options.env.NAPCAT_QUICK_ACCOUNT, undefined);
+  await f.app.stop();
+});
+
+test('a historical bot resumes once from private data without exposing the account in arguments or status', async t => {
+  const f = await fixture(t);
+  await f.app.configure(f.folder);
+  await f.app.start();
+  await f.app.start();
+  assert.equal(f.launches.length, 1);
+  assert.equal(f.launches[0].options.env.NAPCAT_QUICK_ACCOUNT, '12345678');
+  assert.equal(f.launches[0].args.some(arg => arg.includes('12345678')), false);
+  assert.equal((await f.app.status()).hasSavedLogin, true);
+  assert.equal(JSON.stringify(await f.app.status()).includes('12345678'), false);
+  await f.app.stop();
+});
+
+test('a verified prior bot is retained among multiple configs without selecting the owner or another bot', async t => {
+  const f = await fixture(t);
+  await f.app.configure(f.folder);
+  await fs.writeFile(path.join(f.app.work, 'config/onebot11_87654321.json'), JSON.stringify(f.config));
+  await fs.writeFile(path.join(f.app.base, 'session.json'), JSON.stringify({ schema: 1, account: '87654321' }));
+  await f.app.configure();
+  await f.app.start();
+  assert.equal(f.launches[0].options.env.NAPCAT_QUICK_ACCOUNT, '87654321');
+  assert.equal((await f.app.status()).needsAccountSelection, false);
+  assert.equal(JSON.stringify(f.changes).includes('87654321'), false);
+  await f.app.stop();
+});
+
+test('reconstruction and repeated prepare preserve identity data and the saved bot selection', async t => {
+  const f = await fixture(t);
+  await f.app.configure(f.folder);
+  const identity = path.join(f.app.data, 'nt_qq/global/device-identity.fixture');
+  await fs.mkdir(path.dirname(identity), { recursive: true });
+  const bytes = Buffer.from('synthetic existing QQ identity and login state');
+  await fs.writeFile(identity, bytes);
+  const session = path.join(f.app.base, 'session.json');
+  const saved = JSON.stringify({ schema: 1, account: '12345678' });
+  await fs.writeFile(session, saved);
+  const next = new f.app.constructor({ manager: { ...f.manager, runtime: path.join(f.root, 'replacement-runtime') },
+    userData: path.join(f.root, 'userData'), platform: 'win32', assets: f.app.assets,
+    getConnection: f.app.getConnection, spawn: f.app.spawn, stopOwned: f.app.stopOwned });
+  await next.configure();
+  await next.configure();
+  await next.start();
+  assert.equal(f.launches[0].options.env.NAPCAT_QQ_DATA_DIR, f.app.data);
+  assert.equal(f.launches[0].options.env.NAPCAT_QUICK_ACCOUNT, '12345678');
+  assert.deepEqual(await fs.readFile(identity), bytes);
+  assert.equal(await fs.readFile(session, 'utf8'), saved);
+  await next.stop();
+});
+
+test('first login does not inherit an account or password from unrelated environment values', async t => {
+  const f = await fixture(t, { account: false });
+  f.manager.environment = async () => ({ PATH: process.env.PATH, NAPCAT_QUICK_ACCOUNT: '87654321',
+    NAPCAT_QUICK_PASSWORD: 'synthetic-foreign-secret', NAPCAT_QUICK_PASSWORD_MD5: 'f'.repeat(32) });
+  await f.app.configure(f.folder);
+  await f.app.start();
+  const env = f.launches[0].options.env;
+  assert.equal(env.NAPCAT_QUICK_ACCOUNT, undefined);
+  assert.equal(env.NAPCAT_QUICK_PASSWORD, undefined);
+  assert.equal(env.NAPCAT_QUICK_PASSWORD_MD5, undefined);
+  assert.equal((await f.app.status()).hasSavedLogin, false);
+  await f.app.stop();
+});
+
+test('invalid saved account data cannot become a launch argument or automatic login target', async t => {
+  const f = await fixture(t);
+  await f.app.configure(f.folder);
+  await fs.writeFile(path.join(f.app.base, 'session.json'), JSON.stringify({ schema: 1, account: '12345678\n--foreign' }));
+  await assert.rejects(f.app.start(), /安全|记录|配置/);
   assert.equal(f.launches.length, 0);
 });
 
