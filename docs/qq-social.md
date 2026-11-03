@@ -4,7 +4,7 @@ DSWhale 可以修改机器人账号的个性签名，以及准备、发布纯文
 
 ## 开启功能
 
-先按[连接指南](setup.md)完成 NapCat / OneBot 接入和用户绑定。在桌面应用「连接设置」中分别启用签名和空间选项，保存后生效。已有 AstrBot 使用者可在 DSWhale 插件配置中设置 `qq_signature_enabled` 和 `qzone_enabled`，保存并重载插件。
+先按[连接指南](setup.md)完成 NapCat / OneBot 接入和用户绑定。在桌面应用「QQ 连接」中分别启用签名和空间选项，保存后生效。已有 AstrBot 使用者可在 DSWhale 插件配置中设置 `qq_signature_enabled` 和 `qzone_enabled`，保存并重载插件。
 
 这些功能操作的是当前会话连接的机器人账号。无需填写 B站资料，也不会修改正在使用的个人 QQ 客户端。
 

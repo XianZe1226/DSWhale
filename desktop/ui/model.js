@@ -4,8 +4,8 @@
   else root.DSWhaleUI = api;
 })(typeof globalThis === 'object' ? globalThis : this, function () {
   'use strict';
-  const workspaceActions = new Set(['workspace-status','health-check','backup-list','backup-restore','backup-delete','diagnostics-export','app-update-check','app-update-download','app-update-install','app-update-rollback','napcat-install','napcat-configure','napcat-wire','napcat-guide','napcat-login-code','preferences-save']);
-  const noPayloadActions = new Set(['workspace-status','health-check','backup-list','diagnostics-export','app-update-download','app-update-install','napcat-install','napcat-configure','napcat-wire','napcat-guide','napcat-login-code']);
+  const workspaceActions = new Set(['workspace-status','health-check','backup-list','backup-restore','backup-delete','diagnostics-export','app-update-check','app-update-download','app-update-install','app-update-rollback','napcat-install','napcat-configure','napcat-wire','napcat-stop','napcat-guide','napcat-login-code','preferences-save']);
+  const noPayloadActions = new Set(['workspace-status','health-check','backup-list','diagnostics-export','app-update-download','app-update-install','napcat-install','napcat-configure','napcat-wire','napcat-stop','napcat-guide','napcat-login-code']);
   const actions = new Set(['inspect', 'install', 'start', 'stop', 'open-panel', 'home', 'settings-get', 'settings-save', 'open-data', 'backup', 'restore', 'initial-login', 'extensions-status', 'extension-check', 'extension-update', 'extension-rollback',...workspaceActions]);
   const panels = new Set(['astrbot', 'models', 'memory', 'bilibili', 'qq', 'napcat']);
   const extensionIds = new Set(['memory', 'memes']);
@@ -26,6 +26,43 @@
     if(port===dashboardPort)throw new Error('OneBot 与控制台端口不能相同。');
     return { ownerQQ: String(value.ownerQQ ?? '').trim(), platformId: String(value.platformId ?? '').trim(), onebotPort: port, dashboardPort, onebotToken: String(value.onebotToken ?? ''), biliEnabled: Boolean(value.biliEnabled), proactiveEnabled: Boolean(value.proactiveEnabled), signatureEnabled: value.signatureEnabled === true, qzoneEnabled: value.qzoneEnabled === true };
   }
+  function connectionViewModel(data) {
+    const state = data.state || {}, qq = data.workspace?.napcat;
+    const view = (stage, title, description, badge, tone, action = '', actionLabel = '') =>
+      ({ stage, title, description, badge, tone, action, actionLabel, ...(action === 'open-panel' ? { panel: 'napcat' } : {}) });
+    if (data.workspace?.appUpdate?.recovery?.servicesMustRemainStopped) return view('recovery', '先完成应用更新', '当前更新或恢复尚未完成，请先处理应用设置中的提示。', '等待恢复', 'warn', 'route-settings', '查看恢复步骤');
+    if (!state.installed || state.platform?.supported === false) return view('environment', '先准备运行环境', '环境准备完成后，再连接 QQ。已有配置与登录数据会保留。', '尚未准备', '', 'route-environment', '准备运行环境');
+    const startup = {
+      'starting-conversation': ['正在启动对话服务', '先启动消息处理服务，完成后再连接 QQ。'],
+      'checking-qq': ['对话服务已启动', '正在检查已有的 QQ 连接。'],
+      'starting-qq': ['正在启动 QQ 连接', '对话服务已准备好，正在启动独立 QQ 组件。'],
+      'reusing-qq': ['沿用现有 QQ 连接', 'QQ 仍在运行，正在把它连接到对话服务，不会重新登录。'],
+    }[state.startup?.stage];
+    if (startup) return view(state.startup.stage, ...startup, '正在启动', 'working');
+    if (!qq) return view('checking', '正在检查 QQ 连接', '读取已有配置和当前连接状态。', '检查中', 'working', 'workspace-status', '检查连接状态');
+    const ownerSaved = state.setup?.ownerConfigured || /^[1-9]\d{4,19}$/.test(data.settings?.ownerQQ || '');
+    if (!ownerSaved && data.settings) return view('owner', '先填写你的 QQ 号', '这是接收消息的账号。机器人小号将在下一步单独登录。', '首次设置', '', 'save-settings', '保存并继续');
+    if (qq.code && qq.code !== 'NAP-EXTERNAL' && qq.code !== 'EXTERNAL_REQUIRED') return view('issue', 'QQ 连接需要检查', '已有登录数据会保留。请先查看连接选项，不必反复安装或扫码。', '需要处理', 'warn', 'show-connection-options', '查看连接选项');
+    const managed = qq.configured && !qq.externalOnly;
+    const onlineProof = state.running && qq.protocolConnected === true && (!managed || qq.running && !['scan-required', 'offline'].includes(qq.loginState));
+    if (onlineProof) return view('ready', 'QQ 已连接', state.setup?.modelConfigured === false ? '消息连接已建立。接下来选择一个对话模型。' : '消息连接已建立，可以回到 QQ 与鱼聊天。', '已连接', 'good', state.setup?.modelConfigured === false ? 'route-intelligence' : '', state.setup?.modelConfigured === false ? '选择对话模型' : '');
+    if (!qq.configured && !qq.externalOnly && state.platform?.id === 'win32-x64') return view('component', '准备 QQ 连接组件', '仅首次需要准备独立组件；日常使用的 QQ 和账号数据保持分开。', '首次准备', '', 'napcat-install', '准备 QQ 连接');
+    if (!state.running) return view('stopped', qq.running ? 'QQ 连接已保留' : '启动对话和 QQ 连接', qq.running ? 'QQ 仍在运行。启动对话服务，就能继续使用。' : qq.hasSavedLogin ? '将依次启动对话服务、恢复已有 QQ 登录，再建立消息连接。' : '先启动对话服务，再按提示登录机器人小号。', '等待启动', '', 'start', qq.running ? '启动对话服务' : '启动并连接');
+    if (qq.externalOnly) return view('external', '连接外部 QQ 服务', '对话服务已启动。请在你的协议端登录机器人账号，再建立消息连接。', '等待外部连接', '', 'show-external-guide', '查看接入步骤');
+    if (!qq.running) return view('qq-stopped', '对话服务已启动', '还需要启动 QQ 连接；已有登录会优先恢复。', '等待 QQ', '', 'start', '启动 QQ 连接');
+    if (qq.loginState === 'online') return qq.connectionConfigured
+      ? view('awaiting-link', 'QQ 已在线，等待消息连接', '正在等待机器人建立连接，此时不需要重新登录。', '连接中', 'working')
+      : view('apply-connection', 'QQ 已在线', '最后应用一次消息连接设置，不会退出 QQ。', '还差一步', '', 'napcat-wire', '完成消息连接');
+    const phases = {
+      resuming: ['正在恢复已有登录', '优先使用这台电脑上保存的登录记录，请稍候。', '恢复登录中', 'working'],
+      connecting: ['QQ 正在连接', '组件已启动，正在等待 QQ 完成初始化。', '连接中', 'working'],
+      confirming: ['等待手机确认', '请在手机 QQ 上确认本次登录；确认后等待状态更新，不要重复扫码。', '需要手机确认', 'warn'],
+      'scan-required': ['需要完成 QQ 登录', '在管理页登录机器人小号。已在手机确认时请先等待，不要连续扫码。', '需要登录', 'warn', 'open-panel', '打开 QQ 登录'],
+      offline: ['QQ 连接已断开', '请到管理页查看 QQ 的验证提示；应用不会连续重试登录。', 'QQ 离线', 'warn', 'open-panel', '查看 QQ 登录状态'],
+    }[qq.loginState];
+    if (phases) return view(qq.loginState, ...phases);
+    return view('unknown', '暂时无法确认 QQ 状态', 'QQ 组件仍在运行。可以打开管理页查看，无需重新准备环境。', '等待确认', '', 'open-panel', '打开 QQ 管理');
+  }
   function createController({ bridge, preview = false } = {}) {
     const available = !!bridge && typeof bridge.invoke === 'function' && typeof bridge.onState === 'function';
     let data = { mode: available ? 'desktop' : preview ? 'preview' : 'unavailable', pending: '', pendingExtension: '', error: '', retry: null, settings: null, extensions: null, extensionChecks: { memory: false, memes: false }, workspaceLoaded:false, workspace:{health:null,backups:[],appUpdate:null,napcat:null,preferences:preferencesPayload(),diagnosticFiles:[]}, notice: '', state: { version: '', platform: { label: '正在读取系统信息', supported: true }, phase: 'idle', installed: false, running: false, components: [], setup: {}, panel: '' } };
@@ -44,7 +81,7 @@
       data.state = { ...data.state, ...state, platform: { ...data.state.platform, ...state.platform }, setup: { ...data.state.setup, ...state.setup } };
     }
     if (!available && preview) {
-      merge({ version: '0.3.0a8', platform: { id: 'darwin-arm64', label: 'macOS · Apple Silicon', supported: true }, components: [
+      merge({ version: '0.3.0a9', platform: { id: 'darwin-arm64', label: 'macOS · Apple Silicon', supported: true }, components: [
         { id: 'python', label: 'Python', version: '3.12', status: 'missing', detail: '将安装到独立环境' },
         { id: 'node', label: 'Node.js', version: '22 LTS', status: 'missing', detail: '用于扩展与网页能力' },
         { id: 'ffmpeg', label: 'FFmpeg', version: '6+', status: 'missing', detail: '音频与视频处理' },
@@ -146,5 +183,5 @@
       dispose() { if (typeof unsubscribe === 'function') unsubscribe(); subscribers.clear(); },
     };
   }
-  return { createController, escapeHTML, settingsPayload,preferencesPayload };
+  return { createController, escapeHTML, settingsPayload,preferencesPayload,connectionViewModel };
 });

@@ -58,8 +58,8 @@ async function refresh() {
   return publish({ ...result, setup, running: supervisor.running, phase: result.installed ? 'ready' : 'idle' });
 }
 async function openPanel(panel) {
-  if (!supervisor.running) throw new UserActionError('请先启动对话服务');
-  let url = await supervisor.dashboard();
+  if (!supervisor.running && panel !== 'napcat') throw new UserActionError('请先启动对话服务');
+  let url = panel === 'napcat' ? null : await supervisor.dashboard();
   if (panel === 'napcat') {
     const managed=await napcat.status();
     if(managed.configured&&!managed.externalOnly){if(!napcat.running)throw new UserActionError('请先启动独立 QQ 组件');url=(await napcat.loginInfo()).url;}
@@ -331,6 +331,7 @@ else {
     event.preventDefault();
     if (shutdownRequested) return;
     shutdownRequested = true;
+    clearInterval(externalConnectionMonitor);
     updateScheduler?.stop();
     for (const child of activeCommands) child.kill();
     Promise.resolve().then(async()=>{for(const close of [()=>appUpdater?.cancel(),()=>operations?.close(),()=>extensions?.close(),()=>manager?.cancel(),()=>napcat?.stop(),()=>supervisor?.stop()]){try{await close();}catch{}}}).finally(()=>{quitting=true;app.quit();});

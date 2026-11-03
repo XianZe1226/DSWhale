@@ -1,6 +1,6 @@
 'use strict';
 const {DIAGNOSTIC_FILES,writeDiagnostics}=require('./diagnostics.cjs');
-const ACTIONS=new Set(['workspace-status','health-check','backup-list','backup-restore','backup-delete','diagnostics-export','app-update-check','app-update-download','app-update-install','app-update-rollback','napcat-install','napcat-configure','napcat-wire','napcat-guide','napcat-login-code','preferences-save']);
+const ACTIONS=new Set(['workspace-status','health-check','backup-list','backup-restore','backup-delete','diagnostics-export','app-update-check','app-update-download','app-update-install','app-update-rollback','napcat-install','napcat-configure','napcat-wire','napcat-stop','napcat-guide','napcat-login-code','preferences-save']);
 class Workspace{
  constructor(options){Object.assign(this,options);this.healthReport=null;}
  async health(){if(!this.isInstalled())return null;this.healthReport=await this.operations.health();return this.healthReport;}
@@ -18,6 +18,7 @@ class Workspace{
   if(action==='napcat-install'){if(!this.isInstalled())throw new Error('请先准备运行环境');await this.stopServices();return {napcat:await this.napcat.install()};}
   if(action==='napcat-configure'){const folder=await this.chooseNapCat();if(!folder)return {canceled:true};await this.napcat.stop();return {napcat:await this.napcat.configure(folder)};}
   if(action==='napcat-wire')return {napcat:await this.napcat.wire()};
+  if(action==='napcat-stop')return {napcat:await this.napcat.stop()};
   if(action==='app-update-check')return {appUpdate:await this.appUpdater.check(payload)};
   if(action==='app-update-download')return {appUpdate:await this.appUpdater.download()};
   if(action==='app-update-install'){if(!this.isInstalled())throw new Error('请先准备运行环境');await this.appUpdater.install();await this.afterInstaller();return {appUpdate:await this.appUpdater.status()};}

@@ -38,7 +38,7 @@
 
 **0.3 预览版**：默认 Windows 包没有可信发布者签名，Mac 包只有本地临时签名、没有 Apple 公证。若某次构建使用了正式证书，发布页会单独注明；请核对来源与随包 SHA-256。安装提示与数据位置见 [桌面使用指南](docs/desktop.md)。
 
-Windows 可在「连接设置」按需安装官方独立 QQ 连接组件，程序与数据单独保存；macOS 和 Linux 的外部协议端配置见 [QQ 隔离指南](docs/qq-isolation.md)。普通 QQ 接入仍需本人登录机器人账号。
+Windows 可在「QQ 连接」按需安装官方独立 QQ 连接组件，程序与数据单独保存；macOS 和 Linux 的外部协议端配置见 [QQ 隔离指南](docs/qq-isolation.md)。普通 QQ 接入仍需本人登录机器人账号。
 
 已有 AstrBot 可继续使用 [插件安装](docs/setup.md#接入现有-astrbot)。需要终端部署或旧式脚本的用户可查看各系统指南中的高级方式；源码 ZIP 不是桌面安装器。
 

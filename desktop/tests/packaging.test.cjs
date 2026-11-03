@@ -5,6 +5,26 @@ const path = require('node:path');
 const yaml = require('js-yaml');
 const os = require('node:os');
 const { spawnSync } = require('node:child_process');
+const { flipFuses } = require('@electron/fuses');
+require('app-builder-lib');
+const { PlatformPackager } = require('app-builder-lib/out/platformPackager');
+const { verifyBinary } = require('../../scripts/verify-electron-fuses.cjs');
+
+test('builder startup policy disables inherited Node mode in a real copied Electron binary', async () => {
+  const electron = require('electron');
+  const source = process.platform === 'darwin'
+    ? path.resolve(electron, '../../Frameworks/Electron Framework.framework/Electron Framework') : electron;
+  const folder = fs.mkdtempSync(path.join(os.tmpdir(), 'dswhale-fuses-'));
+  try {
+    const binary = path.join(folder, 'electron-copy');
+    fs.copyFileSync(source, binary, fs.constants.COPYFILE_FICLONE);
+    await assert.rejects(verifyBinary(binary), /must be disabled/);
+    const config = require('../../electron-builder.cjs');
+    const fuses = await PlatformPackager.prototype.generateFuseConfig(config.electronFuses || {});
+    await flipFuses(binary, fuses);
+    assert.equal(await verifyBinary(binary), true);
+  } finally { fs.rmSync(folder, { recursive: true, force: true }); }
+});
 
 test('native installer workflow parses before it reaches GitHub Actions', () => {
   const file = path.resolve(__dirname, '../../.github/workflows/desktop.yml');

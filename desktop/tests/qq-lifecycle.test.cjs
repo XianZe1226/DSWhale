@@ -15,10 +15,12 @@ function harness({ saveFails = false, recovery = {}, backendRunning = true, qqRu
     async start() { if (!this.running) { events.push('launch-qq'); this.running = true; } return this.status(); },
     async configure() { if (this.running) throw Error('cannot reconfigure running QQ'); },
     async wire() { events.push('apply-connection'); return this.status(); },
+    async loginInfo() { return {url:'http://127.0.0.1:6099/webui/',token:'synthetic-only-management-token'}; },
     async status() { return { configured: true, externalOnly: false, canStart: true, running: this.running, loginState: this.running ? loginState : 'stopped', hasSavedLogin: true, connectionConfigured: true, protocolConnected: false }; } };
   const manager = { host: 'synthetic-host', async inspect() { return { installed: true }; },
     async install() { events.push('prepare-backend'); } };
-  const electron = { app: { setName() {}, getVersion: () => '0.3.0-alpha.8', requestSingleInstanceLock: () => true,
+  class LocalView { constructor() { this.webContents={setWindowOpenHandler(){},on(){},close(){},loadURL:async()=>events.push('open-qq-management')}; } setBounds(){} }
+  const electron = { WebContentsView:LocalView, app: { setName() {}, getVersion: () => '0.3.0-alpha.8', requestSingleInstanceLock: () => true,
     whenReady: () => new Promise(() => {}), on() {} }, protocol: { registerSchemesAsPrivileged() {} } };
   const fakeServices = { ...native('./lib/services.cjs'), settingsCommand: async (_manager, command) => {
     if (command === 'save') { events.push('save-settings'); if (saveFails) throw Error('synthetic save failure'); }
@@ -29,7 +31,7 @@ function harness({ saveFails = false, recovery = {}, backendRunning = true, qqRu
     __dirname: path.dirname(file), process, console, Buffer, setTimeout, clearTimeout };
   vm.runInNewContext(fs.readFileSync(file, 'utf8') + `;globalThis.hooks={perform,stopAll,publishQQ,getState:()=>state,set(values){
     state.installed=true; manager=values.manager; supervisor=values.supervisor; napcat=values.napcat;
-    window={isDestroyed:()=>false,webContents:{send:(_channel,value)=>values.snapshot(value)}};
+    window={isDestroyed:()=>false,webContents:{send:(_channel,value)=>values.snapshot(value)},contentView:{addChildView(){},removeChildView(){}},getContentSize:()=>[1220,850]};
     extensions={operation:null,run:async()=>({})};appUpdater={status:async()=>({recovery:values.recovery})};}};`, context);
   context.hooks.set({ manager, supervisor, napcat, recovery, snapshot: value => snapshots.push(JSON.parse(JSON.stringify(value))) });
   return { ...context.hooks, events, snapshots, napcat, supervisor };
@@ -123,4 +125,12 @@ test('a failed backend start reports its failed stage without relaunching an exi
   assert.equal(h.getState().startup?.stage, 'failed');
   assert.equal(h.napcat.running, true);
   assert.equal(h.events.includes('launch-qq'), false);
+});
+
+test('a running owned QQ can be managed while conversation is paused without starting or logging it in again', async () => {
+  const h=harness({backendRunning:false,qqRunning:true});
+  await h.perform('open-panel',{panel:'napcat'});
+  assert.deepEqual(h.events,['open-qq-management']);
+  assert.equal(h.getState().panel,'napcat');
+  assert.equal(JSON.stringify(h.getState()).includes('synthetic-only-management-token'),false);
 });

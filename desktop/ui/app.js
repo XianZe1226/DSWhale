@@ -1,10 +1,10 @@
 (function () {
   'use strict';
-  const { createController, escapeHTML: esc } = window.DSWhaleUI;
+  const { createController, escapeHTML: esc, connectionViewModel } = window.DSWhaleUI;
   const query = new URLSearchParams(location.search);
   const controller = createController({ bridge: window.dswhale, preview: query.get('preview') === '1' });
   const root = document.getElementById('app');
-  const routeNames = { overview: '概览', environment: '运行环境', connect: '连接设置', intelligence: '模型与记忆', bilibili: '哔哩哔哩', settings: '应用设置' };
+  const routeNames = { overview: '概览', environment: '运行环境', connect: 'QQ 连接', intelligence: '模型与记忆', bilibili: '哔哩哔哩', settings: '应用设置' };
   const panelNames = { astrbot: 'AstrBot 控制台', models: '模型配置', memory: '记忆管理', bilibili: '哔哩哔哩设置', qq: 'QQ 连接控制台', napcat: 'QQ 登录' };
   const iconPaths = {
     overview: '<rect x="3" y="3" width="7" height="7" rx="2"/><rect x="14" y="3" width="7" height="7" rx="2"/><rect x="3" y="14" width="7" height="7" rx="2"/><rect x="14" y="14" width="7" height="7" rx="2"/>',
@@ -41,6 +41,8 @@
   let localMessage='';
   let pendingFocus = null;
   let lastAnnouncement = '';
+  let connectionAdvancedOpen = false;
+  let externalGuideOpen = false;
   const busy = data => !!data.pending || ['checking', 'installing'].includes(data.state.phase);
   const desktop = data => data.mode === 'desktop';
   const disabled = yes => yes ? ' disabled' : '';
@@ -54,7 +56,7 @@
     const verb = { 'extension-check': '检查', 'extension-update': data.extensions?.[data.pendingExtension]?.installed ? '更新' : '安装', 'extension-rollback': '回退' }[data.pending];
     return verb ? `正在${verb}${extensionName(data.pendingExtension)}…` : '';
   }
-  const workspaceProgress = data => ({'workspace-status':'正在读取本机工作空间状态…','health-check':'正在检查本机环境…','backup-list':'正在读取本机备份…','backup-restore':'正在备份当前数据并恢复所选备份…','backup-delete':'正在删除所选本机备份…','diagnostics-export':'正在准备诊断报告…','app-update-check':'正在检查官方应用更新…','app-update-download':'正在下载并校验应用安装包…','app-update-install':'正在备份并打开系统安装程序…','app-update-rollback':'正在备份并准备应用回退…','preferences-save':'正在保存应用偏好…','napcat-install':'正在下载并校验独立连接组件…','napcat-configure':'请选择已有独立组件目录…','napcat-wire':'正在配置 OneBot 反向连接…','napcat-guide':'正在打开官方连接指南…','napcat-login-code':'请在系统对话框中查看登录口令…'}[data.pending]||'');
+  const workspaceProgress = data => ({'workspace-status':'正在读取本机工作空间状态…','health-check':'正在检查本机环境…','backup-list':'正在读取本机备份…','backup-restore':'正在备份当前数据并恢复所选备份…','backup-delete':'正在删除所选本机备份…','diagnostics-export':'正在准备诊断报告…','app-update-check':'正在检查官方应用更新…','app-update-download':'正在下载并校验应用安装包…','app-update-install':'正在备份并打开系统安装程序…','app-update-rollback':'正在备份并准备应用回退…','preferences-save':'正在保存应用偏好…','napcat-install':'正在下载并校验独立连接组件…','napcat-configure':'请选择已有独立组件目录…','napcat-wire':'正在应用消息连接，QQ 保持在线…','napcat-stop':'正在停止 QQ 连接…','napcat-guide':'正在打开官方连接指南…','napcat-login-code':'请在系统对话框中查看登录口令…'}[data.pending]||'');
   const preference = (data, value, id, title, description) => `<section class="card preference-card"><div><h3 id="${id}-label">${esc(title)}</h3><p id="${id}-help">${esc(description)}</p></div><label class="switch"><input id="${id}" name="${id}" type="checkbox" aria-labelledby="${id}-label" aria-describedby="${id}-help"${value[id] ? ' checked' : ''}${disabled(!desktop(data) || busy(data))}><span aria-hidden="true"></span></label></section>`;
   function healthCard(data, bili=false) {
     const health=data.workspace.health;
@@ -68,9 +70,31 @@
     return `<div class="section-heading"><h2>版本对照</h2><span>兼容的本机工具可继续使用</span></div><section class="card component-table matrix-table"><table><thead><tr><th scope="col">组件</th><th scope="col">预期版本</th><th scope="col">实际版本</th></tr></thead><tbody>${Object.entries(names).map(([id,name])=>`<tr><th scope="row">${name}</th><td class="version-text">${esc(matrix.expected[id]||'—')}</td><td class="version-text">${esc(matrix.actual?.[id]||'未检测到')}</td></tr>`).join('')}</tbody></table></section><p class="reliability-note">FFmpeg 可复用兼容版本；组件是否可用以环境检查结果为准。</p>`;
   }
   function napcatCard(data) {
-    const state=data.workspace.napcat,windows=data.state.platform.id==='win32-x64';
-    const off=!desktop(data)||busy(data),ready=data.state.installed;
-    return `<section class="card reliability-card connection-guide" aria-labelledby="napcat-title"><div class="reliability-heading"><div><h2 id="napcat-title">QQ 连接助手</h2><p>${windows?'独立组件与数据目录由 DSWhale 管理，登录由你手动完成。':'在外部准备可信的 NapCat / OneBot 服务，再连接 DSWhale。'}</p></div>${badge(state?.connectionConfigured?'连接已配置':state?.configured?'待登录或连接':'等待准备',state?.connectionConfigured?'good':'')}</div><ol class="connection-steps"><li><strong>准备独立组件</strong><span>${state?.configured?'已选择独立环境':windows?'安装官方独立组件，或选择已解压的受支持目录':'请按官方指南准备外部连接环境'}</span></li><li><strong>手动登录 QQ</strong><span>${state?.needsAccountSelection?'存在多个账号配置，请在登录面板中明确选择':state?.needsLogin===false?'已检测到账号配置，仍需确认当前在线状态':'启动服务后，在登录面板手动扫码'}</span></li><li><strong>连接 OneBot</strong><span>先保存下方端口与令牌，再完成反向连接配置。</span></li></ol>${state?.nextStep?`<p class="recovery-note">${esc(state.nextStep)}</p>`:''}<div class="card-actions">${windows?button(state?.configured?'重新准备独立组件':'安装独立组件','napcat-install',{primary:!state?.configured,off:off||!ready||state?.supported!==true||state?.canInstall===false||state?.running}):''}${windows||data.state.platform.id==='linux-x64'?button('选择已有独立组件','napcat-configure',{off:off||!ready||state?.running}):''}${button('官方连接指南','napcat-guide',{off})}${button('刷新状态','workspace-status',{off})}</div><div class="card-actions secondary-actions">${button('QQ 登录面板','open-panel',{payload:'napcat',off:off||!data.state.running})}${windows?button('查看登录口令','napcat-login-code',{off:off||!state?.configured}):''}${button('应用 OneBot 连接','napcat-wire',{off:off||!ready||!state?.configured||state?.needsLogin!==false||state?.needsAccountSelection===true||data.state.platform.id==='darwin-arm64'})}</div><p class="reliability-note">不会安装、注入或修改官方 QQ。${!ready?'请先准备运行环境。':windows?'启动服务时会启动已配置的独立组件。':'外部连接端由你自行启动与登录。'}</p></section>`;
+    const view = connectionViewModel(data), value = draft || data.settings || {};
+    return `<section class="card connection-main" id="qq-connection" aria-labelledby="qq-connection-title"><div class="connection-heading"><span class="connection-symbol ${view.tone === 'good' ? 'complete' : ''}">${icon(view.tone === 'good' ? 'check' : 'connect')}</span>${badge(view.badge,view.tone)}</div><h2 id="qq-connection-title">${esc(view.title)}</h2><p class="connection-description">${esc(view.description)}</p>${view.stage === 'owner' ? ownerField(data,value) : ''}<div class="connection-primary-row">${connectionPrimary(data)}${!view.action && view.tone === 'working' ? '<span class="connection-wait"><span class="spinner" aria-hidden="true"></span>状态会自动更新，无需重复操作</span>' : ''}</div>${connectionTimeline(data)}</section>`;
+  }
+  function connectionPrimary(data, overview = false) {
+    const view = connectionViewModel(data);
+    if (!view.action) return '';
+    if (overview && ['save-settings','show-connection-options','show-external-guide'].includes(view.action)) return routeButton('前往 QQ 连接','connect');
+    return button(view.actionLabel,view.action,{primary:true,id:overview?'overview-connection-primary':'connection-primary',payload:view.panel||'',iconName:view.action==='start'?'play':'arrow',off:!desktop(data)||busy(data)});
+  }
+  function connectionTimeline(data) {
+    const qq = data.workspace.napcat || {}, view = connectionViewModel(data), stage = data.state.startup?.stage || view.stage;
+    const backend = data.state.running, logged = qq.loginState === 'online' || view.stage === 'ready';
+    const items = [
+      ['对话服务', backend ? '已启动' : stage === 'starting-conversation' ? '正在启动' : '等待启动', backend ? 'done' : stage === 'starting-conversation' ? 'active' : 'waiting'],
+      ['QQ 登录', logged ? !backend && qq.running ? '保持在线' : '已在线' : {resuming:'正在恢复登录',confirming:'等待手机确认','scan-required':'需要登录',connecting:'正在连接','starting-qq':'正在启动','reusing-qq':'沿用现有连接'}[stage] || (qq.hasSavedLogin ? '已保存账号记录' : '首次需要登录'), logged ? 'done' : backend ? 'active' : 'waiting'],
+      ['消息连接', view.stage === 'ready' ? '已建立连接' : view.stage === 'apply-connection' ? '等待应用设置' : '等待连接', view.stage === 'ready' ? 'done' : logged && backend ? 'active' : 'waiting'],
+    ];
+    return `<ol class="connection-timeline" aria-label="启动与连接步骤">${items.map(([title,detail,status],i)=>`<li data-state="${status}"><span class="connection-step-marker" aria-hidden="true">${status==='done'?icon('check'):i+1}</span><div><strong>${title}</strong><span>${esc(detail)}</span></div></li>`).join('')}</ol>`;
+  }
+  function ownerField(data,value) {
+    return `<div class="field connection-owner-field"><label for="ownerQQ">你的 QQ 号（接收消息）</label><input id="ownerQQ" name="ownerQQ" inputmode="numeric" autocomplete="off" placeholder="填写你自己的 QQ 号" value="${esc(value.ownerQQ||'')}"${disabled(!desktop(data)||busy(data))}><p class="field-help">这里填你的账号，不是机器人的小号。</p></div>`;
+  }
+  function connectionOptions(data,value) {
+    const qq=data.workspace.napcat,windows=data.state.platform.id==='win32-x64',off=!desktop(data)||busy(data),view=connectionViewModel(data);
+    return `<details class="card connection-advanced" id="connection-advanced"${connectionAdvancedOpen?' open':''}><summary id="connection-advanced-summary">更多连接选项<span>账号、端口、互动功能与组件管理</span></summary><div class="connection-option-content">${view.stage!=='owner'?ownerField(data,value):''}<h3>连接参数</h3><p class="option-help">通常保持默认即可。只在端口冲突或连接已有协议端时修改。</p><div class="form-grid"><div class="field"><label for="platformId">AstrBot 平台标识</label><input id="platformId" value="${esc(value.platformId||'qq')}"${disabled(off)}></div><div class="field"><label for="onebotPort">OneBot 反向 WebSocket 端口</label><input id="onebotPort" type="number" min="1024" max="65535" value="${esc(value.onebotPort)}"${disabled(off)}></div><div class="field"><label for="dashboardPort">AstrBot 控制台端口</label><input id="dashboardPort" type="number" min="1024" max="65535" value="${esc(value.dashboardPort??6185)}"${disabled(off)}></div><div class="field field-wide"><label for="onebotToken">OneBot 访问令牌</label><div class="secret-input"><input id="onebotToken" type="${reveal?'text':'password'}" autocomplete="off" value="${esc(value.onebotToken||'')}"${disabled(off)}><button type="button" class="reveal-button" data-reveal aria-controls="onebotToken" aria-pressed="${reveal}">${reveal?'隐藏':'显示'}</button></div><p class="field-help">只保存在本机，与协议端保持一致。</p></div></div><h3>互动功能</h3>${preference(data,value,'proactiveEnabled','主动互动','按现有插件设置主动发起对话。')}${preference(data,value,'signatureEnabled','QQ 个性签名','仅绑定的主人可要求修改机器人签名。')}${preference(data,value,'qzoneEnabled','QQ 空间文字动态','先创建草稿，经你确认后发布。')}<div class="card-actions">${button(data.pending==='settings-save'?'正在保存…':'保存设置','save-settings',{off})}<span class="option-help">${dirty?'有未保存的更改':'设置只保存在本机'}</span></div><h3>QQ 连接管理</h3><p class="option-help">停止对话服务会保留 QQ 在线。只有需要断开 QQ 时，才停止 QQ 连接。</p><div class="card-actions">${button('打开 QQ 管理','open-panel',{payload:'napcat',off:off||!data.state.running&&!qq?.running})}${windows?button('QQ 管理口令','napcat-login-code',{off:off||!qq?.configured}):''}${windows&&qq?.running?button('停止 QQ 连接','napcat-stop',{off}):''}${button('应用消息连接','napcat-wire',{off:off||!qq?.configured||qq?.loginState!=='online'||qq?.externalOnly})}</div><p class="option-help">管理口令用于本机管理页，不是 QQ 密码。首次 QQ 登录和账号验证由你本人完成。</p><h3>组件与帮助</h3><div class="card-actions">${windows?button('检查并准备组件','napcat-install',{off:off||!data.state.installed||qq?.running||qq?.canInstall===false}):''}${windows||data.state.platform.id==='linux-x64'?button('使用已有独立组件','napcat-configure',{off:off||!data.state.installed||qq?.running}):''}${button('官方连接指南','napcat-guide',{off})}${button('AstrBot 平台设置','open-panel',{payload:'qq',off:off||!data.state.running})}</div><p class="option-help">不会安装、注入或修改日常使用的官方 QQ。私人记忆与主人管理用于绑定私聊，群聊由 AstrBot 单独配置。</p></div></details>`;
   }
   function updateCard(data) {
     const state=data.workspace.appUpdate,off=!desktop(data)||busy(data);
@@ -96,10 +120,9 @@
     return `<section class="card reliability-card" aria-labelledby="diagnostics-title"><div class="reliability-heading"><div><h2 id="diagnostics-title">诊断报告</h2><p>导出本机检查结果、组件版本与操作事件，便于排查问题。</p></div>${button('导出诊断报告','diagnostics-export',{off:!desktop(data)||busy(data)})}</div><p class="reliability-note">不包含账号、配置值、聊天、记忆、令牌或原始日志。</p>${files.length?`<p class="diagnostic-files">${files.map(file=>`<span>${esc(file)}</span>`).join('')}</p>`:''}</section>`;
   }
   function service(data) {
-    if (data.state.running) return { label: '服务运行中', type: 'good', title: '一切就绪，保持连接。', description: '在这里管理你的对话服务、模型和记忆。' };
     if (data.state.phase === 'installing') return { label: '正在准备环境', type: 'working', title: '为下一次对话做好准备。', description: '正在准备独立运行环境，请保持网络连接。' };
     if (data.state.phase === 'checking' || data.pending === 'inspect') return { label: '正在检查', type: 'working', title: '正在了解你的工作空间。', description: '检查运行环境与本地服务状态。' };
-    if (data.state.installed) return { label: '服务未启动', type: '', title: '准备好了，随时出发。', description: '运行环境已就绪。启动服务，继续你的对话。' };
+    if (data.state.installed) { const view=connectionViewModel(data);return {label:view.badge,type:view.tone,title:view.title,description:view.description}; }
     return { label: '尚未准备', type: '', title: '让陪伴，从这里开始。', description: '准备运行环境，连接 QQ，再为 DSWhale 选择一个模型。' };
   }
   function installButton(data) {
@@ -109,7 +132,7 @@
     return button(text, 'install', { primary: true, iconName: 'arrow', off: !desktop(data) || busy(data) || data.state.running || data.state.platform.supported === false });
   }
   function serviceButton(data) {
-    return data.state.running ? button(data.pending === 'stop' ? '正在停止…' : '停止服务', 'stop', { iconName: 'stop', off: busy(data) || !desktop(data) }) : button(data.pending === 'start' ? '正在启动…' : '启动服务', 'start', { primary: true, iconName: 'play', off: busy(data) || !desktop(data) || !data.state.installed || data.state.platform.supported === false || data.workspace.appUpdate?.recovery?.servicesMustRemainStopped===true });
+    return data.state.running ? button(data.pending === 'stop' ? '正在停止…' : '停止对话服务', 'stop', { iconName: 'stop', off: busy(data) || !desktop(data) }) : button(data.pending === 'start' ? '正在启动…' : '启动服务', 'start', { primary: true, iconName: 'play', off: busy(data) || !desktop(data) || !data.state.installed || data.state.platform.supported === false || data.workspace.appUpdate?.recovery?.servicesMustRemainStopped===true });
   }
   function overview(data) {
     const s = service(data);
@@ -120,7 +143,7 @@
       ['03', '选择模型与记忆', '连接云端模型，延续每一次对话', setup.modelConfigured, 'intelligence', 'intelligence'],
     ];
     return `<section class="page-heading"><div><p class="eyebrow">你的专属工作空间</p><h1>概览</h1><p class="subtitle">把配置交给这里，把时间留给对话。</p></div>${button('刷新状态', 'inspect', { iconName: 'refresh', off: busy(data) || !desktop(data) })}</section>
-      <section class="hero"><div class="hero-copy">${badge(s.label, s.type)}<h2>${s.title}</h2><p>${s.description}</p><div class="hero-actions">${data.state.installed ? serviceButton(data) : installButton(data)}${routeButton('查看运行环境', 'environment')}</div></div><div class="whale-art" aria-hidden="true"><div class="orbit orbit-one"></div><div class="orbit orbit-two"></div><div class="whale-glow"></div><img src="whale.svg" alt=""><span class="spark spark-one">✦</span><span class="spark spark-two">✦</span><span class="bubble bubble-one"></span><span class="bubble bubble-two"></span></div></section>
+      <section class="hero"><div class="hero-copy">${badge(s.label, s.type)}<h2>${s.title}</h2><p>${s.description}</p>${data.state.installed?connectionTimeline(data):''}<div class="hero-actions">${data.state.installed ? connectionPrimary(data,true)+(data.state.running?serviceButton(data):'') : installButton(data)}${routeButton('查看 QQ 连接', 'connect')}</div></div><div class="whale-art" aria-hidden="true"><div class="orbit orbit-one"></div><div class="orbit orbit-two"></div><div class="whale-glow"></div><img src="whale.svg" alt=""><span class="spark spark-one">✦</span><span class="spark spark-two">✦</span><span class="bubble bubble-one"></span><span class="bubble bubble-two"></span></div></section>
       <div class="section-heading"><h2>开始使用</h2><span>三个步骤，准备好你的 DSWhale</span></div>
       <div class="setup-grid">${steps.map(([num, title, desc, complete, target, glyph]) => `<button class="setup-card" data-route="${target}" type="button"><span class="card-top"><span class="tile-icon ${complete ? 'complete' : ''}">${icon(complete ? 'check' : glyph)}</span><span class="step-number">${complete ? '已完成' : num}</span></span><h3>${title}</h3><p>${desc}</p><span class="card-link">${complete ? '管理设置' : '前往设置'}${icon('arrow')}</span></button>`).join('')}</div>
       <div class="section-heading compact"><h2>工作空间状态</h2></div><section class="card status-list"><div class="status-row"><span class="row-label">${icon('environment')}运行环境</span><span>${data.state.installed ? '已准备' : '等待准备'}<span class="row-divider">·</span>${esc(data.state.platform.label || '未知系统')}</span></div><div class="status-row"><span class="row-label">${icon('play')}对话服务</span>${badge(s.label, s.type)}</div><div class="status-row"><span class="row-label">${icon('shield')}数据存储</span><span>保存在本机${routeButton('管理', 'settings')}</span></div></section>`;
@@ -142,14 +165,11 @@
   }
   function connect(data) {
     const value = draft || data.settings;
-    if (!value) return `<section class="page-heading"><div><p class="eyebrow">对话的第一步</p><h1>连接设置</h1><p class="subtitle">设置主人账号与本机 OneBot 服务。</p></div></section><section class="card loading-card">${settingsLoading ? '<span class="spinner" aria-hidden="true"></span> 正在读取连接设置…' : `尚未读取连接设置。${button('重试', 'settings-get', { off: !desktop(data) || busy(data) })}`}</section>`;
-    return `<section class="page-heading"><div><p class="eyebrow">让对话连接起来</p><h1>连接设置</h1><p class="subtitle">主人账号与 QQ 连接，在这里统一管理。</p></div>${badge(data.state.setup.ownerConfigured && data.state.setup.qqConfigured ? '已配置' : '等待配置', data.state.setup.ownerConfigured && data.state.setup.qqConfigured ? 'good' : '')}</section>
-      ${napcatCard(data)}<form id="connection-form"><section class="card form-card"><div class="card-heading"><span class="tile-icon">${icon('connect')}</span><div><h2>账号与平台</h2><p>主人绑定与本机 OneBot 连接。</p></div></div><div class="form-grid"><div class="field"><label for="ownerQQ">主人 QQ 号</label><input id="ownerQQ" name="ownerQQ" inputmode="numeric" autocomplete="off" placeholder="输入主人 QQ 号" value="${esc(value.ownerQQ)}"${disabled(!desktop(data) || busy(data))}><p class="field-help">用于识别主人的指令与管理权限。</p></div><div class="field"><label for="platformId">平台标识</label><input id="platformId" name="platformId" autocomplete="off" placeholder="例如 qq" value="${esc(value.platformId)}"${disabled(!desktop(data) || busy(data))}><p class="field-help">对应 AstrBot 中的 OneBot 平台。</p></div></div><div class="form-divider"></div><div class="form-grid"><div class="field"><label for="onebotPort">OneBot 反向 WebSocket 端口</label><input id="onebotPort" name="onebotPort" type="number" min="1024" max="65535" step="1" required value="${esc(value.onebotPort)}"${disabled(!desktop(data) || busy(data))}><p class="field-help">与独立组件中的反向连接端口保持一致。</p></div><div class="field"><label for="dashboardPort">AstrBot 控制台端口</label><input id="dashboardPort" name="dashboardPort" type="number" min="1024" max="65535" step="1" required value="${esc(value.dashboardPort??6185)}"${disabled(!desktop(data)||busy(data))}><p class="field-help">默认 6185；与 OneBot 及其他本机服务区分。</p></div><div class="field field-wide"><label for="onebotToken">OneBot 访问令牌</label><div class="secret-input"><input id="onebotToken" name="onebotToken" type="${reveal ? 'text' : 'password'}" autocomplete="off" placeholder="未设置" value="${esc(value.onebotToken)}"${disabled(!desktop(data) || busy(data))}><button type="button" class="reveal-button" data-reveal aria-controls="onebotToken" aria-pressed="${reveal}">${reveal ? '隐藏' : '显示'}</button></div><p class="field-help">令牌只保存在本机，请与 QQ 端保持一致。</p></div></div></section>
-      ${preference(data, value, 'proactiveEnabled', '主动互动', '允许已配置的主动互动功能。具体行为由现有插件设置决定。')}
-      ${preference(data, value, 'signatureEnabled', 'QQ 个性签名', '仅绑定的主人可要求修改当前 QQ 的个性签名。')}
-      ${preference(data, value, 'qzoneEnabled', 'QQ 空间文字动态', '仅绑定的主人可创建文字草稿；每条草稿须明确确认后发布。')}
-      <div class="form-footer"><p>${dirty ? '有未保存的更改' : '保存后应用到本地配置'}</p><button class="button primary" type="submit"${disabled(!desktop(data) || busy(data))}>${data.pending === 'settings-save' ? '正在保存…' : '保存连接设置'}</button></div></form>
-      <section class="info-strip">${icon('shield')}<div><strong>主人私聊与群聊分开配置</strong><p>DSWhale 的私人记忆、主动互动与主人管理用于绑定私聊，不会向群聊注入这些私人功能。群聊能力由 AstrBot 的现有配置管理。</p></div>${button('高级连接设置', 'open-panel', { payload: 'qq', off: !data.state.running || !desktop(data) || busy(data) })}</section>${!data.state.running ? '<p class="footnote">启动服务后可打开高级设置。</p>' : ''}`;
+    if (!value) return `<section class="page-heading"><div><h1>QQ 连接</h1><p class="subtitle">正在读取连接设置。</p></div></section><section class="card loading-card">${settingsLoading ? '<span class="spinner" aria-hidden="true"></span> 正在读取…' : button('重新读取','settings-get',{off:!desktop(data)||busy(data)})}</section>`;
+    const qq=data.workspace.napcat,view=connectionViewModel(data);
+    return `<section class="page-heading connection-page-heading"><div><h1>QQ 连接</h1><p class="subtitle">一次设置，之后按状态继续即可。</p></div>${button('检查状态','workspace-status',{iconName:'refresh',off:!desktop(data)||busy(data)})}</section>
+      <form id="connection-form">${napcatCard(data)}${qq?.externalOnly||externalGuideOpen?`<details class="card external-connection-help" id="external-connection-help"${externalGuideOpen?' open':''}><summary>外部协议端接入步骤</summary><ol><li>在外部 NapCat 或其他 OneBot 协议端登录机器人账号。</li><li>添加反向 WebSocket 连接：<code>ws://127.0.0.1:${esc(value.onebotPort)}/ws</code>，令牌与下方连接选项保持一致。</li><li>保持协议端运行，回到这里检查消息连接。</li></ol>${button('官方接入指南','napcat-guide',{off:!desktop(data)||busy(data)})}</details>`:''}${connectionOptions(data,value)}</form>
+      <p class="connection-footnote">${view.stage==='ready'?'连接已建立。日常在概览页管理对话即可。':'登录数据保存在本机。停止对话服务会保留 QQ 连接，退出应用会停止由它管理的组件。'}</p>`;
   }
   function extensionCard(data, id) {
     const value = data.extensions?.[id];
@@ -204,7 +224,7 @@
     const feedback = error ? `<div class="alert error" role="alert"><span class="alert-symbol">!</span><div><strong>操作未完成</strong><p>${esc(error)}</p></div>${data.retry ? button('重试', 'retry', { off: busy(data) || !desktop(data) }) : ''}</div>` : localMessage||data.notice ? `<div class="alert success" role="status">${icon('check')}<span>${esc(localMessage||data.notice)}</span></div>` : '';
     const views = { overview, environment, connect, intelligence, bilibili, settings };
     const content = data.mode === 'unavailable' ? `<section class="desktop-notice card"><img src="whale.svg" alt="DSWhale"><h1>请在桌面应用中打开</h1><p>运行环境、对话服务和本地设置需要 DSWhale 桌面应用。</p><p class="footnote">当前页面未连接桌面服务，无法读取或修改本机配置。</p></section>` : views[route](data);
-    root.innerHTML = `<aside class="sidebar" aria-label="主导航"><div class="window-space"></div><div class="brand"><div class="brand-mark"><img src="whale.svg" alt=""></div><div><strong>DSWhale</strong><span>你的对话伙伴</span></div></div><div class="nav-label">工作空间</div><nav>${nav}</nav><div class="sidebar-bottom"><div class="sidebar-service"><span class="status-dot ${data.state.running ? 'good' : ''}"></span><div><strong>${esc(status.label)}</strong><span>${data.state.running ? '本地服务正在运行' : '一切从一段对话开始'}</span></div></div><div class="sidebar-version"><span>DSWhale Desktop</span><span>${esc(data.state.version || '')}</span></div></div></aside><div class="workspace"><header class="topbar"><div class="breadcrumb"><span>工作空间</span><span class="breadcrumb-slash">/</span><strong>${esc(panel ? panelNames[panel] || '控制台' : routeNames[route])}</strong></div><div class="topbar-right">${data.mode === 'preview' ? '<span class="preview-pill">只读预览</span>' : ''}<span class="topbar-status"><span class="status-dot ${data.state.running ? 'good' : ''}"></span>${esc(data.state.running ? '服务运行中' : '本地工作空间')}</span></div></header>${panel ? `<main class="embedded" id="main-content" tabindex="-1"><div class="panel-toolbar"><button type="button" data-action="home" class="panel-back">${icon('back')}返回${esc(routeNames[route])}</button><div class="panel-toolbar-actions"><span class="panel-context">${esc(panelNames[panel] || '控制台')}${['astrbot','models','memory','qq'].includes(panel)?'<small>内核由 DSWhale 统一管理，更新请到应用设置</small>':''}</span>${button('首次登录口令', 'initial-login', { off: !desktop(data) || !data.state.installed || busy(data) })}</div></div><div class="embedded-placeholder"><span class="spinner" aria-hidden="true"></span><p>正在显示控制台…</p></div>${feedback ? `<div class="panel-feedback">${feedback}</div>` : ''}</main>` : `<main class="page" id="main-content" tabindex="-1">${preview}${feedback}${content}${route !== 'environment' ? progress(data) : ''}<footer class="page-footer"><span class="footer-line"></span><span>DSWhale · 让对话更有温度</span><span class="footer-line"></span></footer></main>`}</div>`;
+    root.innerHTML = `<aside class="sidebar" aria-label="主导航"><div class="window-space"></div><div class="brand"><div class="brand-mark"><img src="whale.svg" alt=""></div><div><strong>DSWhale</strong><span>你的对话伙伴</span></div></div><div class="nav-label">工作空间</div><nav>${nav}</nav><div class="sidebar-bottom"><div class="sidebar-service"><span class="status-dot ${status.type==='good'?'good':status.type==='working'?'working':''}"></span><div><strong>${esc(status.label)}</strong><span>${data.state.running ? '对话服务已启动' : '对话服务尚未启动'}</span></div></div><div class="sidebar-version"><span>DSWhale Desktop</span><span>${esc(data.state.version || '')}</span></div></div></aside><div class="workspace"><header class="topbar"><div class="breadcrumb"><span>工作空间</span><span class="breadcrumb-slash">/</span><strong>${esc(panel ? panelNames[panel] || '控制台' : routeNames[route])}</strong></div><div class="topbar-right">${data.mode === 'preview' ? '<span class="preview-pill">只读预览</span>' : ''}<span class="topbar-status"><span class="status-dot ${data.state.running ? 'good' : ''}"></span>${esc(data.state.running ? '对话服务已启动' : '对话服务尚未启动')}</span></div></header>${panel ? `<main class="embedded" id="main-content" tabindex="-1"><div class="panel-toolbar"><button type="button" data-action="home" class="panel-back">${icon('back')}返回${esc(routeNames[route])}</button><div class="panel-toolbar-actions"><span class="panel-context">${esc(panelNames[panel] || '控制台')}${['astrbot','models','memory','qq'].includes(panel)?'<small>内核由 DSWhale 统一管理，更新请到应用设置</small>':''}</span>${button(panel==='napcat'?'QQ 管理口令':'控制台首次口令',panel==='napcat'?'napcat-login-code':'initial-login',{off:!desktop(data)||!data.state.installed||busy(data)})}</div></div><div class="embedded-placeholder"><span class="spinner" aria-hidden="true"></span><p>正在显示控制台…</p></div>${feedback ? `<div class="panel-feedback">${feedback}</div>` : ''}</main>` : `<main class="page" id="main-content" tabindex="-1">${preview}${feedback}${content}${route !== 'environment' ? progress(data) : ''}<footer class="page-footer"><span class="footer-line"></span><span>DSWhale · 让对话更有温度</span><span class="footer-line"></span></footer></main>`}</div>`;
     const page = document.querySelector('.page');
     if (page) page.scrollTop = scroll;
     if (focused) { const next = document.getElementById(focused); if (next) { next.focus({ preventScroll: true }); if (selection && typeof next.setSelectionRange === 'function' && next.type !== 'number') { try { next.setSelectionRange(...selection); } catch {} } } }
@@ -282,7 +302,15 @@
     dirty = true;
   }
   async function saveSettings() {
-    await run('settings-save', draft || controller.get().settings);
+    const data = controller.get();
+    const value = draft || data.settings;
+    if (connectionViewModel(data).stage === 'owner' && !/^[1-9]\d{4,19}$/.test(String(value?.ownerQQ || '').trim())) {
+      localMessage = '请填写接收消息的 QQ 号。';
+      render(data);
+      document.getElementById('ownerQQ')?.focus();
+      return;
+    }
+    await run('settings-save', value);
     if (!controller.get().error) { dirty = false; draft = { ...controller.get().settings }; render(controller.get()); }
   }
   root.addEventListener('click', async event => {
@@ -293,6 +321,10 @@
     if (!action) return;
     if (action === 'route-environment') return navigate('environment');
     if(action==='route-connect')return navigate('connect');
+    if(action==='route-settings')return navigate('settings');
+    if(action==='route-intelligence')return navigate('intelligence');
+    if(action==='show-connection-options'){connectionAdvancedOpen=true;render(controller.get());document.getElementById('connection-advanced-summary')?.focus();return;}
+    if(action==='show-external-guide'){externalGuideOpen=true;render(controller.get());document.getElementById('external-connection-help')?.focus();return;}
     if (action === 'save-settings') return saveSettings();
     if(action==='save-preferences'){await run('preferences-save',preferencesDraft||controller.get().workspace.preferences);if(!controller.get().error){preferencesDirty=false;preferencesDraft=null;render(controller.get());}return;}
     if(action==='app-update-check')return run(action,{channel:updateChannel||controller.get().workspace.appUpdate?.channel||'alpha'});
@@ -353,6 +385,7 @@
     render(controller.get());
   });
   root.addEventListener('submit', event => { if (event.target.id === 'connection-form') { event.preventDefault(); saveSettings(); } });
+  root.addEventListener('toggle', event => { if(event.target.id==='connection-advanced')connectionAdvancedOpen=event.target.open;if(event.target.id==='external-connection-help')externalGuideOpen=event.target.open; }, true);
   controller.subscribe(data => { if (data.settings && !dirty) draft = { ...data.settings }; render(data); });
   window.addEventListener('beforeunload', () => controller.dispose());
   render(controller.get());

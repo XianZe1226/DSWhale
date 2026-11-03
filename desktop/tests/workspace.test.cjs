@@ -8,3 +8,14 @@ test('wiring a logged-in managed QQ uses the hot-apply action without stopping t
  const workspace=new Workspace({napcat,isClosing:()=>false});
  await workspace.perform('napcat-wire');assert.deepEqual(calls,['wire']);
 });
+
+test('explicit QQ disconnect is limited to the manager and accepts no process or connection payload', async () => {
+ const {Workspace}=require('../lib/workspace.cjs'),{validateRequest}=require('../lib/security.cjs');
+ const shell={mainFrame:{}},event={sender:shell,senderFrame:shell.mainFrame};
+ assert.doesNotThrow(()=>validateRequest(event,shell,'napcat-stop'));
+ assert.throws(()=>validateRequest(event,shell,'napcat-stop',{pid:1234}));
+ assert.throws(()=>validateRequest({sender:{},senderFrame:{}},shell,'napcat-stop'));
+ let stops=0;const workspace=new Workspace({napcat:{stop:async()=>{stops++;return {running:false,hasSavedLogin:true};}}});
+ assert.deepEqual(await workspace.perform('napcat-stop'),{napcat:{running:false,hasSavedLogin:true}});
+ assert.equal(stops,1);
+});

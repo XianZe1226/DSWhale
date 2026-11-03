@@ -70,6 +70,8 @@ jobs:
           CSC_LINK: ${{ runner.os == 'macOS' && secrets.MACOS_CERTIFICATE || '' }}
           CSC_KEY_PASSWORD: ${{ runner.os == 'macOS' && secrets.MACOS_CERTIFICATE_PASSWORD || '' }}
           CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+      - name: Verify GUI startup policy in the actual packaged binary
+        run: node scripts/verify-electron-fuses.cjs
       - name: Create checksums for installers only
         shell: python
         run: |

@@ -6,6 +6,45 @@ const vm = require('node:vm');
 const uiPath = path.join(__dirname, '../ui/model.js');
 const load = () => { assert.ok(fs.existsSync(uiPath), 'desktop UI controller exists'); return require(uiPath); };
 
+function connectionData({ state = {}, qq = {}, settings = { ownerQQ: '12345678' }, appUpdate = null } = {}) {
+  return { settings, state: { installed: true, running: false, platform: { id: 'win32-x64', supported: true },
+    setup: { ownerConfigured: true, modelConfigured: true }, ...state }, workspace: { appUpdate, napcat: {
+      configured: true, externalOnly: false, running: false, hasSavedLogin: true, loginState: 'stopped', connectionConfigured: true,
+      protocolConnected: false, ...qq } } };
+}
+
+test('connection guidance offers the actual next action for each setup and login phase', () => {
+  const { connectionViewModel } = load();
+  assert.equal(typeof connectionViewModel, 'function');
+  const cases = [
+    [{}, 'stopped', 'start'],
+    [{ state: { installed: false } }, 'environment', 'route-environment'],
+    [{ state: { setup: { ownerConfigured: false } }, settings: { ownerQQ: '' } }, 'owner', 'save-settings'],
+    [{ qq: { configured: false, hasSavedLogin: false } }, 'component', 'napcat-install'],
+    [{ state: { startup: { stage: 'starting-conversation' } } }, 'starting-conversation', null],
+    [{ state: { running: true }, qq: { running: false } }, 'qq-stopped', 'start'],
+    [{ state: { running: true }, qq: { running: true, loginState: 'resuming' } }, 'resuming', null],
+    [{ state: { running: true }, qq: { running: true, loginState: 'confirming' } }, 'confirming', null],
+    [{ state: { running: true }, qq: { running: true, loginState: 'scan-required' } }, 'scan-required', 'open-panel'],
+    [{ state: { running: true }, qq: { running: true, loginState: 'unknown' } }, 'unknown', 'open-panel'],
+    [{ state: { running: true }, qq: { running: true, loginState: 'online', connectionConfigured: false } }, 'apply-connection', 'napcat-wire'],
+    [{ state: { running: true }, qq: { running: true, loginState: 'online' } }, 'awaiting-link', null],
+    [{ state: { running: true }, qq: { running: true, loginState: 'online', protocolConnected: true } }, 'ready', null],
+    [{ state: { running: true }, qq: { configured: false, protocolConnected: true } }, 'ready', null],
+    [{ state: { running: true }, qq: { running: false, protocolConnected: true } }, 'qq-stopped', 'start'],
+    [{ state: { running: true, platform: { id: 'darwin-arm64', supported: true } }, qq: { externalOnly: true, configured: false } }, 'external', 'show-external-guide'],
+    [{ state: { running: true }, qq: { externalOnly: true, configured: false, protocolConnected: true } }, 'ready', null],
+    [{ appUpdate: { recovery: { servicesMustRemainStopped: true } } }, 'recovery', 'route-settings'],
+    [{ state: { startup: { stage: 'ready' } } }, 'stopped', 'start'],
+  ];
+  for (const [patch, stage, action] of cases) {
+    const view = connectionViewModel(connectionData(patch));
+    assert.equal(view.stage, stage);
+    assert.equal(view.action || null, action);
+    if (stage === 'unknown') assert.doesNotMatch(view.description, /重新扫码|风控|冷却\d/);
+  }
+});
+
 test('browser mode never invents an installed or running service', () => {
   const { createController } = load();
   const c = createController();
@@ -289,7 +328,8 @@ function renderApp({ screen = 'intelligence', invoke, workspace=workspaceStatus(
   };
   document = { body, activeElement: body, getElementById(id) { return id === 'app' ? root : id === 'announcer' ? announcer : id === 'main-content' ? page : buttons.find(button => button.id === id); }, querySelector() { return page; } };
   const calls = [];
-  const bridge = { invoke: async (action, payload) => { calls.push([action, payload && JSON.parse(JSON.stringify(payload))]); return action==='workspace-status'?workspace:invoke(action, payload); }, onState: () => () => {} };
+  let stateListener;
+  const bridge = { invoke: async (action, payload) => { calls.push([action, payload && JSON.parse(JSON.stringify(payload))]); return action==='workspace-status'?workspace:invoke(action, payload); }, onState: callback => { stateListener = callback; return () => {}; } };
   vm.runInNewContext(fs.readFileSync(path.join(__dirname, '../ui/app.js'), 'utf8'), {
     window: { DSWhaleUI: load(), dswhale: bridge, addEventListener() {} }, document,
     location: { search: `?screen=${screen}` }, URLSearchParams,
@@ -302,12 +342,95 @@ function renderApp({ screen = 'intelligence', invoke, workspace=workspaceStatus(
     settle: () => new Promise(resolve => setImmediate(resolve)),
     click: (action, id, operation) => handlers.click({ target: { closest() { return this; }, dataset: { action, extension: id, operation }, hasAttribute() { return false; } } }),
     clickItem: (action, item, operation) => handlers.click({ target: { closest() { return this; }, dataset: { action, item, operation }, hasAttribute() { return false; } } }),
+    clickPrimary: () => { const button=buttons.find(button=>button.id==='connection-primary');assert.ok(button,'one clear connection action is present');return handlers.click({target:{...button,closest(){return this;},hasAttribute(){return false;}}}); },
+    pushState: value => stateListener(value),
+    toggle: (id, open) => { assert.equal(typeof handlers.toggle,'function','expanded sections track their state');handlers.toggle({target:{id,open}}); },
     navigate: route => handlers.click({target:{closest(){return this;},dataset:{route},hasAttribute(){return false;}}}),
     change: (id, checked) => handlers.change({ target: { id, type: 'checkbox', checked, matches() { return true; } } }),
     input: (id, value) => handlers.input({target:{id,type:'text',value,matches(){return true;}}}),
     select: (id, value) => handlers.change({target:{id,type:'select-one',value,matches(){return true;}}}),
   };
 }
+
+test('the previously configured but stopped QQ page has one obvious start action and collapsed maintenance', async () => {
+  const settings = { ownerQQ: '12345678', platformId: 'qq', onebotPort: 6199, dashboardPort: 6185, onebotToken: 'synthetic-local-token' };
+  const qq = connectionData().workspace.napcat;
+  const app = renderApp({ screen: 'connect', workspace: workspaceStatus({ napcat: qq }), invoke: async action => action === 'inspect'
+    ? { installed: true, running: false, platform: { id: 'win32-x64', supported: true }, setup: { ownerConfigured: true, modelConfigured: true } }
+    : action === 'start' ? { running: true, workspace: { napcat: { ...qq, running: true, loginState: 'resuming' } }, startup: { stage: 'resuming' } } : settings });
+  await app.settle();
+  const hero = app.html().match(/<section\b[^>]*id="qq-connection"[\s\S]*?<\/section>/)?.[0];
+  assert.ok(hero, 'connection status and the next action are grouped together');
+  assert.equal((hero.match(/class="button primary"/g) || []).length, 1);
+  assert.match(hero, /启动并连接/);
+  assert.doesNotMatch(hero, /重新准备独立组件|查看登录口令|OneBot/);
+  assert.match(app.html(), /<details\b[^>]*id="connection-advanced"/);
+  assert.doesNotMatch(app.html(), /<details\b[^>]*id="connection-advanced"[^>]*\sopen(?:\s|>)/);
+  await app.clickPrimary();
+  assert.equal(app.calls.filter(([action]) => action === 'start').length, 1);
+  assert.match(app.html(), /正在恢复已有登录/);
+});
+
+test('the connection page follows live mobile confirmation and real connection readiness', async () => {
+  const settings = { ownerQQ: '12345678', onebotPort: 6199, dashboardPort: 6185 };
+  const qq = { ...connectionData().workspace.napcat, running: true, loginState: 'confirming' };
+  const app = renderApp({ screen: 'connect', workspace: workspaceStatus({ napcat: qq }), invoke: async action => action === 'inspect'
+    ? { installed: true, running: true, platform: { id: 'win32-x64', supported: true }, setup: { ownerConfigured: true, modelConfigured: true } } : settings });
+  await app.settle();
+  assert.match(app.html(), /等待手机确认/);
+  assert.doesNotMatch(app.html(), /<h2[^>]*>QQ 已连接/);
+  app.pushState({ workspace: { napcat: { ...qq, loginState: 'online', protocolConnected: true } } });
+  assert.match(app.html(), /<h2[^>]*>QQ 已连接/);
+  const positions = ['对话服务', 'QQ 登录', '消息连接'].map(label => app.html().indexOf(`<strong>${label}</strong>`));
+  assert.ok(positions.every(position => position >= 0) && positions[0] < positions[1] && positions[1] < positions[2]);
+});
+
+test('overview does not call startup complete while QQ is still restoring its login', async () => {
+  const qq = { ...connectionData().workspace.napcat, running: true, loginState: 'resuming' };
+  const app = renderApp({ screen: 'overview', workspace: workspaceStatus({ napcat: qq }), invoke: async () => ({ installed: true, running: true,
+    setup: { ownerConfigured: true, modelConfigured: true }, startup: { stage: 'resuming' } }) });
+  await app.settle();
+  assert.match(app.html(), /正在恢复已有登录/);
+  assert.doesNotMatch(app.html(), /一切就绪，保持连接/);
+});
+
+test('automatic connection updates preserve expanded settings and unsaved owner input', async () => {
+  const settings = { ownerQQ: '12345678', onebotPort: 6199, dashboardPort: 6185 };
+  const qq = { ...connectionData().workspace.napcat, running: true, loginState: 'resuming' };
+  const app = renderApp({ screen: 'connect', workspace: workspaceStatus({ napcat: qq }), invoke: async action => action === 'inspect'
+    ? { installed: true, running: true, platform: { id: 'win32-x64', supported: true }, setup: { ownerConfigured: true } } : settings });
+  await app.settle();
+  app.toggle('connection-advanced', true);
+  app.input('ownerQQ', '87654321');
+  app.pushState({ workspace: { napcat: { ...qq, loginState: 'confirming' } } });
+  assert.match(app.html(), /<details\b[^>]*id="connection-advanced"[^>]*\sopen(?:\s|>)/);
+  assert.match(app.html(), /id="ownerQQ"[^>]*value="87654321"/);
+});
+
+test('QQ management shows its own management-code action instead of an AstrBot login password', async () => {
+  const app = renderApp({ screen: 'connect', invoke: async action => action === 'inspect' ? { installed:true,running:true } : {ownerQQ:'12345678',onebotPort:6199} });
+  await app.settle();
+  app.pushState({panel:'napcat'});
+  assert.match(app.html(), /data-action="napcat-login-code"/);
+  assert.doesNotMatch(app.html(), /data-action="initial-login"/);
+});
+
+test('first-time owner setup guides an empty field without writing settings, then saves once after valid input', async () => {
+  const settings={ownerQQ:'',onebotPort:6199,dashboardPort:6185,onebotToken:'synthetic-connection-token'};
+  const qq={...connectionData().workspace.napcat,configured:false,hasSavedLogin:false};
+  const app=renderApp({screen:'connect',workspace:workspaceStatus({napcat:qq}),invoke:async(action,payload)=>action==='inspect'
+    ?{installed:true,running:false,platform:{id:'win32-x64',supported:true},setup:{ownerConfigured:false}}:action==='settings-save'?payload:settings});
+  await app.settle();
+  await app.clickPrimary();
+  assert.equal(app.calls.filter(([action])=>action==='settings-save').length,0);
+  assert.match(app.announcement(),/填写.*QQ/);
+  app.input('ownerQQ','87654321');
+  await app.clickPrimary();
+  const saves=app.calls.filter(([action])=>action==='settings-save');
+  assert.equal(saves.length,1);
+  assert.equal(saves[0][1].ownerQQ,'87654321');
+  assert.match(app.html(),/准备 QQ 连接/);
+});
 
 test('plugin cards read local status, escape version text and wait for an explicit check', async () => {
   const status = extensionStatus();

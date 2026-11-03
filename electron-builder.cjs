@@ -11,6 +11,12 @@ const config = {
   "productName": "DSWhale",
   "electronVersion": "45.1.0",
   "asar": true,
+  // Keep the GUI launchable when a parent process exports Electron/Node flags.
+  "electronFuses": {
+    "runAsNode": false,
+    "enableNodeOptionsEnvironmentVariable": false,
+    "enableNodeCliInspectArguments": false
+  },
   "npmRebuild": false,
   "buildDependenciesFromSource": false,
   "directories": {
