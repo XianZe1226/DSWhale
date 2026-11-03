@@ -1,5 +1,6 @@
 """Validated settings shared by the installer and AstrBot plugin."""
 
+import re
 from dataclasses import dataclass, fields
 from datetime import datetime
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
@@ -9,6 +10,8 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 class Settings:
     owner_qq: str = ""
     owner_umo: str = ""
+    qq_connection_mode: str = "napcat"
+    official_owner_umo: str = ""
     proactive_enabled: bool = False
     timezone: str = "Asia/Shanghai"
     quiet_start: str = "23:00"
@@ -53,6 +56,21 @@ class Settings:
         return result
 
     def validate(self):
+        if self.qq_connection_mode not in {"napcat", "official"}:
+            raise ValueError("QQ 接入方式无效")
+        if self.official_owner_umo:
+            parts = self.official_owner_umo.split(":")
+            if (
+                len(parts) != 3
+                or not re.fullmatch(r"[^\s:\x00-\x1f\x7f]{1,128}", parts[0])
+                or parts[1] != "FriendMessage"
+                or not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", parts[2])
+            ):
+                raise ValueError("官方机器人绑定必须是 /fish whoami 返回的完整私聊会话 ID")
+        if self.qq_connection_mode == "official" and (
+            self.qq_signature_enabled or self.qzone_enabled
+        ):
+            raise ValueError("QQ 官方接口不支持修改个人 QQ 签名或发表 QQ 空间")
         try:
             ZoneInfo(self.timezone)
         except (ZoneInfoNotFoundError, ValueError) as exc:
@@ -88,9 +106,9 @@ class Settings:
                 or parts[2] != self.owner_qq
             ):
                 raise ValueError("owner_umo 必须是主人 QQ 的完整私聊 /sid")
-        if self.proactive_enabled and not self.owner_umo:
+        if self.proactive_enabled and not self.owner_scope:
             raise ValueError("开启主动聊天前请先配置主人 QQ 和私聊 /sid")
-        if self.bili_enabled and not self.owner_umo:
+        if self.bili_enabled and not self.owner_scope:
             raise ValueError("开启 B站整合前请先配置主人 QQ 和私聊 /sid")
 
     @staticmethod
@@ -119,7 +137,31 @@ class Settings:
             return False
         return start <= minute < end if start < end else minute >= start or minute < end
 
-    def matches(self, sender: str, scope: str, *, private: bool) -> bool:
+    @property
+    def owner_scope(self):
+        return self.official_owner_umo if self.qq_connection_mode == "official" else self.owner_umo
+
+    @property
+    def owner_id(self):
+        return (
+            self.official_owner_umo.rsplit(":", 1)[-1]
+            if self.qq_connection_mode == "official" and self.official_owner_umo
+            else self.owner_qq
+            if self.qq_connection_mode == "napcat"
+            else ""
+        )
+
+    @property
+    def adapter_name(self):
+        return "qq_official" if self.qq_connection_mode == "official" else "aiocqhttp"
+
+    def matches(
+        self, sender: str, scope: str, *, private: bool, platform_type: str = "aiocqhttp"
+    ) -> bool:
         return bool(
-            self.owner_umo and private and str(sender) == self.owner_qq and scope == self.owner_umo
+            self.owner_scope
+            and private
+            and str(sender) == self.owner_id
+            and scope == self.owner_scope
+            and platform_type == self.adapter_name
         )

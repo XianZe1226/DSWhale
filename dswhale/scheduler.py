@@ -20,7 +20,7 @@ class Scheduler:
 
     def human_received(self, now: datetime):
         self.settings.local_time(now)
-        scope = self.settings.owner_umo
+        scope = self.settings.owner_scope
         self.store.state(scope)
         self.store.db.execute(
             "UPDATE sessions SET last_human=?,unanswered=0,next_due=? WHERE scope=?",
@@ -32,9 +32,9 @@ class Scheduler:
             raise ValueError("Unknown activity kind")
         cfg = self.settings
         local = cfg.local_time(now)
-        if not cfg.proactive_enabled or not cfg.owner_umo or cfg.is_quiet(now):
+        if not cfg.proactive_enabled or not cfg.owner_scope or cfg.is_quiet(now):
             return None
-        ts, scope = now.timestamp(), cfg.owner_umo
+        ts, scope = now.timestamp(), cfg.owner_scope
         with self.store.transaction() as db:
             state = self.store.state(scope)
             if state["paused"] or state["unanswered"] >= cfg.unanswered_limit:

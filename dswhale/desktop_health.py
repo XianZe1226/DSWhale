@@ -110,20 +110,37 @@ def inspect_host(host, *, running=False, started_after=0):
     add(
         "owner",
         "私聊绑定",
-        bool(fish.get("owner_qq") and fish.get("owner_umo")),
+        bool(
+            fish.get("official_owner_umo")
+            if fish.get("qq_connection_mode") == "official"
+            else fish.get("owner_qq") and fish.get("owner_umo")
+        ),
         "仅检查绑定是否存在，不显示账号",
         fix="connect",
     )
     platforms = [
         p
         for p in config.get("platform", [])
-        if isinstance(p, dict) and p.get("type") == "aiocqhttp" and p.get("enable")
+        if isinstance(p, dict)
+        and p.get("type")
+        == ("qq_official" if fish.get("qq_connection_mode") == "official" else "aiocqhttp")
+        and p.get("enable")
     ]
     add(
         "qq-config",
         "QQ 连接配置",
-        bool(platforms and all(p.get("ws_reverse_token") for p in platforms)),
-        "请核对反向连接端口；令牌不会显示在诊断中",
+        bool(
+            platforms
+            and all(
+                p.get("appid") and p.get("secret")
+                if fish.get("qq_connection_mode") == "official"
+                else p.get("ws_reverse_token")
+                for p in platforms
+            )
+        ),
+        "官方机器人凭据仅在本机核对"
+        if fish.get("qq_connection_mode") == "official"
+        else "请核对反向连接端口；令牌不会显示在诊断中",
         fix="connect",
     )
     models = [

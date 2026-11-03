@@ -6,35 +6,35 @@ const path = require('node:path');
 const vm = require('node:vm');
 const { createRequire } = require('node:module');
 
-function harness({ saveFails = false, recovery = {}, backendRunning = true, qqRunning = true, loginState = 'online', backendReadyWait, qqStatusWait, qqConfigureWait, startFails = false } = {}) {
+function harness({ saveFails = false, recovery = {}, backendRunning = true, qqRunning = true, loginState = 'online', backendReadyWait, qqStatusWait, qqConfigureWait, qqMode='napcat', startFails = false } = {}) {
   const file = path.resolve(__dirname, '../main.cjs'), native = createRequire(file);
-  const events = [], snapshots = [];
-  const supervisor = { running: backendRunning, async stop() { events.push('stop-conversation'); this.running = false; },
+  const events = [], snapshots = [], loadedURLs = [];
+  const supervisor = { dashboard:async()=> 'http://127.0.0.1:6185/', running: backendRunning, async stop() { events.push('stop-conversation'); this.running = false; },
     async start() { if (this.running) return; events.push('start-conversation'); if(startFails)throw Error('synthetic backend failure'); await backendReadyWait; this.running = true; } };
-  const napcat = { running: qqRunning, async stop() { events.push('stop-qq'); this.running = false; },
+  const napcat = { configurationCalls:0, running: qqRunning, async stop() { events.push('stop-qq'); this.running = false; },
     async start() { if (!this.running) { events.push('launch-qq'); this.running = true; } return this.status(); },
-    async configure() { await qqConfigureWait; if (this.running) throw Error('cannot reconfigure running QQ'); },
+    async configure() { this.configurationCalls++;await qqConfigureWait; if (this.running) throw Error('cannot reconfigure running QQ'); },
     async wire() { events.push('apply-connection'); return this.status(); },
     async loginInfo() { return {url:'http://127.0.0.1:6099/webui/',token:'synthetic-only-management-token'}; },
     async status() { await qqStatusWait; return { configured: true, externalOnly: false, canStart: true, running: this.running, loginState: this.running ? loginState : 'stopped', hasSavedLogin: true, connectionConfigured: true, protocolConnected: false }; } };
-  const manager = { host: 'synthetic-host', async inspect() { return { installed: true }; },
+  const manager = { runtime:'synthetic-runtime',host: 'synthetic-host', async inspect() { return { installed: true }; },
     async install() { events.push('prepare-backend'); } };
-  class LocalView { constructor() { this.webContents={setWindowOpenHandler(){},on(){},close(){},loadURL:async()=>events.push('open-qq-management')}; } setBounds(){} }
-  const electron = { WebContentsView:LocalView, app: { setName() {}, getVersion: () => '0.3.0-alpha.8', requestSingleInstanceLock: () => true,
+  class LocalView { constructor() { this.webContents={setWindowOpenHandler(){},on(){},close(){},loadURL:async url=>{loadedURLs.push(url);events.push('open-qq-management');}}; } setBounds(){} }
+  const electron = { session:{fromPartition:()=>({clearStorageData:async()=>{}})}, WebContentsView:LocalView, app: { setName() {}, getVersion: () => '0.3.0-alpha.8', requestSingleInstanceLock: () => true,
     whenReady: () => new Promise(() => {}), on() {} }, protocol: { registerSchemesAsPrivileged() {} } };
   const fakeServices = { ...native('./lib/services.cjs'), settingsCommand: async (_manager, command) => {
     if (command === 'save') { events.push('save-settings'); if (saveFails) throw Error('synthetic save failure'); }
-    return { onebotPort: 6199, onebotToken: 'synthetic-existing-token' };
+    return { qqConnectionMode:qqMode, onebotPort: 6199, onebotToken: 'synthetic-existing-token' };
   } };
   const context = { require: name => name === 'electron' ? electron : name === './lib/services.cjs' ? fakeServices
-    : name === 'node:fs/promises' ? { readdir: async () => { throw Object.assign(Error(), { code: 'ENOENT' }); } } : native(name),
+    : name === 'node:fs/promises' ? {writeFile:async()=>{},rm:async()=>{}, readdir: async () => { throw Object.assign(Error(), { code: 'ENOENT' }); } } : native(name),
     __dirname: path.dirname(file), process, console, Buffer, setTimeout, clearTimeout };
-  vm.runInNewContext(fs.readFileSync(file, 'utf8') + `;globalThis.hooks={perform,stopAll,publishQQ,getState:()=>state,requestShutdown:()=>{shutdownRequested=true;},set(values){
-    state.installed=true; manager=values.manager; supervisor=values.supervisor; napcat=values.napcat;
+  vm.runInNewContext(fs.readFileSync(file, 'utf8') + `;globalThis.hooks={perform,stopAll,publishQQ,restoreFile,getState:()=>state,requestShutdown:()=>{shutdownRequested=true;},set(values){
+    state.installed=true;operations={snapshot:async()=>{}};hostCommand=async()=>{};manager=values.manager; supervisor=values.supervisor; napcat=values.napcat;
     window={isDestroyed:()=>false,webContents:{send:(_channel,value)=>values.snapshot(value)},contentView:{addChildView(){},removeChildView(){}},getContentSize:()=>[1220,850]};
     extensions={operation:null,run:async()=>({})};appUpdater={status:async()=>({recovery:values.recovery})};}};`, context);
   context.hooks.set({ manager, supervisor, napcat, recovery, snapshot: value => snapshots.push(JSON.parse(JSON.stringify(value))) });
-  return { ...context.hooks, events, snapshots, napcat, supervisor };
+  return { ...context.hooks, events, snapshots, loadedURLs, napcat, supervisor };
 }
 
 test('ordinary conversation stop preserves an already logged-in owned QQ process', async () => {
@@ -153,3 +153,23 @@ for (const boundary of ['backendReadyWait','qqStatusWait','qqConfigureWait']) {
     assert.equal(h.supervisor.running,false);
   });
 }
+
+test('models console uses the actual providers route and cache-only bundle refresh entry',async()=>{
+ const h=harness();await h.perform('open-panel',{panel:'models'});
+ const url=new URL(h.loadedURLs[0]);assert.equal(url.origin,'http://127.0.0.1:6185');assert.equal(url.hash,'#/providers');
+ assert.ok(url.searchParams.get('astrbot_bundle')?.includes('0.3.0-alpha.8'));assert.ok(url.searchParams.get('astrbot_bundle')?.includes('4.29.3'));
+});
+
+test('official QQ startup starts its host without configuring or launching NapCat',async()=>{
+ const h=harness({backendRunning:false,qqRunning:false,qqMode:'official'});
+ await h.perform('start');assert.equal(h.supervisor.running,true);assert.equal(h.napcat.running,false);
+ assert.equal(h.events.includes('launch-qq'),false);assert.equal(h.events.includes('apply-connection'),false);
+ assert.ok(['official-connecting','ready'].includes(h.getState().startup.stage));
+});
+
+
+test('restoring an official-only backup does not configure a retained NapCat component',async()=>{
+ const h=harness({qqMode:'official',qqRunning:false});
+ await h.restoreFile('synthetic-backup.zip');
+ assert.equal(h.napcat.configurationCalls,0);
+});

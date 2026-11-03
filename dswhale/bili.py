@@ -291,8 +291,8 @@ class BiliService:
         return (
             not self.closed
             and not c.closed
-            and bool(self.settings.owner_umo)
-            and not c.store.state(self.settings.owner_umo)["paused"]
+            and bool(self.settings.owner_scope)
+            and not c.store.state(self.settings.owner_scope)["paused"]
             and self.settings.proactive_enabled
             and not self.settings.is_quiet(now_utc())
         )

@@ -17,6 +17,8 @@ from filelock import Timeout
 from .install import InstallError, offline_host
 
 FIELDS = {
+    "qqConnectionMode",
+    "officialOwnerUMO",
     "dashboardPort",
     "ownerQQ",
     "platformId",
@@ -49,6 +51,16 @@ def read_settings(host):
     return {
         "dashboardPort": config.get("dashboard", {}).get("port", 6185),
         "ownerQQ": str(fish.get("owner_qq", "")),
+        "qqConnectionMode": fish.get("qq_connection_mode", "napcat"),
+        "officialOwnerUMO": fish.get("official_owner_umo", ""),
+        "officialConfigured": any(
+            p.get("type") == "qq_official"
+            and p.get("enable")
+            and p.get("appid")
+            and p.get("secret")
+            for p in config.get("platform", [])
+            if isinstance(p, dict)
+        ),
         "platformId": platform.get("id", "dswhale-qq"),
         "onebotPort": platform.get("ws_reverse_port", 6199),
         "onebotToken": platform.get("ws_reverse_token", ""),
@@ -71,8 +83,15 @@ def setup_status(host):
     # LivingMemory keeps provider selection inside basic settings in some releases.
     providers = memory.get("basic_settings", providers)
     return {
-        "ownerConfigured": bool(value["ownerQQ"] and fish.get("owner_umo")),
-        "qqConfigured": any(
+        "qqConnectionMode": value["qqConnectionMode"],
+        "ownerConfigured": bool(
+            value["officialOwnerUMO"]
+            if value["qqConnectionMode"] == "official"
+            else value["ownerQQ"] and fish.get("owner_umo")
+        ),
+        "qqConfigured": value["officialConfigured"]
+        if value["qqConnectionMode"] == "official"
+        else any(
             p.get("enable") and p.get("type") == "aiocqhttp" and p.get("ws_reverse_token")
             for p in config.get("platform", [])
         ),
@@ -229,40 +248,92 @@ def save_settings(host, patch):
             switches = ("biliEnabled", "proactiveEnabled", "signatureEnabled", "qzoneEnabled")
             if any(not isinstance(value[k], bool) for k in switches):
                 raise ValueError("开关值无效")
-            if not owner and any(value[k] for k in switches):
+            mode, official = value["qqConnectionMode"], value["officialOwnerUMO"]
+            if (
+                not isinstance(mode, str)
+                or mode not in {"napcat", "official"}
+                or not isinstance(official, str)
+            ):
+                raise ValueError("QQ 接入方式或官方私聊绑定无效")
+            official = official.strip()
+            if mode == "official" and official:
+                from .config import Settings
+
+                Settings.from_mapping(
+                    {"qq_connection_mode": "official", "official_owner_umo": official}
+                )
+                official_platform = next(
+                    (
+                        p
+                        for p in config.get("platform", [])
+                        if p.get("id") == official.split(":", 1)[0]
+                        and p.get("type") == "qq_official"
+                        and p.get("enable")
+                        and p.get("appid")
+                        and p.get("secret")
+                    ),
+                    None,
+                )
+                if official_platform is None:
+                    raise ValueError("请先创建并启用对应的 QQ 官方机器人，再复制其私聊会话 ID")
+                from .qq_identity import confirmed_c2c_scope
+
+                if official != fish.get("official_owner_umo") and not confirmed_c2c_scope(
+                    host / "data/plugin_data/astrbot_plugin_dswhale", official
+                ):
+                    raise ValueError(
+                        "请先在 QQ 消息列表私聊发送 /fish whoami，再复制本会话；不接受频道私信"
+                    )
+            if mode == "official" and (value["signatureEnabled"] or value["qzoneEnabled"]):
+                raise ValueError("QQ 官方接口不支持个人 QQ 签名和 QQ 空间")
+            if not (official if mode == "official" else owner) and any(value[k] for k in switches):
                 raise ValueError("请先绑定 QQ 用户，再启用主动功能")
-            old_ident = read_settings(host)["platformId"]
-            platforms = config.setdefault("platform", [])
-            platform = next(
-                (p for p in platforms if p.get("id") == old_ident and p.get("type") == "aiocqhttp"),
-                None,
-            )
-            if any(p.get("id") == ident and p is not platform for p in platforms):
-                raise ValueError("平台 ID 已被其他连接使用")
-            if platform is None:
-                platform = {}
-                platforms.append(platform)
             config.setdefault("dashboard", {}).update(port=dashboard_port)
-            platform.update(
-                id=ident,
-                type="aiocqhttp",
-                enable=True,
-                ws_reverse_host="127.0.0.1",
-                ws_reverse_port=port,
-                ws_reverse_token=token or secrets.token_urlsafe(32),
-            )
+            if mode == "napcat":
+                old_ident = read_settings(host)["platformId"]
+                platforms = config.setdefault("platform", [])
+                platform = next(
+                    (
+                        p
+                        for p in platforms
+                        if p.get("id") == old_ident and p.get("type") == "aiocqhttp"
+                    ),
+                    None,
+                )
+                if any(p.get("id") == ident and p is not platform for p in platforms):
+                    raise ValueError("平台 ID 已被其他连接使用")
+                if platform is None:
+                    platform = {}
+                    platforms.append(platform)
+                platform.update(
+                    id=ident,
+                    type="aiocqhttp",
+                    enable=True,
+                    ws_reverse_host="127.0.0.1",
+                    ws_reverse_port=port,
+                    ws_reverse_token=token or secrets.token_urlsafe(32),
+                )
+                fish.update(
+                    owner_qq=owner, owner_umo=f"{ident}:FriendMessage:{owner}" if owner else ""
+                )
+                if owner:
+                    admins = config.setdefault("admins_id", [])
+                    if owner not in admins:
+                        admins.append(owner)
+            else:
+                # Suspend only the previously bound OneBot listener, retaining
+                # its settings and device/login data for an explicit switch back.
+                previous = str(fish.get("owner_umo", "")).split(":", 1)[0]
+                for p in config.get("platform", []):
+                    if p.get("id") == previous and p.get("type") == "aiocqhttp":
+                        p["enable"] = False
+            fish.update(qq_connection_mode=mode, official_owner_umo=official)
             fish.update(
-                owner_qq=owner,
-                owner_umo=f"{ident}:FriendMessage:{owner}" if owner else "",
                 bili_enabled=value["biliEnabled"],
                 proactive_enabled=value["proactiveEnabled"],
                 qq_signature_enabled=value["signatureEnabled"],
                 qzone_enabled=value["qzoneEnabled"],
             )
-            if owner:
-                admins = config.setdefault("admins_id", [])
-                if owner not in admins:
-                    admins.append(owner)
             backup = host / ".desktop-settings-backups" / uuid.uuid4().hex
             backup.mkdir(parents=True)
             os.chmod(backup, 0o700)

@@ -250,7 +250,7 @@ def doctor(root: Path) -> dict:
     config = root / "data/config" / f"{PLUGIN}_config.json"
     try:
         settings = Settings.from_mapping(json.loads(config.read_text(encoding="utf-8-sig")))
-        add("owner", settings.owner_umo, "主人 QQ 私聊绑定")
+        add("owner", settings.owner_scope, "主人私聊绑定")
         add("vision", settings.vision_provider_id, "图片模型 ID（未调用远程模型）")
         if settings.cookies_path:
             add(

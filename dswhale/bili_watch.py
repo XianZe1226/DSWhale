@@ -14,7 +14,7 @@ def enqueue_watch(service, event, topic):
     c = service.companion
     c.require_owner(event)
     now = datetime.now(UTC)
-    if c.store.state(c.settings.owner_umo)["paused"]:
+    if c.store.state(c.settings.owner_scope)["paused"]:
         return "现在暂停着，先解除暂停再去看"
     if (
         service.closed
@@ -268,14 +268,10 @@ async def finish_watch(service, job, outcome, *, error=""):
     if not c.store.transition(activity.id, "queued", time.time()):
         return
     try:
-        platform = c.context.get_platform_inst(c.settings.owner_umo.split(":", 1)[0])
-        if not platform or platform.meta().name != "aiocqhttp":
-            raise RuntimeError("QQ 不在线")
-        await platform.get_client().send_private_msg(
-            user_id=int(c.settings.owner_qq),
-            message=[{"type": "text", "data": {"text": text[:4000]}}],
-        )
-        c.store.transition(activity.id, "sent", time.time())
+        from .qq_transport import send_owner_text
+
+        confirmed = await send_owner_text(c, text)
+        c.store.transition(activity.id, "sent" if confirmed else "uncertain", time.time())
     except BaseException:
         c.store.transition(activity.id, "uncertain", time.time(), "看完汇报投递未确认")
         raise

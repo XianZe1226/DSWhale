@@ -14,6 +14,7 @@ if __package__:
     from .dswhale.bili_agent import read_config
     from .dswhale.config import Settings
     from .dswhale.persona import untrusted_block
+    from .dswhale.qq_identity import is_official_c2c, remember_c2c_scope
     from .dswhale.reply_cleanup import clean_content, clean_history, clean_stream, clean_text
     from .dswhale.store import Store
 else:  # local SDK smoke tests
@@ -21,6 +22,7 @@ else:  # local SDK smoke tests
     from dswhale.bili_agent import read_config
     from dswhale.config import Settings
     from dswhale.persona import untrusted_block
+    from dswhale.qq_identity import is_official_c2c, remember_c2c_scope
     from dswhale.reply_cleanup import clean_content, clean_history, clean_stream, clean_text
     from dswhale.store import Store
 
@@ -29,8 +31,13 @@ class OwnerOnly(filter.CustomFilter):
     settings = Settings()
 
     def filter(self, event: AstrMessageEvent, cfg: AstrBotConfig) -> bool:
+        if self.settings.qq_connection_mode == "official" and not is_official_c2c(event):
+            return False
         return self.settings.matches(
-            event.get_sender_id(), event.unified_msg_origin, private=event.is_private_chat()
+            event.get_sender_id(),
+            event.unified_msg_origin,
+            private=event.is_private_chat(),
+            platform_type=event.get_platform_name(),
         )
 
 
@@ -159,11 +166,24 @@ class DSWhale(Star):
     @fish.command("whoami")
     async def whoami(self, event: AstrMessageEvent):
         settings = self.companion.settings
-        if event.is_private_chat() and (
-            not settings.owner_qq or event.get_sender_id() == settings.owner_qq
-        ):
+        if settings.qq_connection_mode == "official" and not is_official_c2c(event):
             yield event.plain_result(
-                f"你的 QQ：{event.get_sender_id()}\n本会话：{event.unified_msg_origin}\n请在插件配置填写 owner_qq 和 owner_umo，再重载插件。"
+                "请从 QQ 消息列表与官方机器人私聊发送此命令，频道私信不能用于主人绑定。"
+            )
+            event.stop_event()
+            return
+        if event.is_private_chat() and (
+            not settings.owner_id or event.get_sender_id() == settings.owner_id
+        ):
+            if settings.qq_connection_mode == "official":
+                remember_c2c_scope(self.companion.store.path.parent, event)
+            yield event.plain_result(
+                f"当前用户标识：{event.get_sender_id()}\n本会话：{event.unified_msg_origin}\n"
+                + (
+                    "请将本会话填入官方机器人私聊绑定，再保存设置。"
+                    if settings.qq_connection_mode == "official"
+                    else "请在插件配置填写 owner_qq 和 owner_umo，再重载插件。"
+                )
             )
         event.stop_event()
 

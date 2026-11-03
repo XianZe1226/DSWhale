@@ -61,7 +61,10 @@ async function downloadVerified(asset, destination, {fetch: request = globalThis
         const [start,end,size]=range.slice(1).map(Number);
         if(![start,end,size].every(Number.isSafeInteger)||start!==offset||end<start||end>=size||(length!==null&&length!==end-start+1))throw new NetworkError('NET_RANGE',source);
         total=size;
-      } else if(response.status===200||response.status===undefined)offset=0;
+      } else if(response.status===200||response.status===undefined) {
+        if(offset)onProgress?.(null,{receivedBytes:0,totalBytes:total,restarting:true});
+        offset=0;
+      }
       else throw new NetworkError('NET_RANGE',source);
       if(total!==null&&total>maxBytes)throw new NetworkError('NET_SIZE',source);
       const handle = await fs.open(partial,offset?'a':'w');
@@ -71,7 +74,7 @@ async function downloadVerified(asset, destination, {fetch: request = globalThis
           combined.throwIfAborted();count+=chunk.length;received+=chunk.length;
           if(count>maxBytes||(total!==null&&count>total))throw new NetworkError('NET_SIZE',source);
           await handle.write(chunk);
-          onProgress?.(total>0?Math.min(count/total,1):null);
+          onProgress?.(total>0?Math.min(count/total,1):null,{receivedBytes:count,totalBytes:total});
         }
       } finally {await handle.close();}
       if((length!==null&&received!==length)||(total!==null&&count!==total))throw new NetworkError('NET_INTERRUPTED',source);

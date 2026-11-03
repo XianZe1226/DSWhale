@@ -161,6 +161,28 @@ def configure_desktop_dashboard(host):
     temporary.replace(file)
 
 
+def repair_desktop_providers(host, python, env):
+    # Bootstrap has only filelock installed. Host metadata and DSWhale belong to
+    # the managed Python, including when upgrading an existing configuration.
+    config = json.loads((host / "data/cmd_config.json").read_text(encoding="utf-8-sig"))
+    if any(
+        isinstance(record, dict) and record.get("type") and not record.get("provider_type")
+        for group in ("provider_sources", "provider")
+        if isinstance(config.get(group), list)
+        for record in config.get(group, [])
+    ):
+        run(
+            [
+                python,
+                "-c",
+                "from dswhale.provider_compat import repair_host_providers; import sys; repair_host_providers(sys.argv[1])",
+                host,
+            ],
+            cwd=host,
+            env=env,
+        )
+
+
 def _sync_directory(directory):
     if os.name == "nt":
         return  # Windows does not support opening a directory for fsync.
@@ -251,6 +273,8 @@ def initialize_host_config(host, python, env, *, desktop=False):
         if desktop and pending_file.exists():
             credential = _read_login_record(pending_file, pending=True)
             _complete_initial_login(host, credential, pending_file, credential_file)
+        if desktop:
+            repair_desktop_providers(host, python, env)
         return
     if desktop:
         if pending_file.exists():
@@ -281,6 +305,7 @@ def initialize_host_config(host, python, env, *, desktop=False):
     )
     if desktop:
         _complete_initial_login(host, credential, pending_file, credential_file)
+        repair_desktop_providers(host, python, env)
 
 
 def main():

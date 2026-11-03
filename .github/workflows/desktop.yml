@@ -72,6 +72,9 @@ jobs:
           CSC_IDENTITY_AUTO_DISCOVERY: 'false'
       - name: Verify GUI startup policy in the actual packaged binary
         run: node scripts/verify-electron-fuses.cjs
+      - name: Verify native Windows overwrite installation in the same directory
+        if: runner.os == 'Windows'
+        run: node desktop/tests/windows-update-smoke.cjs
       - name: Create checksums for installers only
         shell: python
         run: |

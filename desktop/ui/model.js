@@ -4,8 +4,8 @@
   else root.DSWhaleUI = api;
 })(typeof globalThis === 'object' ? globalThis : this, function () {
   'use strict';
-  const workspaceActions = new Set(['workspace-status','health-check','backup-list','backup-restore','backup-delete','diagnostics-export','app-update-check','app-update-download','app-update-install','app-update-rollback','napcat-install','napcat-configure','napcat-wire','napcat-stop','napcat-guide','napcat-login-code','preferences-save']);
-  const noPayloadActions = new Set(['workspace-status','health-check','backup-list','diagnostics-export','app-update-download','app-update-install','napcat-install','napcat-configure','napcat-wire','napcat-stop','napcat-guide','napcat-login-code']);
+  const workspaceActions = new Set(['workspace-status','health-check','backup-list','backup-restore','backup-delete','diagnostics-export','app-update-check','app-update-start','app-update-download','app-update-install','app-update-rollback','napcat-install','napcat-configure','napcat-wire','napcat-stop','napcat-guide','napcat-login-code','preferences-save']);
+  const noPayloadActions = new Set(['app-update-start','workspace-status','health-check','backup-list','diagnostics-export','app-update-download','app-update-install','napcat-install','napcat-configure','napcat-wire','napcat-stop','napcat-guide','napcat-login-code']);
   const actions = new Set(['inspect', 'install', 'start', 'stop', 'open-panel', 'home', 'settings-get', 'settings-save', 'open-data', 'backup', 'restore', 'initial-login', 'extensions-status', 'extension-check', 'extension-update', 'extension-rollback',...workspaceActions]);
   const panels = new Set(['astrbot', 'models', 'memory', 'bilibili', 'qq', 'napcat']);
   const extensionIds = new Set(['memory', 'memes']);
@@ -24,7 +24,7 @@
     const dashboardPort=Number(value.dashboardPort??6185);
     if ([port,dashboardPort].some(p=>!Number.isInteger(p)||p<1024||p>65535)) throw new Error('端口应为 1024–65535 之间的整数。');
     if(port===dashboardPort)throw new Error('OneBot 与控制台端口不能相同。');
-    return { ownerQQ: String(value.ownerQQ ?? '').trim(), platformId: String(value.platformId ?? '').trim(), onebotPort: port, dashboardPort, onebotToken: String(value.onebotToken ?? ''), biliEnabled: Boolean(value.biliEnabled), proactiveEnabled: Boolean(value.proactiveEnabled), signatureEnabled: value.signatureEnabled === true, qzoneEnabled: value.qzoneEnabled === true };
+    return { ...(value.qqConnectionMode!==undefined?{qqConnectionMode:value.qqConnectionMode}:{}),...(value.officialOwnerUMO!==undefined?{officialOwnerUMO:String(value.officialOwnerUMO||'').trim()}:{}),ownerQQ: String(value.ownerQQ ?? '').trim(), platformId: String(value.platformId ?? '').trim(), onebotPort: port, dashboardPort, onebotToken: String(value.onebotToken ?? ''), biliEnabled: Boolean(value.biliEnabled), proactiveEnabled: Boolean(value.proactiveEnabled), signatureEnabled: value.signatureEnabled === true, qzoneEnabled: value.qzoneEnabled === true };
   }
   function connectionViewModel(data) {
     const state = data.state || {}, qq = data.workspace?.napcat;
@@ -32,6 +32,20 @@
       ({ stage, title, description, badge, tone, action, actionLabel, ...(action === 'open-panel' ? { panel: 'napcat' } : {}) });
     if (data.workspace?.appUpdate?.recovery?.servicesMustRemainStopped) return view('recovery', '先完成应用更新', '当前更新或恢复尚未完成，请先处理应用设置中的提示。', '等待恢复', 'warn', 'route-settings', '查看恢复步骤');
     if (!state.installed || state.platform?.supported === false) return view('environment', '先准备运行环境', '环境准备完成后，再连接 QQ。已有配置与登录数据会保留。', '尚未准备', '', 'route-environment', '准备运行环境');
+    const official=(data.settings?.qqConnectionMode||state.qqConnectionMode||state.setup?.qqConnectionMode)==='official';
+    if(official){
+      if(state.startup?.stage==='starting-conversation')return view('official-starting','正在启动对话服务','服务准备好后会连接官方网关。','正在启动','working');
+      if(!state.running)return view('official-stopped','启动官方机器人','启动对话服务与官方接口，不安装或启动 NapCat，也不修改个人 QQ。','尚未启动','','start','启动');
+      const configured=data.settings?data.settings.officialConfigured:state.setup?.qqConfigured;
+      if(!configured)return {...view('official-setup','创建或连接 QQ 官方机器人','在内置控制台扫码创建，或填写已有机器人的 AppID 与 AppSecret。','待配置','','open-panel','配置官方机器人'),panel:'qq'};
+      const bound=data.settings?!!data.settings.officialOwnerUMO:state.setup?.ownerConfigured;
+      if(!bound)return view('official-owner','绑定你的官方私聊','用个人 QQ 私聊机器人发送 /fish whoami，复制完整“本会话”到下方。不要填写普通 QQ 号码。','待绑定','','save-settings','保存私聊绑定');
+      if(qq?.protocolConnected===true){
+        if(state.setup?.modelConfigured===false)return view('model','配置聊天模型','官方接口已连接，接下来选择聊天模型。','QQ 已连接','good','route-intelligence','配置模型');
+        return view('ready','QQ 官方机器人已连接','已确认官方网关连接。请用自己的 QQ 给机器人发一条消息，检查模型回复。','QQ 已连接','good');
+      }
+      return {...view('official-connecting','正在连接 QQ 官方接口','配置保存后仍需等待连接。若长时间未连通，可检查机器人启用状态、凭据及平台要求的出口 IP。','等待连接','working','open-panel','检查官方配置'),panel:'qq'};
+    }
     const startup = {
       'starting-conversation': ['正在启动对话服务', '先启动消息处理服务，完成后再连接 QQ。'],
       'checking-qq': ['对话服务已启动', '正在检查已有的 QQ 连接。'],
@@ -81,7 +95,7 @@
       data.state = { ...data.state, ...state, platform: { ...data.state.platform, ...state.platform }, setup: { ...data.state.setup, ...state.setup } };
     }
     if (!available && preview) {
-      merge({ version: '0.3.0a9', platform: { id: 'darwin-arm64', label: 'macOS · Apple Silicon', supported: true }, components: [
+      merge({ version: '0.3.0a10', platform: { id: 'darwin-arm64', label: 'macOS · Apple Silicon', supported: true }, components: [
         { id: 'python', label: 'Python', version: '3.12', status: 'missing', detail: '将安装到独立环境' },
         { id: 'node', label: 'Node.js', version: '22 LTS', status: 'missing', detail: '用于扩展与网页能力' },
         { id: 'ffmpeg', label: 'FFmpeg', version: '6+', status: 'missing', detail: '音频与视频处理' },
@@ -108,6 +122,7 @@
       if(action==='app-update-rollback')payload={restoreData:payload?.restoreData===true,confirmDataRestore:payload?.confirmDataRestore===true};
       if (!available) throw new Error(preview ? '界面预览为只读模式，请在桌面应用中执行操作。' : '请在 DSWhale 桌面应用中执行操作。');
       if (data.pending) throw new Error('上一项操作仍在进行，请稍候。');
+      if(action==='app-update-start'&&(!data.state.installed||!(data.workspace.appUpdate?.canDownload||data.workspace.appUpdate?.canInstall)))throw new Error('请先准备环境并检查应用更新。');
       if(action==='app-update-download'&&data.workspace.appUpdate?.canDownload!==true)throw new Error('请先检查应用更新，或继续未完成的下载。');
       if(action==='app-update-install'&&(!data.state.installed||data.workspace.appUpdate?.canInstall!==true))throw new Error('请先准备环境并下载经过校验的应用安装包。');
       if(action==='app-update-rollback'&&data.workspace.appUpdate?.canRollback!==true)throw new Error('当前没有可回退的应用安装包和备份。');
@@ -128,6 +143,7 @@
         if(action==='preferences-save')payload=preferencesPayload(payload);
         const result = await bridge.invoke(action, payload);
         if (result && typeof result === 'object' && result.error) throw new Error(String(result.error));
+        if(action==='app-update-start'&&result?.canceled){mergeWorkspace(result);data.notice='安装包已准备，可稍后点击更新继续。';}
         if(workspaceActions.has(action)&&!result?.canceled) {
           mergeWorkspace(result);if(action==='workspace-status')data.workspaceLoaded=true;
           if(action==='preferences-save')data.notice='应用偏好已保存。';
@@ -136,7 +152,7 @@
           if(action==='diagnostics-export'&&result.saved)data.notice='诊断报告已保存。';
           if(action==='app-update-check')data.notice='应用更新检查已完成。';
           if(action==='app-update-download')data.notice='应用安装包已下载并校验，等待你确认安装。';
-          if(['app-update-install','app-update-rollback','backup-restore'].includes(action)){merge({running:false,panel:''});data.notice=action==='backup-restore'?'备份已恢复，当前数据已另行备份；请检查环境和连接后启动服务。':'安装程序已打开，请完成系统安装并重新打开应用。';}
+          if(['app-update-start','app-update-install','app-update-rollback','backup-restore'].includes(action)){merge({running:false,panel:''});data.notice=action==='backup-restore'?'备份已恢复，当前数据已另行备份；请检查环境和连接后启动服务。':'安装程序已打开，请完成系统安装并重新打开应用。';}
           if(action==='backup-restore'){data.settings=null;data.extensions=null;data.extensionChecks={memory:false,memes:false};}
           if(action==='napcat-wire')data.notice='OneBot 连接设置已更新，请检查连接状态。';
         }
@@ -171,7 +187,7 @@
       } catch (error) {
         data.error = error instanceof Error ? error.message : String(error);
         // Never retain a settings payload containing a local access token in retry metadata.
-        data.retry = retryOverride||(['settings-save','backup-restore','backup-delete','app-update-rollback'].includes(action) ? null : { action, payload });
+        data.retry = retryOverride||(['settings-save','backup-restore','backup-delete','app-update-start','app-update-rollback'].includes(action) ? null : { action, payload });
         throw error;
       } finally { data.pending = ''; data.pendingExtension = ''; emit(); }
     }

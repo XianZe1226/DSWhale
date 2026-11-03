@@ -635,20 +635,6 @@ test('backup restore and delete require inline review and cancellation never inv
   assert.deepEqual(app.calls.at(-1),['backup-delete',{id:'backup-safe.zip'}]);
 });
 
-test('app rollback preserves new data unless an explicit restore checkbox and confirm are used',async()=>{
-  const appUpdate={...workspaceStatus().appUpdate,targetVersion:'0.3.0a4',previousVersion:'0.3.0a3',canRollback:true,impact:{runtime:true,dataMigration:false,configuration:false,rollbackCompatible:true}};
-  const app=renderApp({screen:'settings',workspace:workspaceStatus({appUpdate}),invoke:async action=>action==='inspect'?{installed:true,running:false}:{appUpdate}});
-  await app.settle();
-  await app.click('app-rollback-review');
-  assert.match(app.html(),/保留.*当前数据|当前数据.*保留/);
-  await app.click('app-rollback-confirm');
-  assert.deepEqual(app.calls.at(-1),['app-update-rollback',{restoreData:false,confirmDataRestore:false}]);
-  await app.click('app-rollback-review');
-  app.change('rollback-restore-data',true);
-  await app.click('app-rollback-confirm');
-  assert.deepEqual(app.calls.at(-1),['app-update-rollback',{restoreData:true,confirmDataRestore:true}]);
-});
-
 test('environment doctor escapes details and shows actual versus expected versions',async()=>{
   const health={checks:[{id:'PKG_DSWH',name:'应用组件',ok:false,required:true,detail:'<img src=x>',code:'PKG_MISSING',fix:'准备环境'}],summary:{requiredFailures:1,warnings:0}};
   const app=renderApp({screen:'environment',workspace:workspaceStatus({health}),invoke:async()=>({installed:true,running:false,versionMatrix:{expected:{dswhale:'0.3.0a3',node:'22.23.4'},actual:{dswhale:'0.3.0a2',node:'24.0.0'}}})});
@@ -689,15 +675,6 @@ test('preferences save without adding any network configuration form',async()=>{
   app.change('pref-tray',true);app.change('pref-resumeAfterWake',true);await app.click('save-preferences');
   assert.deepEqual(app.calls.at(-1),['preferences-save',{tray:true,startAtLogin:false,resumeAfterWake:true}]);
   assert.equal(app.calls.some(([action])=>action==='settings-save'||action==='network-save'),false);
-});
-
-test('incompatible app rollback requires the restore checkbox before confirmation can invoke IPC',async()=>{
-  const appUpdate={...workspaceStatus().appUpdate,canRollback:true,impact:{dataMigration:true,rollbackCompatible:false},recovery:{rollbackRequiresDataRestore:true}};
-  const app=renderApp({screen:'settings',workspace:workspaceStatus({appUpdate}),invoke:async action=>action==='inspect'?{installed:true}:{appUpdate}});
-  await app.settle();await app.click('app-rollback-review');await app.click('app-rollback-confirm');
-  assert.equal(app.calls.some(([action])=>action==='app-update-rollback'),false);
-  app.change('rollback-restore-data',true);await app.click('app-rollback-confirm');
-  assert.deepEqual(app.calls.at(-1),['app-update-rollback',{restoreData:true,confirmDataRestore:true}]);
 });
 
 test('a failed destructive action requires a new confirmation instead of an unrestricted retry',async()=>{
@@ -765,5 +742,35 @@ test('automatic update publications reach workspace without changing global erro
 });
 test('available update appears in navigation outside settings and opens update controls',async()=>{
  const app=renderApp({screen:'overview',invoke:async()=>({installed:true}),workspace:workspaceStatus({appUpdate:{phase:'available',targetVersion:'0.3.0a6',canDownload:true}})});await app.settle();
- assert.match(app.html(),/data-route="settings"[^>]*>[\s\S]*?aria-label="有应用更新"/);await app.navigate('settings');assert.match(app.html(),/id="app-update-title"/);assert.match(app.html(),/data-action="app-update-download"/);assert.equal(app.calls.some(([action])=>action==='app-update-check'),false);
+ assert.match(app.html(),/data-route="settings"[^>]*>[\s\S]*?aria-label="有应用更新"/);await app.navigate('settings');assert.match(app.html(),/id="app-update-title"/);assert.match(app.html(),/data-action="app-update-start"/);assert.equal(app.calls.some(([action])=>action==='app-update-check'),false);
+});
+
+test('available and downloaded update states each show one Update button and no separate install or rollback',async()=>{
+ for(const phase of ['available','downloaded']){
+  const appUpdate={...workspaceStatus().appUpdate,phase,targetVersion:'0.3.0a10',canDownload:true,canInstall:phase==='downloaded',canRollback:true,previousVersion:'0.3.0a8'};
+  const app=renderApp({screen:'settings',workspace:workspaceStatus({appUpdate}),invoke:async action=>action==='inspect'?{installed:true}:{appUpdate}});
+  await app.settle();
+  assert.equal((app.html().match(/data-action="app-update-start"/g)||[]).length,1);
+  assert.doesNotMatch(app.html(),/data-action="app-update-(?:download|install|check)"|app-rollback-review|rollback-restore-data/);
+ }
+});
+
+test('live update progress remains visible while the update call is pending',async()=>{
+ const appUpdate={...workspaceStatus().appUpdate,phase:'available',targetVersion:'0.3.0a10',canDownload:true};let finish;
+ const app=renderApp({screen:'settings',workspace:workspaceStatus({appUpdate}),invoke:async action=>action==='inspect'?{installed:true}:action==='app-update-start'?new Promise(resolve=>{finish=resolve;}):{appUpdate}});
+ await app.settle();const pending=app.click('app-update-start');await Promise.resolve();
+ app.pushState({appUpdateProgress:{stage:'downloading',label:'正在下载更新',ratio:.5,receivedBytes:1024**2,totalBytes:2097152}});
+ assert.match(app.html(),/id="app-update-progress"/);assert.match(app.html(),/<progress[^>]*value="0.5"/);assert.match(app.html(),/50%/);
+ assert.match(app.html(),/1.0 MB.*2.0 MB/);
+ finish({canceled:true,appUpdate:{...appUpdate,phase:'downloaded',canInstall:true}});await pending;
+ assert.doesNotMatch(app.html(),/更新成功|已安装/);
+});
+
+test('official mode offers official setup and exact private binding without NapCat actions',()=>{
+ const base=connectionData();base.settings={qqConnectionMode:'official',officialOwnerUMO:'',officialConfigured:false};
+ base.state.running=false;let view=load().connectionViewModel(base);assert.equal(view.action,'start');
+ base.state.running=true;view=load().connectionViewModel(base);assert.equal(view.action,'open-panel');assert.equal(view.panel,'qq');
+ base.settings.officialConfigured=true;view=load().connectionViewModel(base);assert.equal(view.stage,'official-owner');assert.equal(view.action,'save-settings');
+ base.settings.officialOwnerUMO='official-test:FriendMessage:OPAQUE-TEST';base.workspace.napcat.protocolConnected=true;
+ view=load().connectionViewModel(base);assert.equal(view.stage,'ready');assert.doesNotMatch(JSON.stringify(view),/napcat-install|napcat-wire/);
 });

@@ -1,4 +1,20 @@
 {
+  "qq_connection_mode": {
+    "description": "QQ 接入方式",
+    "type": "string",
+    "default": "napcat",
+    "options": [
+      "napcat",
+      "official"
+    ],
+    "hint": "napcat：普通 QQ 小号；official：QQ 官方机器人 WebSocket。官方模式不使用 NapCat。"
+  },
+  "official_owner_umo": {
+    "description": "QQ 官方机器人主人私聊会话 ID",
+    "type": "string",
+    "default": "",
+    "hint": "用官方机器人私聊发送 /fish whoami，复制完整本会话；不是普通 QQ 号码。先关闭签名和空间开关再切换官方模式。"
+  },
   "owner_qq": {
     "description": "主人 QQ 号码",
     "type": "string",

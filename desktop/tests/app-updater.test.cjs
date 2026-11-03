@@ -425,3 +425,78 @@ test('automatic equal-target check preserves authenticated cache through signatu
  const manual=await f.manager.check({channel:'alpha'});assert.equal(f.requests.length-manualStart,3);assert.equal(manual.impact.configuration,true);assert.equal(manual.canDownload,true);
  assert.notDeepEqual(await fs.readFile(rawFile),before.raw);assert.notDeepEqual(await fs.readFile(sigFile),before.signature);
 });
+
+test('update downloads publish real aggregate byte progress without disclosing installer details',async t=>{
+ const progress=[];
+ const f=await fixture(t,{onProgress:p=>progress.push(p),download:async(_asset,file,options)=>{
+  for(const ratio of [.25,.5,1])options.onProgress(ratio);
+  await fs.writeFile(file,bytes);
+ }});
+ await f.manager.check({channel:'alpha'});await f.manager.download();
+ const measured=progress.map(p=>p.progress).filter(p=>p?.stage==='downloading'&&Number.isFinite(p.ratio));
+ assert.ok(measured.some(p=>p.ratio>0&&p.ratio<1));
+ assert.ok(measured.every((p,i)=>p.totalBytes===bytes.length*2&&p.receivedBytes>=0&&p.receivedBytes<=p.totalBytes&&(i===0||p.ratio>=measured[i-1].ratio)));
+ assert.equal((await f.manager.status()).progress.ratio,1);
+ assert.ok(progress.some(p=>p.progress?.stage==='verifying'));
+ for(const p of progress)assert.doesNotMatch(JSON.stringify(p),/PRIVATE_FIXTURE|https:|installer-fixture|\.dmg/);
+});
+
+for(const confirm of [false,true])test('one update action downloads then prompts before any service shutdown; confirm='+confirm,async t=>{
+ const f=await fixture(t);await f.manager.check({channel:'alpha'});
+ const {Workspace}=require('../lib/workspace.cjs');
+ const workspace=new Workspace({appUpdater:f.manager,isInstalled:()=>true,isClosing:()=>false,
+  confirmUpdate:async version=>{assert.equal(version,'0.3.0a4');f.events.push('confirm-overwrite');return confirm;},
+  afterInstaller:async()=>f.events.push('quit-handoff')});
+ const result=await workspace.perform('app-update-start');
+ const prompt=f.events.indexOf('confirm-overwrite');assert.ok(prompt>=2);
+ if(confirm)assert.deepEqual(f.events.slice(prompt),['confirm-overwrite','stop','snapshot','launch-update','quit-handoff']);
+ else {assert.equal(result.canceled,true);assert.equal(result.appUpdate.canInstall,true);assert.equal(f.events.includes('stop'),false);assert.equal(f.events.includes('quit-handoff'),false);}
+});
+
+test('a canceled overwrite prompt reuses verified files on the next update click',async t=>{
+ const f=await fixture(t);await f.manager.check({channel:'alpha'});let confirms=0;
+ const {Workspace}=require('../lib/workspace.cjs');
+ const workspace=new Workspace({appUpdater:f.manager,isInstalled:()=>true,isClosing:()=>false,confirmUpdate:async()=>++confirms>1,afterInstaller:async()=>{}});
+ await workspace.perform('app-update-start');const count=f.events.filter(e=>e.startsWith('download:')).length;
+ await workspace.perform('app-update-start');assert.equal(f.events.filter(e=>e.startsWith('download:')).length,count);
+ assert.equal(f.events.filter(e=>e==='launch-update').length,1);
+});
+
+test('the single Update action repairs a damaged downloaded cache before asking to overwrite',async t=>{
+ const f=await prepared(t);
+ const target=path.join(f.directory,'app-updates/installers/0.3.0a4/DSWhale-0.3.0-alpha.4-macOS-arm64.dmg');
+ await fs.writeFile(target,Buffer.alloc(bytes.length,120));
+ const {Workspace}=require('../lib/workspace.cjs');let prompts=0;
+ const workspace=new Workspace({appUpdater:f.manager,isInstalled:()=>true,isClosing:()=>false,confirmUpdate:async()=>{prompts++;return true;},afterInstaller:async()=>{}});
+ await workspace.perform('app-update-start');
+ assert.deepEqual(await fs.readFile(target),bytes);assert.equal(prompts,1);assert.equal(f.events.filter(e=>e==='launch-update').length,1);
+});
+
+
+test('real download retry announces discarded partial bytes before restarting progress',async t=>{
+ const {downloadVerified}=require('../lib/runtime.cjs');const progress=[];let call=0;
+ const f=await fixture(t,{onProgress:p=>progress.push(p.progress),download:async(asset,file,opts)=>{
+  if(!asset.name.includes('alpha.4'))return fs.writeFile(file,bytes);
+  return downloadVerified(asset,file,{...opts,fetch:async()=>{
+   call++;const first=call===1;
+   return {ok:true,status:200,headers:new Headers({'content-length':String(bytes.length)}),body:(async function*(){
+    await new Promise(r=>setTimeout(r,110));yield bytes.subarray(0,first?8:2);
+    if(first)throw Error('synthetic network interruption');
+    await new Promise(r=>setTimeout(r,110));yield bytes.subarray(2);
+   })()};
+  }});
+ }});
+ await f.manager.check({channel:'alpha'});await f.manager.download();
+ const restart=progress.findIndex(p=>p?.stage==='restarting');assert.ok(restart>=0);
+ assert.equal(progress[restart].ratio,null);assert.equal(progress[restart].receivedBytes,bytes.length);
+ const next=progress.slice(restart+1).find(p=>p.stage==='downloading');assert.equal(next.receivedBytes,bytes.length+2);
+ assert.equal(progress.at(-1).ratio,1);
+});
+
+
+test('failed native handoff never announces that an installer was opened',async t=>{
+ const progress=[];const f=await prepared(t,{onProgress:p=>progress.push(p.progress),launchInstaller:async()=>{throw Error('synthetic launch error');}});
+ await assert.rejects(f.manager.install());
+ assert.ok(progress.some(p=>p?.stage==='install-launched'));
+ assert.ok(progress.every(p=>!p?.label.includes('已打开')));
+});

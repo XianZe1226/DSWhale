@@ -630,3 +630,41 @@ def test_bootstrap_propagates_only_allowlisted_network_failure_metadata(monkeypa
     assert getattr(failure.value, "code", "") == "NET_PROXY"
     assert getattr(failure.value, "source", "") == "nodejs"
     assert "PRIVATE" not in str(failure.value)
+
+
+def test_dashboard_configuration_does_not_import_host_packages(tmp_path, monkeypatch):
+    import builtins
+
+    module = bootstrap()
+    file = tmp_path / "data/cmd_config.json"
+    file.parent.mkdir()
+    file.write_text(json.dumps({"dashboard": {"port": 6185}}))
+    original = builtins.__import__
+
+    def isolated(name, *args, **kwargs):
+        if name.split(".")[0] in {"astrbot", "dswhale"}:
+            raise ModuleNotFoundError("Host package is not in the bootstrap environment")
+        return original(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", isolated)
+    module.configure_desktop_dashboard(tmp_path)
+    assert json.loads(file.read_text())["dashboard"]["host"] == "127.0.0.1"
+
+
+def test_existing_desktop_upgrade_repairs_categories_through_host_python(tmp_path):
+    import os
+    import sys
+
+    module = bootstrap()
+    host = tmp_path / "host"
+    file = host / "data/cmd_config.json"
+    file.parent.mkdir(parents=True)
+    source = {"id": "synthetic-source", "type": "openai_responses", "key": ["SYNTHETIC-KEY"]}
+    config = {"provider_sources": [source], "dashboard": {"username": "existing-user"}}
+    file.write_text(json.dumps(config))
+    env = {**os.environ, "PYTHONPATH": str(Path(__file__).parents[1])}
+    module.initialize_host_config(host, sys.executable, env, desktop=True)
+    after = json.loads(file.read_text())
+    assert after["provider_sources"] == [{**source, "provider_type": "chat_completion"}]
+    assert after["dashboard"] == config["dashboard"]
+    assert not (host.parent / "desktop-auth.json").exists()

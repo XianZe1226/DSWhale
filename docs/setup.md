@@ -4,22 +4,11 @@
 
 ## 连接 QQ
 
-桌面应用不修改系统 QQ，也不打包 QQ 或 NapCat。机器人登录与个人 QQ 登录相互独立，需由你按上游说明准备。
+先在「QQ 连接」选择接入方式。只有一台电脑、优先使用官方接口时，选择 [QQ 官方机器人](qq-official.md)：通过内置 AstrBot 扫码创建，使用消息列表私聊的完整会话 ID 绑定，不需要 NapCat 或普通 QQ 小号。
 
-1. 按 [NapCat 官方文档](https://napneko.github.io/guide/boot/Shell)安装并登录机器人 QQ。机器人账号与使用者账号需互加好友。
-2. 在 AstrBot 的「机器人」页面创建 `aiocqhttp (OneBot v11)` 平台。设置一个固定的平台 ID，例如 `qq-companion`。
-3. 启用反向 WebSocket，监听地址设为 `127.0.0.1`，端口可使用 `6199`，并设置访问令牌。
-4. 在 NapCat WebUI 中创建 WebSocket 客户端，地址填入：
+需要 OneBot、签名或 QQ 空间功能时，选择 [NapCat 普通 QQ 小号](qq-napcat.md)。Windows 可由应用准备独立组件；macOS / Linux 的协议端由自己维护。
 
-```text
-ws://127.0.0.1:6199/ws
-```
-
-5. 填入与 AstrBot 一致的访问令牌，保存并启用。确认连接成功后，向机器人发送一条普通私聊，检查能否回复。
-
-以上配置适用于 AstrBot 和 NapCat 部署在同一台电脑的情况。若更改端口，两端应同步修改。管理页面和 OneBot 接口建议仅监听本机地址。
-
-NapCat WebUI 默认端口通常为 `6099`，登录令牌见其启动日志。各 QQ 账号的网络配置独立，切换账号后需要重新核对。
+两种方式的完整首次引导包含账号准备、登录、绑定、模型、权限和排错。请先选一种完成消息往返，再开启主动功能。
 
 ## 添加模型
 
@@ -40,28 +29,18 @@ DSWhale 的 `vision_provider_id` 填图片模型的完整 Provider ID，可从�
 1. 启用 `astrbot_plugin_livingmemory`，填写 Embedding Provider ID、整理记忆用的 LLM Provider ID 和语言。
 2. 打开插件的 Pages → dashboard → 设置，将记忆作用域设为 `session`。
 3. 启用 `agent_tools.enable_recall_tool`，保存并重载插件。
-4. 在控制台查看记忆整理和检索状态。若使用 `/lmem status`，需先在 AstrBot「配置文件 → 访问控制 → 管理员 ID」中添加使用者的数字 QQ 号，并重启宿主。
+4. 在控制台查看记忆整理和检索状态。若使用 `/lmem status`，需先在 AstrBot「配置文件 → 访问控制 → 管理员 ID」中添加当前接入方式的用户标识：NapCat 使用数字 QQ 号，官方机器人使用 `/fish whoami` 返回的 OpenID，并重启宿主。
 
 记忆按整理策略入库，不会逐条消息即时生成。更换 Embedding 模型或维度前，请按 LivingMemory 文档处理现有索引。
 
 ## 绑定用户
 
-用常用 QQ 账号私聊机器人：
+在「QQ 连接」按所选方式完成绑定：
 
-```text
-/fish whoami
-```
+- **QQ 官方机器人**：从 QQ 消息列表私聊发送 `/fish whoami`，将返回的完整「本会话」粘贴到「官方机器人私聊会话 ID」并保存。使用 OpenID，不填写数字 QQ 号，不使用频道私信。详见 [官方接入指南](qq-official.md)。
+- **普通 QQ 小号 / NapCat**：填写接收消息的个人 QQ 号；源码或插件安装需同时填写 `owner_qq` 和 `/fish whoami` 返回的 `owner_umo`。详见 [NapCat 指南](qq-napcat.md)。
 
-在 AstrBot「插件 → DSWhale → 配置」中填写：
-
-| 配置项 | 内容 |
-| --- | --- |
-| `owner_qq` | 返回的数字 QQ 号 |
-| `owner_umo` | 返回的完整私聊会话 ID，结构为 `平台ID:FriendMessage:QQ号` |
-| `vision_provider_id` | 图片模型 Provider ID |
-| `persona`，可选 | 自定义人格与对话风格；留空使用内置大肥鱼人格 |
-
-保存并重载 DSWhale，发送 `/fish status` 检查状态。绑定同时校验 QQ、私聊类型和会话 ID，不支持用群会话替代。宿主人格与插件人格应保持一致，避免对话风格冲突。
+图片模型通过 `vision_provider_id` 选择；`persona` 留空使用内置大肥鱼人格，也可填写自己的对话风格。保存并重载插件后，在绑定的私聊发送 `/fish status` 检查状态。宿主人格与插件人格应保持一致，避免对话风格冲突。
 
 ## 视频读取
 

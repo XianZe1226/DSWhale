@@ -200,3 +200,73 @@ def test_desktop_backup_restores_pending_first_login_on_another_machine(tmp_path
     assert not (new_host / "data/.dswhale-desktop-login.json").exists()
     result = json.loads((new_host / "data/cmd_config.json").read_text())
     assert result["dashboard"]["pbkdf2_password"] == config["dashboard"]["pbkdf2_password"]
+
+
+def test_official_mode_binds_exact_c2c_platform_without_exporting_credentials_or_rewriting_onebot(
+    tmp_path,
+):
+    from dswhale.desktop_settings import read_settings, save_settings, setup_status
+
+    host = tmp_path / "official-host"
+    (host / "data/config").mkdir(parents=True)
+    bot = {
+        "id": "official-test",
+        "type": "qq_official",
+        "enable": True,
+        "appid": "SYNTHETIC-APP-ID",
+        "secret": "SYNTHETIC-APP-SECRET",
+    }
+    legacy = {
+        "id": "old-qq",
+        "type": "aiocqhttp",
+        "enable": True,
+        "ws_reverse_port": 6199,
+        "ws_reverse_token": "SYNTHETIC-ONEBOT-SECRET",
+    }
+    cfg = {
+        "platform": [legacy, bot],
+        "dashboard": {"port": 6185},
+        "provider_sources": [{"id": "test-model-source", "key": ["SYNTHETIC-MODEL-KEY"]}],
+        "admins_id": ["12345678"],
+    }
+    fish = {
+        "owner_qq": "12345678",
+        "owner_umo": "old-qq:FriendMessage:12345678",
+        "persona": "SYNTHETIC-PERSONA",
+    }
+    file = host / "data/cmd_config.json"
+    file.write_text(json.dumps(cfg))
+    ff = host / "data/config/astrbot_plugin_dswhale_config.json"
+    ff.write_text(json.dumps(fish))
+    scope = "official-test:FriendMessage:OPAQUE_CaseSensitive_001"
+    with pytest.raises(ValueError, match="whoami"):
+        save_settings(host, {"qqConnectionMode": "official", "officialOwnerUMO": scope})
+    import hashlib
+
+    proof = host / "data/plugin_data/astrbot_plugin_dswhale/official-c2c.json"
+    proof.parent.mkdir(parents=True)
+    proof.write_text(json.dumps([hashlib.sha256(scope.encode()).hexdigest()]))
+    saved = save_settings(host, {"qqConnectionMode": "official", "officialOwnerUMO": scope})
+    assert saved["qqConnectionMode"] == "official" and saved["officialOwnerUMO"] == scope
+    updated = json.loads(file.read_text())
+    f = json.loads(ff.read_text())
+    assert updated["platform"][1] == bot and updated["provider_sources"] == cfg["provider_sources"]
+    assert (
+        f["owner_qq"] == fish["owner_qq"]
+        and f["owner_umo"] == fish["owner_umo"]
+        and f["persona"] == fish["persona"]
+    )
+    assert setup_status(host)["ownerConfigured"] is True
+    public = json.dumps(read_settings(host))
+    for secret in ["SYNTHETIC-APP-ID", "SYNTHETIC-APP-SECRET", "SYNTHETIC-MODEL-KEY"]:
+        assert secret not in public
+    before = file.read_bytes(), ff.read_bytes()
+    for bad in [
+        "old-qq:FriendMessage:12345678",
+        "official-test:GroupMessage:OPAQUE_CaseSensitive_001",
+        "missing:FriendMessage:test",
+        "official-test:FriendMessage:UNOBSERVED_GUILD_USER",
+    ]:
+        with pytest.raises(ValueError):
+            save_settings(host, {"officialOwnerUMO": bad})
+        assert (file.read_bytes(), ff.read_bytes()) == before

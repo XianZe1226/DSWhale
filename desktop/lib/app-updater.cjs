@@ -146,7 +146,7 @@ class AppUpdater {
     this.currentVersion=normalizeVersion(currentVersion);this.platform=platform;this.arch=arch;this.osRelease=osRelease;this.distro=distro;
     this.request=request;this.downloader=download;this.trust=trust;this.stopServices=stopServices;this.snapshot=snapshot;this.launchInstaller=launchInstaller;this.restoreSnapshot=restoreSnapshot;this.onProgress=onProgress;
     this.state={format:1,phase:'idle',channel:this.currentVersion.includes('a')?'alpha':'stable'};
-    this.loaded=false;this.corrupt=false;this.operation=null;this.controller=null;
+    this.loaded=false;this.corrupt=false;this.operation=null;this.controller=null;this.progress=null;this.progressNotifiedAt=0;
   }
   _platform() {
     const release=this.osRelease.split('.').map(Number);
@@ -193,7 +193,17 @@ class AppUpdater {
     }
   }
   _abort() {if(this.controller?.signal.aborted)fail('CANCELLED');}
-  _progress(phase) {try{this.onProgress({phase,step:phase==='downloading'?'下载并校验安装包':'准备应用更新'});}catch{}}
+  _progress(phase, details = {}) {
+    const labels={preparing:'正在准备更新',downloading:'正在下载更新',restarting:'服务器未继续断点下载，正在重新下载当前文件',verifying:'正在校验更新文件',downloaded:'下载完成，等待覆盖安装',snapshotting:'正在备份本机数据','install-ready':'准备覆盖安装','install-launched':'正在打开覆盖安装程序'};
+    if(!Object.hasOwn(labels,phase)){this.progress=null;return;}
+    const prior=this.progress,ratio=Number.isFinite(details.ratio)?Math.max(0,Math.min(1,details.ratio)):phase==='downloaded'?1:null;
+    const total=Number.isSafeInteger(details.totalBytes)&&details.totalBytes>0?details.totalBytes:0;
+    const received=Number.isSafeInteger(details.receivedBytes)&&details.receivedBytes>=0?Math.min(total,details.receivedBytes):0;
+    this.progress={stage:phase,label:labels[phase]||'正在处理更新',ratio,receivedBytes:received,totalBytes:total,updatedAt:Date.now()};
+    if(phase==='downloading'&&prior?.stage===phase&&ratio!==1&&Date.now()-this.progressNotifiedAt<100)return;
+    this.progressNotifiedAt=Date.now();
+    try{this.onProgress({phase,step:this.progress.label,progress:{...this.progress}});}catch{}
+  }
   _run(action,work,{quiet=false}={}) {
     if(this.operation)return Promise.reject(new UpdateError('UPDATER_BUSY'));
     this.controller=new AbortController();
@@ -201,11 +211,12 @@ class AppUpdater {
       await this._load();if(this.corrupt&&!quiet)fail('STATE_INVALID');
       const before=quiet?structuredClone(this.state):null;
       try {
+        if(!quiet&&['download','install'].includes(action))this._progress('preparing');
         const result=await work();return result;
       }catch(error) {
         const code=this.controller.signal.aborted?'CANCELLED':error instanceof UpdateError?error.code:'STORAGE_FAILED';
         if(quiet)this.state=before;
-        else {this.state.errorCode=code;this.state.failedAction=action;
+        else {this.progress=null;this.state.errorCode=code;this.state.failedAction=action;
           try{await this._save();}catch{}
         }
         throw new UpdateError(code);
@@ -267,20 +278,23 @@ class AppUpdater {
     }catch{return false;}
   }
   async _verifyInstaller(manifest) {
+    this._progress('verifying');
     if(!await this._installerPresent(manifest))fail('INSTALLER_INVALID');
     await verifyInstaller(this._installerPath(manifest),manifest.assets[`${this.platform}-${this.arch}`]);
   }
-  async _downloadInstaller(manifest) {
+  async _downloadInstaller(manifest, plan) {
     const platform=this._platform(),asset=manifest.assets[platform];
     await this._directory('installers',manifest.version);
     const file=this._installerPath(manifest);
-    try {await this._verifyInstaller(manifest);return;}catch{}
+    const report=(received=0)=>this._progress('downloading',{ratio:(plan.done+received)/plan.total,receivedBytes:plan.done+received,totalBytes:plan.total});
+    try {await this._verifyInstaller(manifest);plan.done+=asset.size;report();return;}catch{}
+    report();
     // Remove a bad regular file, never write through a symlink.
     try {if((await fs.lstat(file)).isSymbolicLink())fail('INSTALLER_INVALID');await fs.rm(file);}catch(error){if(error.code!=='ENOENT')throw error;}
     const download=this.downloader||require('./runtime.cjs').downloadVerified;
-    try {await download(asset,file,{fetch:this.request,maxBytes:asset.size,signal:this.controller.signal,onProgress:()=>this._progress('downloading')});}
+    try {await download(asset,file,{fetch:this.request,maxBytes:asset.size,signal:this.controller.signal,onProgress:(ratio,measurement)=>{if(measurement?.restarting){this._progress('restarting',{ratio:null,receivedBytes:plan.done,totalBytes:plan.total});return;}const count=Number.isSafeInteger(measurement?.receivedBytes)?measurement.receivedBytes:Number.isFinite(ratio)?Math.floor(asset.size*ratio):0;report(Math.max(0,Math.min(asset.size,count)));}});}
     catch(error){if(error instanceof UpdateError)throw error;if(this.controller.signal.aborted)fail('CANCELLED');fail('NETWORK_FAILED');}
-    await this._verifyInstaller(manifest);
+    await this._verifyInstaller(manifest);plan.done+=asset.size;report();
   }
   async status() {
     await this._load();
@@ -295,7 +309,7 @@ class AppUpdater {
     const code=metadataError||rollbackError||this.state.errorCode;
     const interrupted=Boolean(code)||['downloading','snapshotting','install-ready','install-launched','rolling-back','rollback-launched'].includes(this.state.phase);
     const actions=['check',...(canDownload?['download']:[]),...(canInstall?['install']:[]),...(canRollback?['rollback']:[]),...(['awaiting-verification','awaiting-rollback-verification'].includes(this.state.phase)?['verify']:[]),...(this.state.phase==='repair-required'?['repair']:[])];
-    return {currentVersion:this.currentVersion,targetVersion:this.state.targetVersion||null,previousVersion:rollback?.previousVersion||this.state.previousVersion||null,channel:this.state.channel,phase:this.corrupt?'repair-required':this.state.phase,canDownload,canInstall,canRollback,actions,
+    return {progress:this.progress?{...this.progress}:null,currentVersion:this.currentVersion,targetVersion:this.state.targetVersion||null,previousVersion:rollback?.previousVersion||this.state.previousVersion||null,channel:this.state.channel,phase:this.corrupt?'repair-required':this.state.phase,canDownload,canInstall,canRollback,actions,
       impact:target?{...target.impact}:null,matrix:target?{...target.runtime}:{...MATRIX},minimumOS:{...MINIMUM_OS,linux:[...MINIMUM_OS.linux]},
       error:code?{code,message:MESSAGES[code]||MESSAGES.STORAGE_FAILED}:null,
       recovery:{interrupted,continueAction:canInstall?'install':canDownload?'download':null,requiresHealthVerification:['awaiting-verification','awaiting-rollback-verification','repair-required'].includes(this.state.phase),servicesMustRemainStopped:['snapshotting','install-ready','install-launched','awaiting-verification','rolling-back','rollback-launched','awaiting-rollback-verification','repair-required'].includes(this.state.phase),rollbackRequiresDataRestore:Boolean(rollbackTarget&&(rollbackTarget.impact.dataMigration||!rollbackTarget.impact.rollbackCompatible)),guidance:code?MESSAGES[code]:this.state.phase==='install-launched'?'请完成系统安装并重新打开应用；保留的旧版安装包和备份可用于回退。':this.state.phase==='rollback-launched'?'请完成旧版系统安装，重新打开应用后检查环境。':interrupted?'操作尚未完成，可继续下载或安装；备份保留在本机。':'更新仅在你明确操作时进行。'}};
@@ -346,9 +360,10 @@ class AppUpdater {
       await this._checkpoint('downloading');
       // An upgrade is blocked unless the running app's signed rollback installer
       // is already present and verified. a2 predates this protocol.
-      const previous=await this._fetchManifest(this.currentVersion);
-      await this._downloadInstaller(previous);this.state.previousVersion=previous.version;await this._save();
-      await this._downloadInstaller(target);await this._checkpoint('downloaded');return this.status();
+      const previous=await this._cachedManifest(this.currentVersion).catch(()=>this._fetchManifest(this.currentVersion));
+      const plan={done:0,total:previous.assets[this._platform()].size+target.assets[this._platform()].size};
+      await this._downloadInstaller(previous,plan);this.state.previousVersion=previous.version;await this._save();
+      await this._downloadInstaller(target,plan);await this._checkpoint('downloaded');this._progress('downloaded',{ratio:1,receivedBytes:plan.total,totalBytes:plan.total});return this.status();
     });
   }
   async _stop() {

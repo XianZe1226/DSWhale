@@ -31,6 +31,7 @@ const config = {
     "desktop/lib/services.cjs",
     "desktop/lib/extensions.cjs",
     "desktop/lib/app-updater.cjs",
+    "desktop/lib/installer.cjs",
     "desktop/lib/update-scheduler.cjs",
     "desktop/lib/network.cjs",
     "desktop/lib/operations.cjs",
@@ -109,7 +110,7 @@ const config = {
     "oneClick": false,
     "perMachine": false,
     "allowElevation": false,
-    "allowToChangeInstallationDirectory": true,
+    "allowToChangeInstallationDirectory": false,
     "deleteAppDataOnUninstall": false,
     "createDesktopShortcut": true,
     "createStartMenuShortcut": true

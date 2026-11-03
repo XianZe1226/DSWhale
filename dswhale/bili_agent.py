@@ -6,8 +6,6 @@ import math
 import re
 from datetime import UTC, datetime
 
-from astrbot.api.message_components import Plain
-from astrbot.api.platform import AstrBotMessage, MessageMember, MessageType
 from astrbot.core.agent.tool import FunctionTool, ToolSet
 
 from .bili_watch import WatchEvidence
@@ -65,24 +63,9 @@ def append_diary(root, kind, text):
 
 
 async def owner_event(service):
-    c = service.companion
-    platform = c.context.get_platform_inst(c.settings.owner_umo.split(":", 1)[0])
-    if not platform or platform.meta().name != "aiocqhttp":
-        raise RuntimeError("主人 QQ 平台不可用")
-    login = await platform.get_client().call_action("get_login_info")
-    msg = AstrBotMessage()
-    msg.type = MessageType.FRIEND_MESSAGE
-    msg.self_id = str(login["user_id"])
-    msg.session_id = c.settings.owner_qq
-    msg.sender = MessageMember(c.settings.owner_qq, "DSWhale B站活动")
-    msg.message = [Plain("DSWhale 内部活动")]
-    msg.message_str = "DSWhale 内部活动"
-    msg.message_id = "bili-internal"
-    msg.raw_message = None
-    event = platform.create_event(msg)
-    if event.unified_msg_origin != c.settings.owner_umo:
-        raise RuntimeError("主人会话不匹配")
-    return event
+    from .qq_transport import owner_event as make_event
+
+    return await make_event(service.companion, "DSWhale 内部活动", "bili-internal")
 
 
 async def share_qq(service, text, bvid="", reason="", score=0, rank=1):
@@ -140,18 +123,16 @@ async def share_qq(service, text, bvid="", reason="", score=0, rank=1):
                 raise RuntimeError("分享记录失败")
         if (
             not service.allowed()
-            or c.store.state(c.settings.owner_umo)["last_human"] > activity.created
+            or c.store.state(c.settings.owner_scope)["last_human"] > activity.created
         ):
             raise RuntimeError("主人已发来新消息或暂停")
-        platform = c.context.get_platform_inst(c.settings.owner_umo.split(":", 1)[0])
-        if not platform or platform.meta().name != "aiocqhttp":
-            raise RuntimeError("QQ 不在线")
+        from .qq_transport import send_owner_text
+
         c.store.transition(activity.id, "queued", now.timestamp())
-        await platform.get_client().send_private_msg(
-            user_id=int(c.settings.owner_qq),
-            message=[{"type": "text", "data": {"text": text[:4000]}}],
+        confirmed = await send_owner_text(c, text)
+        c.store.transition(
+            activity.id, "sent" if confirmed else "uncertain", datetime.now(UTC).timestamp()
         )
-        c.store.transition(activity.id, "sent", datetime.now(UTC).timestamp())
         return "已提交给绑定的主人 QQ；不代表已读。"
     except BaseException:
         c.store.transition(
@@ -163,7 +144,7 @@ async def share_qq(service, text, bvid="", reason="", score=0, rank=1):
 async def run_agent(service, job):
     c = service.companion
     event = await owner_event(service)
-    provider = await c.context.get_using_provider_async(c.settings.owner_umo)
+    provider = await c.context.get_using_provider_async(c.settings.owner_scope)
     if not provider:
         raise RuntimeError("未配置聊天模型")
     texts = [
@@ -220,7 +201,7 @@ async def run_agent(service, job):
                 if len(attempted) >= limit:
                     return "本轮已达到视频数量上限，先整理已读资料。"
                 if not c.store.claim_video(
-                    c.settings.owner_umo,
+                    c.settings.owner_scope,
                     "https://www.bilibili.com/video/" + bvid,
                     datetime.now(UTC).timestamp(),
                 ):

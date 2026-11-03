@@ -2,7 +2,7 @@
 const { app, BrowserWindow, WebContentsView, ipcMain, protocol, net, session, dialog, shell, clipboard, Tray, Menu, nativeImage, powerMonitor } = require('electron');
 const path = require('node:path');
 const fs = require('node:fs/promises');
-const { pathToFileURL } = require('node:url');
+const { pathToFileURL, URL } = require('node:url');
 const { spawn } = require('node:child_process');
 const { RuntimeManager, SetupError } = require('./lib/runtime.cjs');
 const { validateRequest, permittedNavigation, biliURL, consolePopupTarget } = require('./lib/security.cjs');
@@ -26,7 +26,13 @@ let window, panelView, manager, supervisor, extensions, quitting = false, shutdo
 const activeCommands = new Set();
 let state = { version: app.getVersion(), platform: { id: '', label: '本机', supported: true, detail: '' }, phase: 'idle', installed: false, running: false, components: [], setup: { ownerConfigured: false, qqConfigured: false, modelConfigured: false, memoryConfigured: false, biliEnabled: false } };
 function publish(patch = {}) { state = { ...state, ...patch }; if (window && !window.isDestroyed()) window.webContents.send('dswhale:state', state); return state; }
+function qqMode() { return state.qqConnectionMode || state.setup?.qqConnectionMode || 'napcat'; }
+async function readBoundQQStatus() {
+  if (qqMode() !== 'official') return napcat.status();
+  return {mode:'official',supported:false,externalOnly:true,running:false,loginState:'official',protocolConnected:await readQQConnectionHealth({host:manager.host,running:supervisor.running,startedAt:supervisor.startedAt})};
+}
 function connectionStage(qq) {
+  if (qqMode() === 'official') return supervisor?.running ? qq?.protocolConnected === true ? 'ready' : 'official-connecting' : 'stopped';
   if (!supervisor?.running) return state.error ? 'failed' : 'stopped';
   if (qq.configured && !qq.externalOnly && !qq.running) return 'qq-stopped';
   if (qq.protocolConnected === true && (qq.externalOnly || !['scan-required', 'offline'].includes(qq.loginState))) return 'ready';
@@ -55,7 +61,7 @@ async function refresh() {
   const result = await manager.inspect();
   let setup = state.setup;
   if (result.installed) { try { setup = await settingsCommand(manager, 'status'); } catch {} }
-  return publish({ ...result, setup, running: supervisor.running, phase: result.installed ? 'ready' : 'idle' });
+  return publish({ ...result, setup, qqConnectionMode: setup?.qqConnectionMode || 'napcat', running: supervisor.running, phase: result.installed ? 'ready' : 'idle' });
 }
 async function openPanel(panel) {
   if (!supervisor.running && panel !== 'napcat') throw new UserActionError('请先启动对话服务');
@@ -74,6 +80,15 @@ async function openPanel(panel) {
       await new Promise(resolve => setTimeout(resolve, 200));
     }
     url = biliURL(control);
+  }
+  if (!['napcat', 'bilibili'].includes(panel)) {
+    const entry = new URL(url);
+    // The managed core handles this identity with cache-only invalidation;
+    // cookies/storage stay intact. Match the pinned AstrBot runtime matrix.
+    entry.searchParams.set('astrbot_bundle', `${app.getVersion()}-astrbot-4.29.3`);
+    if (panel === 'models') entry.hash = '/providers';
+    if (panel === 'qq') entry.hash = '/platforms';
+    url = entry.toString();
   }
   closePanel();
   const view = new WebContentsView({ webPreferences: { sandbox: true, contextIsolation: true, nodeIntegration: false, webSecurity: true, partition: panel==='napcat'?'persist:dswhale-napcat-console':panel==='bilibili'?'persist:dswhale-bili-console':'persist:dswhale-consoles' } });
@@ -133,6 +148,9 @@ async function startServices() {
   if (recovery?.servicesMustRemainStopped) throw new UserActionError('更新或回退尚未完成，请先在应用设置中修复并体检');
   await extensions.run('status');
   if (shutdownRequested) throw new UserActionError('应用正在退出');
+  const connectionSettings = await settingsCommand(manager, 'read'); stillOpen();
+  const official = connectionSettings.qqConnectionMode === 'official';
+  publish({qqConnectionMode:official?'official':'napcat'});
   const reuseQQ = napcat?.running;
   startupInProgress = true;
   publish({ startup: { stage: supervisor.running ? 'checking-qq' : 'starting-conversation' }, error: undefined });
@@ -140,7 +158,9 @@ async function startServices() {
     await supervisor.start();
     stillOpen();
     publish({ running: true, startup: { stage: 'checking-qq' } });
-    if (napcat) {
+    if (official) {
+      publishQQ(await readBoundQQStatus(), true); stillOpen();
+    } else if (napcat) {
       const configured = await napcat.status();
       stillOpen();
       if (configured.canStart) {
@@ -153,7 +173,7 @@ async function startServices() {
     }
     return await refresh();
   } catch (error) {
-    if (!reuseQQ) await napcat?.stop();
+    if (!official && !reuseQQ) await napcat?.stop();
     await supervisor.stop();
     publish({ running: false, startup: { stage: 'failed' } });
     throw error;
@@ -169,7 +189,7 @@ async function restoreFile(file, {rebuild = true} = {}) {
   await settingsCommand(manager,'prepare-import');
   await fs.rm(path.join(manager.runtime,'.desktop-auth.pending.json'),{force:true});
   await session.fromPartition('persist:dswhale-consoles').clearStorageData();
-  if (rebuild) { await manager.install();const nc=await napcat.status();if(nc.configured&&!nc.externalOnly)await napcat.configure(); await refresh(); }
+  if (rebuild) { await manager.install();const restored=await settingsCommand(manager,'read');if(shutdownRequested)throw new UserActionError('应用正在退出');if(restored.qqConnectionMode!=='official'){const nc=await napcat.status();if(nc.configured&&!nc.externalOnly)await napcat.configure();} await refresh(); }
   return {restored:true};
 }
 async function restore() {
@@ -223,7 +243,7 @@ async function perform(action, payload) {
       const wasRunning = supervisor.running; await stopConversation();
       let saved = false;
       try { const result = await settingsCommand(manager, 'save', payload); saved = true; return result; }
-      finally { if(saved && connectionChanged && napcat?.running && !shutdownRequested)await napcat.wire(); if (wasRunning && !shutdownRequested) await startAll(); if (!shutdownRequested) await refresh(); }
+      finally { const mode=payload.qqConnectionMode||before.qqConnectionMode||'napcat';if(saved && mode==='official' && before.qqConnectionMode!=='official' && !shutdownRequested)await napcat?.stop();if(saved && mode!=='official' && connectionChanged && napcat?.running && !shutdownRequested)await napcat.wire(); if (wasRunning && !shutdownRequested) await startAll(); if (!shutdownRequested) await refresh(); }
     }
     if (action === 'open-data') { await fs.mkdir(manager.runtime, { recursive: true }); const error = await shell.openPath(manager.runtime); if (error) throw new UserActionError('无法打开数据目录'); return {}; }
     if (action === 'initial-login') {
@@ -281,14 +301,15 @@ async function createWindow() {
     download:async(asset,file,options)=>require('./lib/runtime.cjs').downloadVerified(asset,file,{...options,fetch:transport,network:await readNetworkConfig(manager.runtime)}),
     stopServices:stopAll,snapshot:({reason})=>operations.snapshot({reason:reason.includes('rollback')?'rollback':'update'}),
     restoreSnapshot:async(id)=>restoreFile(await operations.backupFile(id),{rebuild:false}),
-    launchInstaller:async({file})=>{const error=await shell.openPath(file);if(error)throw new UserActionError('安装程序未打开，请重试；备份已保留');installerHandedOff=true;},
-    onProgress:patch=>publish({step:patch.step,progress:null})});
+    launchInstaller:async({file,signal})=>{if(process.platform==='win32'){if(!app.isPackaged)throw new UserActionError('开发环境请使用官方安装包');await require('./lib/installer.cjs').launchWindowsUpdate({file,exePath:app.getPath('exe'),signal});}else{const error=await shell.openPath(file);if(error)throw new UserActionError('安装程序未打开，请重试；备份已保留');}installerHandedOff=true;},
+    onProgress:patch=>publish({appUpdateProgress:patch.progress})});
   workspace=new Workspace({manager,operations,appUpdater,napcat,preferences:preferenceStore,
-    isInstalled:()=>state.installed,isClosing:()=>shutdownRequested,stopServices:stopAll,getState:()=>state,restoreFile,trash:file=>shell.trashItem(file),applyPreferences,
+    getQQStatus:readBoundQQStatus,getQQMode:qqMode,isInstalled:()=>state.installed,isClosing:()=>shutdownRequested,stopServices:stopAll,getState:()=>state,restoreFile,trash:file=>shell.trashItem(file),applyPreferences,
     chooseDiagnostic:async()=>{const preview=await dialog.showMessageBox(window,{type:'info',message:'导出诊断元信息',detail:'包含 health.json、events.json、versions.json、README.txt。只记录版本、状态和事件代码，不包含账号、路径、聊天、记忆、人格、密钥或原始日志。',buttons:['继续保存','取消'],defaultId:1,cancelId:1});if(preview.response!==0)return null;const choice=await dialog.showSaveDialog(window,{defaultPath:'DSWhale-diagnostics.zip',filters:[{name:'诊断 ZIP',extensions:['zip']}]});return choice.canceled?null:choice.filePath;},
     chooseNapCat:async()=>{const choice=await dialog.showOpenDialog(window,{title:'选择官方独立 NapCat 包的解压目录',properties:['openDirectory']});return choice.canceled?null:choice.filePaths[0];},
     openGuide:()=>shell.openExternal('https://napneko.github.io/guide/boot/Shell'),
     showLoginInfo:async(info)=>{const choice=await dialog.showMessageBox(window,{type:'info',title:'独立 QQ 组件登录口令',message:'口令仅用于本机 NapCat 管理页面',detail:info.token,buttons:['复制口令','关闭'],defaultId:1,cancelId:1});if(choice.response===0)clipboard.writeText(info.token);},
+    confirmUpdate:async version=>{const answer=await dialog.showMessageBox(window,{type:'info',title:'覆盖安装更新',message:`DSWhale ${version} 已准备好`,detail:process.platform==='win32'?'将备份数据、关闭应用并覆盖安装到当前目录，无需重新选择位置。原有配置、聊天、记忆和 QQ 设备数据会保留。':'将备份数据并打开系统安装程序。请按系统提示覆盖原应用，个人数据会保留。',buttons:['覆盖安装','稍后'],defaultId:0,cancelId:1});return answer.response===0;},
     afterInstaller:async()=>{if(installerHandedOff)setTimeout(()=>app.quit(),500);}});
   for(const name of ['persist:dswhale-consoles','persist:dswhale-napcat-console','persist:dswhale-bili-console']){const consoleSession=session.fromPartition(name);consoleSession.setPermissionRequestHandler((_contents,_permission,callback)=>callback(false));consoleSession.setPermissionCheckHandler(()=>false);}
   session.defaultSession.setPermissionRequestHandler((_contents, _permission, callback) => callback(false));
@@ -318,8 +339,8 @@ async function createWindow() {
   });
   updateScheduler.start();
   externalConnectionMonitor = setInterval(() => {
-    if (shutdownRequested || activeAction || napcat.running || !supervisor.running) return;
-    napcat.status().then(publishQQ).catch(() => {});
+    if (shutdownRequested || activeAction || (qqMode()!=='official' && napcat.running) || !supervisor.running) return;
+    readBoundQQStatus().then(publishQQ).catch(() => {});
   }, 5000);
   externalConnectionMonitor.unref?.();
   let wasRunning=false;powerMonitor.on('suspend',()=>{wasRunning=supervisor.running;});powerMonitor.on('resume',()=>{if(shutdownRequested)return;updateScheduler?.resume();if(preferences.resumeAfterWake&&wasRunning&&!supervisor.running&&!activeAction)perform('start').catch(()=>publish({error:'系统已唤醒，请重新检查连接'}));else publish({notice:'系统已唤醒，可重新检查连接状态'});});

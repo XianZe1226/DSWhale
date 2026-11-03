@@ -33,8 +33,6 @@
   let extensionMessage = null;
   let workspaceLoading=false;
   let backupReview=null;
-  let rollbackReview=false;
-  let restoreUpdateData=false;
   let updateChannel=null;
   let preferencesDraft=null;
   let preferencesDirty=false;
@@ -56,7 +54,7 @@
     const verb = { 'extension-check': '检查', 'extension-update': data.extensions?.[data.pendingExtension]?.installed ? '更新' : '安装', 'extension-rollback': '回退' }[data.pending];
     return verb ? `正在${verb}${extensionName(data.pendingExtension)}…` : '';
   }
-  const workspaceProgress = data => ({'workspace-status':'正在读取本机工作空间状态…','health-check':'正在检查本机环境…','backup-list':'正在读取本机备份…','backup-restore':'正在备份当前数据并恢复所选备份…','backup-delete':'正在删除所选本机备份…','diagnostics-export':'正在准备诊断报告…','app-update-check':'正在检查官方应用更新…','app-update-download':'正在下载并校验应用安装包…','app-update-install':'正在备份并打开系统安装程序…','app-update-rollback':'正在备份并准备应用回退…','preferences-save':'正在保存应用偏好…','napcat-install':'正在下载并校验独立连接组件…','napcat-configure':'请选择已有独立组件目录…','napcat-wire':'正在应用消息连接，QQ 保持在线…','napcat-stop':'正在停止 QQ 连接…','napcat-guide':'正在打开官方连接指南…','napcat-login-code':'请在系统对话框中查看登录口令…'}[data.pending]||'');
+  const workspaceProgress = data => ({'workspace-status':'正在读取本机工作空间状态…','health-check':'正在检查本机环境…','backup-list':'正在读取本机备份…','backup-restore':'正在备份当前数据并恢复所选备份…','backup-delete':'正在删除所选本机备份…','diagnostics-export':'正在准备诊断报告…','app-update-check':'正在检查官方应用更新…','app-update-start':'正在准备应用更新…','app-update-download':'正在下载并校验应用安装包…','app-update-install':'正在备份并打开系统安装程序…','app-update-rollback':'正在备份并准备应用回退…','preferences-save':'正在保存应用偏好…','napcat-install':'正在下载并校验独立连接组件…','napcat-configure':'请选择已有独立组件目录…','napcat-wire':'正在应用消息连接，QQ 保持在线…','napcat-stop':'正在停止 QQ 连接…','napcat-guide':'正在打开官方连接指南…','napcat-login-code':'请在系统对话框中查看登录口令…'}[data.pending]||'');
   const preference = (data, value, id, title, description) => `<section class="card preference-card"><div><h3 id="${id}-label">${esc(title)}</h3><p id="${id}-help">${esc(description)}</p></div><label class="switch"><input id="${id}" name="${id}" type="checkbox" aria-labelledby="${id}-label" aria-describedby="${id}-help"${value[id] ? ' checked' : ''}${disabled(!desktop(data) || busy(data))}><span aria-hidden="true"></span></label></section>`;
   function healthCard(data, bili=false) {
     const health=data.workspace.health;
@@ -71,7 +69,7 @@
   }
   function napcatCard(data) {
     const view = connectionViewModel(data), value = draft || data.settings || {};
-    return `<section class="card connection-main" id="qq-connection" aria-labelledby="qq-connection-title"><div class="connection-heading"><span class="connection-symbol ${view.tone === 'good' ? 'complete' : ''}">${icon(view.tone === 'good' ? 'check' : 'connect')}</span>${badge(view.badge,view.tone)}</div><h2 id="qq-connection-title">${esc(view.title)}</h2><p class="connection-description">${esc(view.description)}</p>${view.stage === 'owner' ? ownerField(data,value) : ''}<div class="connection-primary-row">${connectionPrimary(data)}${!view.action && view.tone === 'working' ? '<span class="connection-wait"><span class="spinner" aria-hidden="true"></span>状态会自动更新，无需重复操作</span>' : ''}</div>${connectionTimeline(data)}</section>`;
+    return `<section class="card connection-main" id="qq-connection" aria-labelledby="qq-connection-title"><div class="connection-heading"><span class="connection-symbol ${view.tone === 'good' ? 'complete' : ''}">${icon(view.tone === 'good' ? 'check' : 'connect')}</span>${badge(view.badge,view.tone)}</div><h2 id="qq-connection-title">${esc(view.title)}</h2><p class="connection-description">${esc(view.description)}</p>${['owner','official-owner'].includes(view.stage) ? ownerField(data,value) : ''}<div class="connection-primary-row">${connectionPrimary(data)}${!view.action && view.tone === 'working' ? '<span class="connection-wait"><span class="spinner" aria-hidden="true"></span>状态会自动更新，无需重复操作</span>' : ''}</div>${connectionTimeline(data)}</section>`;
   }
   function connectionPrimary(data, overview = false) {
     const view = connectionViewModel(data);
@@ -81,6 +79,11 @@
   }
   function connectionTimeline(data) {
     const qq = data.workspace.napcat || {}, view = connectionViewModel(data), stage = data.state.startup?.stage || view.stage;
+    if((data.settings?.qqConnectionMode||data.state.qqConnectionMode||data.state.setup?.qqConnectionMode)==='official'){
+      const bound=data.settings?!!data.settings.officialOwnerUMO:data.state.setup?.ownerConfigured;
+      const connected=qq.protocolConnected===true;
+      return `<ol class="connection-timeline" aria-label="官方 QQ 连接进度">${[['对话服务',data.state.running?'已启动':'尚未启动',data.state.running],['官方接口',connected?'网关已连接':'等待连接',connected],['主人私聊',bound?'已绑定':'等待复制会话 ID',bound]].map(([label,detail,done],i)=>`<li class="${done?'done':'waiting'}"><span class="connection-step-marker">${done?icon('check'):i+1}</span><div><strong>${label}</strong><span>${detail}</span></div></li>`).join('')}</ol>`;
+    }
     const backend = data.state.running, logged = qq.loginState === 'online' || view.stage === 'ready';
     const items = [
       ['对话服务', backend ? '已启动' : stage === 'starting-conversation' ? '正在启动' : '等待启动', backend ? 'done' : stage === 'starting-conversation' ? 'active' : 'waiting'],
@@ -90,19 +93,31 @@
     return `<ol class="connection-timeline" aria-label="启动与连接步骤">${items.map(([title,detail,status],i)=>`<li data-state="${status}"><span class="connection-step-marker" aria-hidden="true">${status==='done'?icon('check'):i+1}</span><div><strong>${title}</strong><span>${esc(detail)}</span></div></li>`).join('')}</ol>`;
   }
   function ownerField(data,value) {
+    if(value.qqConnectionMode==='official')return `<div class="field connection-owner-field"><label for="officialOwnerUMO">官方机器人私聊会话 ID</label><input id="officialOwnerUMO" autocomplete="off" placeholder="复制 /fish whoami 返回的完整本会话" value="${esc(value.officialOwnerUMO||'')}"${disabled(!desktop(data)||busy(data))}><p class="field-help">仅限你的私聊；不是 QQ 号码，也不要填写群聊或频道会话。</p></div>`;
     return `<div class="field connection-owner-field"><label for="ownerQQ">你的 QQ 号（接收消息）</label><input id="ownerQQ" name="ownerQQ" inputmode="numeric" autocomplete="off" placeholder="填写你自己的 QQ 号" value="${esc(value.ownerQQ||'')}"${disabled(!desktop(data)||busy(data))}><p class="field-help">这里填你的账号，不是机器人的小号。</p></div>`;
   }
   function connectionOptions(data,value) {
+    if(value.qqConnectionMode==='official'){
+      const off=!desktop(data)||busy(data),view=connectionViewModel(data);
+      return `<details class="card connection-advanced" id="connection-advanced"${connectionAdvancedOpen?' open':''}><summary id="connection-advanced-summary">更多官方连接选项<span>私聊绑定与主动互动</span></summary><div class="connection-option-content">${view.stage==='official-owner'?'':ownerField(data,value)}${preference(data,value,'proactiveEnabled','主动互动','需具备官方消息权限；结果不明确时不会自动重发。')}<p class="option-help">官方接口不支持修改个人 QQ 签名或发表 QQ 空间。机器人连接随对话服务启停，个人 QQ 不受影响。密钥只在内置机器人配置中填写。</p><div class="card-actions">${button('保存设置','save-settings',{off})}${button('打开机器人配置','open-panel',{payload:'qq',off:off||!data.state.running})}</div></div></details>`;
+    }
     const qq=data.workspace.napcat,windows=data.state.platform.id==='win32-x64',off=!desktop(data)||busy(data),view=connectionViewModel(data);
     return `<details class="card connection-advanced" id="connection-advanced"${connectionAdvancedOpen?' open':''}><summary id="connection-advanced-summary">更多连接选项<span>账号、端口、互动功能与组件管理</span></summary><div class="connection-option-content">${view.stage!=='owner'?ownerField(data,value):''}<h3>连接参数</h3><p class="option-help">通常保持默认即可。只在端口冲突或连接已有协议端时修改。</p><div class="form-grid"><div class="field"><label for="platformId">AstrBot 平台标识</label><input id="platformId" value="${esc(value.platformId||'qq')}"${disabled(off)}></div><div class="field"><label for="onebotPort">OneBot 反向 WebSocket 端口</label><input id="onebotPort" type="number" min="1024" max="65535" value="${esc(value.onebotPort)}"${disabled(off)}></div><div class="field"><label for="dashboardPort">AstrBot 控制台端口</label><input id="dashboardPort" type="number" min="1024" max="65535" value="${esc(value.dashboardPort??6185)}"${disabled(off)}></div><div class="field field-wide"><label for="onebotToken">OneBot 访问令牌</label><div class="secret-input"><input id="onebotToken" type="${reveal?'text':'password'}" autocomplete="off" value="${esc(value.onebotToken||'')}"${disabled(off)}><button type="button" class="reveal-button" data-reveal aria-controls="onebotToken" aria-pressed="${reveal}">${reveal?'隐藏':'显示'}</button></div><p class="field-help">只保存在本机，与协议端保持一致。</p></div></div><h3>互动功能</h3>${preference(data,value,'proactiveEnabled','主动互动','按现有插件设置主动发起对话。')}${preference(data,value,'signatureEnabled','QQ 个性签名','仅绑定的主人可要求修改机器人签名。')}${preference(data,value,'qzoneEnabled','QQ 空间文字动态','先创建草稿，经你确认后发布。')}<div class="card-actions">${button(data.pending==='settings-save'?'正在保存…':'保存设置','save-settings',{off})}<span class="option-help">${dirty?'有未保存的更改':'设置只保存在本机'}</span></div><h3>QQ 连接管理</h3><p class="option-help">停止对话服务会保留 QQ 在线。只有需要断开 QQ 时，才停止 QQ 连接。</p><div class="card-actions">${button('打开 QQ 管理','open-panel',{payload:'napcat',off:off||!data.state.running&&!qq?.running})}${windows?button('QQ 管理口令','napcat-login-code',{off:off||!qq?.configured}):''}${windows&&qq?.running?button('停止 QQ 连接','napcat-stop',{off}):''}${button('应用消息连接','napcat-wire',{off:off||!qq?.configured||qq?.loginState!=='online'||qq?.externalOnly})}</div><p class="option-help">管理口令用于本机管理页，不是 QQ 密码。首次 QQ 登录和账号验证由你本人完成。</p><h3>组件与帮助</h3><div class="card-actions">${windows?button('检查并准备组件','napcat-install',{off:off||!data.state.installed||qq?.running||qq?.canInstall===false}):''}${windows||data.state.platform.id==='linux-x64'?button('使用已有独立组件','napcat-configure',{off:off||!data.state.installed||qq?.running}):''}${button('官方连接指南','napcat-guide',{off})}${button('AstrBot 平台设置','open-panel',{payload:'qq',off:off||!data.state.running})}</div><p class="option-help">不会安装、注入或修改日常使用的官方 QQ。私人记忆与主人管理用于绑定私聊，群聊由 AstrBot 单独配置。</p></div></details>`;
   }
   function updateCard(data) {
-    const state=data.workspace.appUpdate,off=!desktop(data)||busy(data);
-    const channel=updateChannel||state?.channel||'alpha';
-    const phases={idle:'尚未检查','up-to-date':'当前版本已是所选通道最新',available:'发现可用版本',downloading:'下载尚未完成',downloaded:'安装包已校验',snapshotting:'正在备份私人数据','install-ready':'等待系统安装','install-launched':'请完成系统安装','awaiting-verification':'等待环境检查',installed:'更新已通过检查','rolling-back':'正在准备回退','rollback-launched':'请完成旧版安装','awaiting-rollback-verification':'等待回退后检查','rolled-back':'回退已通过检查','repair-required':'需要检查与修复'};
-    const restoreRequired=typeof state?.recovery?.rollbackRequiresDataRestore==='boolean'?state.recovery.rollbackRequiresDataRestore:state?.impact?.dataMigration===true||state?.impact?.rollbackCompatible===false;
-    const impact=state?.impact;
-    return `<section class="card reliability-card app-update-card" aria-labelledby="app-update-title"><div class="reliability-heading"><div><h2 id="app-update-title">应用更新</h2><p>启动约 30 秒后自动检查，此后每 6 小时检查一次（需保持应用运行）；下载与安装由你点击确认。</p></div>${badge(phases[state?.phase]||'尚未检查',state?.recovery?.interrupted?'warn':'')}</div><dl class="update-versions"><div><dt>当前应用</dt><dd>${esc(state?.currentVersion||data.state.version||'待读取')}</dd></div><div><dt>可用版本</dt><dd>${esc(state?.targetVersion||'检查后显示')}</dd></div>${state?.previousVersion?`<div><dt>保留的上一版</dt><dd>${esc(state.previousVersion)}</dd></div>`:''}</dl><div class="update-controls"><label for="app-update-channel">更新通道</label><select id="app-update-channel"${disabled(off)}><option value="stable"${channel==='stable'?' selected':''}>稳定版</option><option value="alpha"${channel==='alpha'?' selected':''}>Alpha 预览版</option></select>${button('检查应用更新','app-update-check',{id:'app-update-check',off:off||state?.actions?.includes('check')===false||state?.recovery?.servicesMustRemainStopped===true})}</div>${impact?`<div class="update-impact"><strong>这次更新的影响</strong><ul>${impact.runtime?'<li>安装后需要准备并检查运行环境。</li>':''}${impact.configuration?'<li>配置可能调整，安装前会保存私人备份。</li>':''}${impact.dataMigration?'<li>涉及数据格式变化，请保留更新前备份。</li>':''}<li>${impact.rollbackCompatible?'可回退应用并保留当前数据。':'回退需要明确选择恢复更新前数据。'}</li></ul></div>`:''}${state?.error?`<p class="recovery-note" role="alert">${esc(state.error.message)}</p>`:state?.recovery?.interrupted||state?.recovery?.requiresHealthVerification?`<p class="recovery-note">${esc(state.recovery.guidance||'更新尚未完成，请继续安装、修复环境或回退。')}</p>`:''}${rollbackReview?`<div class="inline-review" role="group" aria-labelledby="app-rollback-heading"><h3 id="app-rollback-heading">确认回退应用？</h3><p>默认保留当前数据；操作前会停止服务并保存当前数据备份。</p><label class="check-option"><input id="rollback-restore-data" type="checkbox"${restoreUpdateData?' checked':''}${disabled(off)}>同时恢复更新前的配置、聊天与记忆</label><p>${restoreUpdateData?'你已选择恢复旧数据；后来的聊天会先另行备份，再恢复更新前状态。':restoreRequired?'此版本涉及不兼容变化，需要选择恢复旧数据后才能回退。':'仅替换应用程序，当前配置、聊天与记忆保留。'}</p><div class="card-actions">${button(restoreUpdateData?'确认恢复旧数据并回退':'确认回退应用','app-rollback-confirm',{primary:true,id:'app-rollback-confirm',off:off||restoreRequired&&!restoreUpdateData})}${button('取消','app-rollback-cancel',{off})}</div></div>`:`<div class="card-actions">${state?.canDownload?button(state.recovery?.continueAction==='download'?'继续下载安装包':'下载安装包','app-update-download',{off,primary:true}):''}${state?.canInstall?button(state.recovery?.continueAction==='install'?'继续系统安装':'备份并安装','app-update-install',{off:off||!data.state.installed,primary:true}):''}${state?.canRollback?button('回退上一版','app-rollback-review',{id:'app-rollback-review',off:off||!data.state.installed}):''}${state?.recovery?.requiresHealthVerification?button('修复并检查环境','install',{off:off||data.state.running}):''}</div>`}<p class="reliability-note">更新清单经 Ed25519 签名验证，安装包校验大小与 SHA256。这不代表操作系统签名或系统公证；安装时请按系统提示操作。</p></section>`;
+    const update=data.workspace.appUpdate||{},off=!desktop(data)||busy(data);
+    const channel=updateChannel||update.channel||'alpha',ready=update.canDownload||update.canInstall;
+    const active=['app-update-start','app-update-download','app-update-install'].includes(data.pending);
+    const current=data.state.appUpdateProgress||update.progress;
+    const ratio=Number.isFinite(current?.ratio)?Math.max(0,Math.min(1,current.ratio)):null;
+    const percent=ratio===null?'':`${Math.floor(ratio*100)}%`;
+    const megabytes=value=>`${(Math.max(0,Number(value)||0)/1024**2).toFixed(1)} MB`;
+    const measured=current?.totalBytes>0?`${megabytes(current.receivedBytes)} / ${megabytes(current.totalBytes)}`:'';
+    const phases={available:'有新版本',downloaded:'已准备好安装',installed:'更新已完成','up-to-date':'已是最新版本','repair-required':'需要修复环境'};
+    const label=current?.label||'正在准备更新';
+    const bar=active?`<div class="app-update-progress" id="app-update-progress" role="group" aria-label="更新进度"><div class="update-progress-heading"><span class="spinner" aria-hidden="true"></span><strong>${esc(label)}</strong>${percent?`<span>${esc(percent)}</span>`:''}</div><progress max="1"${ratio!==null&&ratio>0?` value="${ratio}"`:''} aria-label="${esc(label)}"></progress><p>${measured?esc(measured):'请保持应用打开，完成后会提示覆盖安装'}${current?.stage==='downloading'&&ratio===0?' · 正在连接下载服务器…':''}</p></div>`:'';
+    const action=ready?button(active?'正在更新…':'更新','app-update-start',{primary:true,id:'app-update-start',off:off||!data.state.installed}):update.recovery?.requiresHealthVerification?button('修复并检查环境','install',{primary:true,off:off||data.state.running}):button('检查更新','app-update-check',{id:'app-update-check',off:off||update.recovery?.servicesMustRemainStopped===true});
+    return `<section class="card reliability-card app-update-card" aria-labelledby="app-update-title"${active?' aria-busy="true"':''}><div class="reliability-heading"><div><h2 id="app-update-title">应用更新</h2><p>发现新版后点击更新。下载完成会提示覆盖安装，安装前自动备份本机数据。</p></div>${badge(phases[update.phase]||'自动检查更新',update.error?'warn':'')}</div><dl class="update-versions"><div><dt>当前版本</dt><dd>${esc(update.currentVersion||data.state.version||'待读取')}</dd></div>${ready?`<div><dt>新版本</dt><dd>${esc(update.targetVersion||'待读取')}</dd></div>`:''}</dl>${bar}${update.error?`<p class="recovery-note" role="alert">${esc(update.error.message)}</p>`:''}<div class="card-actions">${action}</div><details class="update-options"><summary>更新选项</summary><label for="app-update-channel">更新通道</label><select id="app-update-channel"${disabled(off)}><option value="stable"${channel==='stable'?' selected':''}>稳定版</option><option value="alpha"${channel==='alpha'?' selected':''}>Alpha 预览版</option></select><p>应用运行时会自动检查新版。下载使用系统网络，更新清单经签名验证、安装包校验完整性；这不替代操作系统签名或系统公证。</p></details></section>`;
   }
   function backupCard(data) {
     const backups=Array.isArray(data.workspace.backups)?data.workspace.backups:[],off=!desktop(data)||busy(data);
@@ -139,7 +154,7 @@
     const setup = data.state.setup;
     const steps = [
       ['01', '准备运行环境', '自动管理所需工具与依赖', data.state.installed, 'environment', 'environment'],
-      ['02', '连接你的 QQ', '设置主人账号与 OneBot 连接', setup.ownerConfigured && setup.qqConfigured, 'connect', 'connect'],
+      ['02', '连接你的 QQ', '选择接入方式并绑定你的私聊', setup.ownerConfigured && setup.qqConfigured, 'connect', 'connect'],
       ['03', '选择模型与记忆', '连接云端模型，延续每一次对话', setup.modelConfigured, 'intelligence', 'intelligence'],
     ];
     return `<section class="page-heading"><div><p class="eyebrow">你的专属工作空间</p><h1>概览</h1><p class="subtitle">把配置交给这里，把时间留给对话。</p></div>${button('刷新状态', 'inspect', { iconName: 'refresh', off: busy(data) || !desktop(data) })}</section>
@@ -149,7 +164,7 @@
       <div class="section-heading compact"><h2>工作空间状态</h2></div><section class="card status-list"><div class="status-row"><span class="row-label">${icon('environment')}运行环境</span><span>${data.state.installed ? '已准备' : '等待准备'}<span class="row-divider">·</span>${esc(data.state.platform.label || '未知系统')}</span></div><div class="status-row"><span class="row-label">${icon('play')}对话服务</span>${badge(s.label, s.type)}</div><div class="status-row"><span class="row-label">${icon('shield')}数据存储</span><span>保存在本机${routeButton('管理', 'settings')}</span></div></section>`;
   }
   function progress(data) {
-    if (!busy(data)) return '';
+    if (!busy(data)||data.pending==='app-update-start') return '';
     const task=workspaceProgress(data);
     const value = !task&&Number.isFinite(data.state.progress) ? Math.max(0, Math.min(100, data.state.progress <= 1 ? data.state.progress * 100 : data.state.progress)) : null;
     const plugin = extensionProgress(data)||task;
@@ -163,12 +178,16 @@
       ${data.state.running ? '<p class="inline-note">请先停止服务，再更新或修复环境。</p>' : ''}${progress(data)}
       <div class="section-heading"><h2>环境组件</h2><span>${data.state.components.length ? `${data.state.components.length} 项` : '检查后显示'}</span></div><section class="card component-table"><table><thead><tr><th scope="col">组件</th><th scope="col">版本</th><th scope="col">状态</th></tr></thead><tbody>${data.state.components.length ? data.state.components.map(c => { const status = labels[c.status] || labels.unknown; return `<tr><td><strong>${esc(c.label)}</strong><span class="component-detail">${esc(c.detail)}</span></td><td class="version-text">${esc(c.version || '—')}</td><td>${badge(status[0], status[1])}</td></tr>`; }).join('') : '<tr><td colspan="3" class="empty-state">尚无检查结果。点击「重新检查」获取本机状态。</td></tr>'}</tbody></table></section>${versionMatrix(data)}${healthCard(data)}<p class="footnote">${icon('shield')}环境准备不会启动对话服务。升级应用时，会保留你的配置、记忆和备份。</p>`;
   }
+  function connectionModePicker(data,value){
+    const mode=value.qqConnectionMode||'napcat',off=!desktop(data)||busy(data);
+    return `<div class="connection-mode-picker" role="group" aria-label="QQ 接入方式">${[['official','QQ 官方机器人','适合同一台电脑使用，不需要 NapCat'],['napcat','普通 QQ 小号','通过独立 NapCat，支持签名与空间']].map(([id,title,note])=>`<button type="button" data-action="select-qq-mode" data-mode="${id}" aria-pressed="${mode===id}" class="${mode===id?'selected':''}"${disabled(off||mode===id)}><strong>${title}</strong><span>${note}</span></button>`).join('')}</div>`;
+  }
   function connect(data) {
     const value = draft || data.settings;
     if (!value) return `<section class="page-heading"><div><h1>QQ 连接</h1><p class="subtitle">正在读取连接设置。</p></div></section><section class="card loading-card">${settingsLoading ? '<span class="spinner" aria-hidden="true"></span> 正在读取…' : button('重新读取','settings-get',{off:!desktop(data)||busy(data)})}</section>`;
     const qq=data.workspace.napcat,view=connectionViewModel(data);
     return `<section class="page-heading connection-page-heading"><div><h1>QQ 连接</h1><p class="subtitle">一次设置，之后按状态继续即可。</p></div>${button('检查状态','workspace-status',{iconName:'refresh',off:!desktop(data)||busy(data)})}</section>
-      <form id="connection-form">${napcatCard(data)}${qq?.externalOnly||externalGuideOpen?`<details class="card external-connection-help" id="external-connection-help"${externalGuideOpen?' open':''}><summary>外部协议端接入步骤</summary><ol><li>在外部 NapCat 或其他 OneBot 协议端登录机器人账号。</li><li>添加反向 WebSocket 连接：<code>ws://127.0.0.1:${esc(value.onebotPort)}/ws</code>，令牌与下方连接选项保持一致。</li><li>保持协议端运行，回到这里检查消息连接。</li></ol>${button('官方接入指南','napcat-guide',{off:!desktop(data)||busy(data)})}</details>`:''}${connectionOptions(data,value)}</form>
+      ${connectionModePicker(data,value)}<form id="connection-form">${napcatCard(data)}${qq?.externalOnly||externalGuideOpen?`<details class="card external-connection-help" id="external-connection-help"${externalGuideOpen?' open':''}><summary>外部协议端接入步骤</summary><ol><li>在外部 NapCat 或其他 OneBot 协议端登录机器人账号。</li><li>添加反向 WebSocket 连接：<code>ws://127.0.0.1:${esc(value.onebotPort)}/ws</code>，令牌与下方连接选项保持一致。</li><li>保持协议端运行，回到这里检查消息连接。</li></ol>${button('官方接入指南','napcat-guide',{off:!desktop(data)||busy(data)})}</details>`:''}${connectionOptions(data,value)}</form>
       <p class="connection-footnote">${view.stage==='ready'?'连接已建立。日常在概览页管理对话即可。':'登录数据保存在本机。停止对话服务会保留 QQ 连接，退出应用会停止由它管理的组件。'}</p>`;
   }
   function extensionCard(data, id) {
@@ -283,7 +302,7 @@
     reveal = false;
     extensionReview = '';
     extensionMessage = null;
-    backupReview=null;rollbackReview=false;restoreUpdateData=false;localMessage='';
+    backupReview=null;localMessage='';
     render(controller.get());
     document.getElementById('main-content')?.focus({ preventScroll: true });
     const page = document.querySelector('.page'); if (page) page.scrollTop = 0;
@@ -293,10 +312,9 @@
   }
   function readField(target) {
     if(target.id==='app-update-channel'){updateChannel=target.value;return;}
-    if(target.id==='rollback-restore-data'){restoreUpdateData=target.checked===true;return;}
 
     if(target.id.startsWith('pref-')){if(!preferencesDraft)preferencesDraft={...controller.get().workspace.preferences};preferencesDraft[target.id.slice(5)]=target.checked===true;preferencesDirty=true;return;}
-    if(!['ownerQQ','platformId','onebotPort','dashboardPort','onebotToken','biliEnabled','proactiveEnabled','signatureEnabled','qzoneEnabled'].includes(target.id))return;
+    if(!['ownerQQ','platformId','onebotPort','dashboardPort','onebotToken','biliEnabled','proactiveEnabled','signatureEnabled','qzoneEnabled','officialOwnerUMO'].includes(target.id))return;
     if (!draft) draft = { ...(controller.get().settings || {}) };
     draft[target.id] = target.type === 'checkbox' ? target.checked : target.value;
     dirty = true;
@@ -304,6 +322,9 @@
   async function saveSettings() {
     const data = controller.get();
     const value = draft || data.settings;
+    if(connectionViewModel(data).stage==='official-owner'&&!/^[^:\s]+:FriendMessage:[A-Za-z0-9_-]{1,128}$/.test(String(value?.officialOwnerUMO||'').trim())){
+      localMessage='请复制官方机器人私聊 /fish whoami 返回的完整本会话。';render(data);document.getElementById('officialOwnerUMO')?.focus();return;
+    }
     if (connectionViewModel(data).stage === 'owner' && !/^[1-9]\d{4,19}$/.test(String(value?.ownerQQ || '').trim())) {
       localMessage = '请填写接收消息的 QQ 号。';
       render(data);
@@ -325,6 +346,16 @@
     if(action==='route-intelligence')return navigate('intelligence');
     if(action==='show-connection-options'){connectionAdvancedOpen=true;render(controller.get());document.getElementById('connection-advanced-summary')?.focus();return;}
     if(action==='show-external-guide'){externalGuideOpen=true;render(controller.get());document.getElementById('external-connection-help')?.focus();return;}
+    if(action==='select-qq-mode'){
+      const mode=target.dataset.mode;if(!['napcat','official'].includes(mode))return;
+      const value={...(draft||controller.get().settings),qqConnectionMode:mode,proactiveEnabled:false,biliEnabled:false,signatureEnabled:false,qzoneEnabled:false};
+      await run('settings-save',value);
+      if(!controller.get().error){draft={...controller.get().settings};dirty=false;await run('inspect');await run('workspace-status');render(controller.get());}
+      return;
+    }
+    if(action==='home'&&controller.get().settings?.qqConnectionMode==='official'){
+      await run('home');await run('inspect');if(!dirty){await run('settings-get');draft={...controller.get().settings};}await run('workspace-status');render(controller.get());return;
+    }
     if (action === 'save-settings') return saveSettings();
     if(action==='save-preferences'){await run('preferences-save',preferencesDraft||controller.get().workspace.preferences);if(!controller.get().error){preferencesDirty=false;preferencesDraft=null;render(controller.get());}return;}
     if(action==='app-update-check')return run(action,{channel:updateChannel||controller.get().workspace.appUpdate?.channel||'alpha'});
@@ -335,15 +366,6 @@
     }
     if(action==='backup-cancel'){const focusId=backupReview?.focusId;backupReview=null;localMessage='已取消，备份与当前数据未更改。';render(controller.get());document.getElementById(focusId)?.focus({preventScroll:true});return;}
     if(action==='backup-confirm'){if(!backupReview)return;const review=backupReview;backupReview=null;await run(review.operation,{id:review.id});return;}
-    if(action==='app-rollback-review'){if(!controller.get().workspace.appUpdate?.canRollback)return;rollbackReview=true;restoreUpdateData=false;localMessage='';render(controller.get());document.getElementById('app-rollback-confirm')?.focus({preventScroll:true});return;}
-    if(action==='app-rollback-cancel'){rollbackReview=false;restoreUpdateData=false;localMessage='已取消回退，应用与数据未更改。';render(controller.get());document.getElementById('app-rollback-review')?.focus({preventScroll:true});return;}
-    if(action==='app-rollback-confirm') {
-      if(!rollbackReview)return;
-      const state=controller.get().workspace.appUpdate;
-      const required=typeof state?.recovery?.rollbackRequiresDataRestore==='boolean'?state.recovery.rollbackRequiresDataRestore:state?.impact?.dataMigration===true||state?.impact?.rollbackCompatible===false;
-      if(required&&!restoreUpdateData)return;
-      const restoreData=restoreUpdateData;rollbackReview=false;restoreUpdateData=false;await run('app-update-rollback',{restoreData,confirmDataRestore:restoreData});return;
-    }
     if (action === 'retry') { const retry = controller.get().retry; if (retry) return run(retry.action, retry.payload); return; }
     if (action === 'settings-get') { await run(action); if (!dirty) draft = { ...controller.get().settings }; render(controller.get()); return; }
     if (action === 'extension-review') {

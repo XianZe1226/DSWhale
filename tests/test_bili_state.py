@@ -178,7 +178,9 @@ async def test_qq_recommendation_only_targets_owner_and_respects_shared_budget(t
         meta=lambda: SimpleNamespace(name="aiocqhttp"), get_client=lambda: client
     )
     context = SimpleNamespace(get_platform_inst=lambda ident: platform if ident == "qq" else None)
-    c = SimpleNamespace(settings=cfg, store=store, scheduler=Scheduler(cfg, store), context=context)
+    c = SimpleNamespace(
+        settings=cfg, store=store, scheduler=Scheduler(cfg, store), context=context, closed=False
+    )
     (tmp_path / ".dsh").mkdir()
     (tmp_path / ".dsh/bili-whale.config.json").write_text(
         '{"share":{"via":"qq","enabled":true},"diary":{"push":true}}'
