@@ -436,3 +436,54 @@ test('installation refuses tampered downloads before extraction or launch', asyn
   assert.equal(extracted, false);
   assert.equal(f.launches.length, 0);
 });
+
+test('owned launch removes competing quick credentials and disables legacy WebUI account fallback', async t=>{
+  const f=await fixture(t,{account:false});
+  const envFile=path.join(f.folder,'napcat/config/.env');
+  await fs.writeFile(envFile,'# keep\nCUSTOM_KEEP=yes\nNAPCAT_QUICK_ACCOUNT=87654321\nNAPCAT_QUICK_PASSWORD=synthetic-password\nNAPCAT_QUICK_PASSWORD_MD5=00000000000000000000000000000000\n');
+  await fs.mkdir(path.join(f.app.work,'config'),{recursive:true});
+  await fs.writeFile(path.join(f.app.work,'config/webui.json'),JSON.stringify({autoLoginAccount:'87654321',theme:{keep:true}}));
+  await f.app.configure(f.folder);
+  const env=await fs.readFile(envFile,'utf8');
+  assert.equal(/NAPCAT_QUICK_(?:ACCOUNT|PASSWORD)/.test(env),false);
+  assert.match(env,/CUSTOM_KEEP=yes/);
+  const webui=JSON.parse(await fs.readFile(path.join(f.app.work,'config/webui.json'),'utf8'));
+  assert.equal(webui.autoLoginAccount,'');assert.deepEqual(webui.theme,{keep:true});
+  await f.app.start();
+  assert.equal(f.launches[0].options.env.NAPCAT_QUICK_ACCOUNT,undefined);
+  await f.app.stop();
+  await fs.appendFile(envFile,'NAPCAT_QUICK_ACCOUNT=87654321\n');
+  await assert.rejects(f.app.start(),/隔离|配置/);
+  assert.equal(f.launches.length,1);
+});
+for(const phase of ['changed','unknown']) {
+ test('live apply rejects '+phase+' identity during config read without writing or persisting it',async t=>{
+  let account='12345678',writes=0;
+  const session={reset(){},inspect:async()=>account?{loginState:'online',account}:{loginState:'unknown'},
+   getConfig:async()=>{account=phase==='changed'?'87654321':null;return {network:{websocketClients:[{name:'another-app',url:'ws://127.0.0.1:7000/ws'}]}};},
+   setConfig:async()=>{writes++;}};
+  const f=await fixture(t,{session});await f.app.configure(f.folder);await f.app.start();
+  const identity=await fs.readFile(path.join(f.app.base,'session.json'));
+  await assert.rejects(f.app.wire(),/账号|确认|登录/);
+  assert.equal(writes,0);assert.deepEqual(await fs.readFile(path.join(f.app.base,'session.json')),identity);
+  assert.equal(f.app.running,true);await f.app.stop();
+ });
+}
+
+test('a newer identity observation fences an older private identity write', async t=>{
+  let observed=false;
+  const session={identityRevision:1,reset(){},inspect:async()=>{observed=true;return {loginState:'online',account:'12345678'};}};
+  const f=await fixture(t,{session});await f.app.configure(f.folder);
+  const file=path.join(f.app.base,'session.json');
+  const previous=JSON.stringify({schema:1,account:'87654321'});
+  await fs.writeFile(file,previous);
+  const original=fs.readFile;let release,entered;
+  const pending=new Promise(resolve=>{entered=resolve;});
+  const wait=new Promise(resolve=>{release=resolve;});
+  fs.readFile=async function(name,...args){const value=await original.call(this,name,...args);if(name===file&&observed){entered();await wait;}return value;};
+  try {
+    const started=f.app.start();await pending;
+    session.identityRevision=2;release();await started;
+    assert.equal(await original(file,'utf8'),previous);
+  }finally{release();fs.readFile=original;await f.app.stop();}
+});

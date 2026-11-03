@@ -135,3 +135,26 @@ test('invalid local endpoints and credentials fail closed before any network req
   }
   assert.equal(f.calls.length, 0);
 });
+
+test('explicit fresh identity checks bypass cached observations',async t=>{
+ let account='12345678';
+ const f=await fixture(t,{route:call=>call.path==='/api/QQLogin/GetQQLoginInfo'?{uin:account,online:true}:undefined});
+ assert.equal((await f.client.inspect(f.context)).account,'12345678');
+ account='87654321';
+ assert.equal((await f.client.inspect(f.context)).account,'12345678');
+ assert.equal((await f.client.inspect(f.context,{fresh:true})).account,'87654321');
+});
+
+test('fresh identity check waits for an older request and then makes its own observation',async t=>{
+ let held,entered;const waiting=new Promise(resolve=>{entered=resolve;});let infoCalls=0;
+ const f=await fixture(t,{route:(call,res)=>{
+  if(call.path!=='/api/QQLogin/GetQQLoginInfo')return;
+  if(++infoCalls===1){held=res;entered();return false;}
+  return {uin:'87654321',online:true};
+ }});
+ const older=f.client.inspect(f.context);await waiting;
+ const fresh=f.client.inspect(f.context,{fresh:true});
+ held.end(JSON.stringify({code:0,data:{uin:'12345678',online:true}}));
+ assert.equal((await older).account,'12345678');
+ assert.equal((await fresh).account,'87654321');assert.equal(infoCalls,2);
+});

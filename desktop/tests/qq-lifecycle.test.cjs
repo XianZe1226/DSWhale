@@ -6,17 +6,17 @@ const path = require('node:path');
 const vm = require('node:vm');
 const { createRequire } = require('node:module');
 
-function harness({ saveFails = false, recovery = {}, backendRunning = true, qqRunning = true, loginState = 'online', backendReadyWait, startFails = false } = {}) {
+function harness({ saveFails = false, recovery = {}, backendRunning = true, qqRunning = true, loginState = 'online', backendReadyWait, qqStatusWait, qqConfigureWait, startFails = false } = {}) {
   const file = path.resolve(__dirname, '../main.cjs'), native = createRequire(file);
   const events = [], snapshots = [];
   const supervisor = { running: backendRunning, async stop() { events.push('stop-conversation'); this.running = false; },
     async start() { if (this.running) return; events.push('start-conversation'); if(startFails)throw Error('synthetic backend failure'); await backendReadyWait; this.running = true; } };
   const napcat = { running: qqRunning, async stop() { events.push('stop-qq'); this.running = false; },
     async start() { if (!this.running) { events.push('launch-qq'); this.running = true; } return this.status(); },
-    async configure() { if (this.running) throw Error('cannot reconfigure running QQ'); },
+    async configure() { await qqConfigureWait; if (this.running) throw Error('cannot reconfigure running QQ'); },
     async wire() { events.push('apply-connection'); return this.status(); },
     async loginInfo() { return {url:'http://127.0.0.1:6099/webui/',token:'synthetic-only-management-token'}; },
-    async status() { return { configured: true, externalOnly: false, canStart: true, running: this.running, loginState: this.running ? loginState : 'stopped', hasSavedLogin: true, connectionConfigured: true, protocolConnected: false }; } };
+    async status() { await qqStatusWait; return { configured: true, externalOnly: false, canStart: true, running: this.running, loginState: this.running ? loginState : 'stopped', hasSavedLogin: true, connectionConfigured: true, protocolConnected: false }; } };
   const manager = { host: 'synthetic-host', async inspect() { return { installed: true }; },
     async install() { events.push('prepare-backend'); } };
   class LocalView { constructor() { this.webContents={setWindowOpenHandler(){},on(){},close(){},loadURL:async()=>events.push('open-qq-management')}; } setBounds(){} }
@@ -29,7 +29,7 @@ function harness({ saveFails = false, recovery = {}, backendRunning = true, qqRu
   const context = { require: name => name === 'electron' ? electron : name === './lib/services.cjs' ? fakeServices
     : name === 'node:fs/promises' ? { readdir: async () => { throw Object.assign(Error(), { code: 'ENOENT' }); } } : native(name),
     __dirname: path.dirname(file), process, console, Buffer, setTimeout, clearTimeout };
-  vm.runInNewContext(fs.readFileSync(file, 'utf8') + `;globalThis.hooks={perform,stopAll,publishQQ,getState:()=>state,set(values){
+  vm.runInNewContext(fs.readFileSync(file, 'utf8') + `;globalThis.hooks={perform,stopAll,publishQQ,getState:()=>state,requestShutdown:()=>{shutdownRequested=true;},set(values){
     state.installed=true; manager=values.manager; supervisor=values.supervisor; napcat=values.napcat;
     window={isDestroyed:()=>false,webContents:{send:(_channel,value)=>values.snapshot(value)},contentView:{addChildView(){},removeChildView(){}},getContentSize:()=>[1220,850]};
     extensions={operation:null,run:async()=>({})};appUpdater={status:async()=>({recovery:values.recovery})};}};`, context);
@@ -134,3 +134,22 @@ test('a running owned QQ can be managed while conversation is paused without sta
   assert.equal(h.getState().panel,'napcat');
   assert.equal(JSON.stringify(h.getState()).includes('synthetic-only-management-token'),false);
 });
+
+for (const boundary of ['backendReadyWait','qqStatusWait','qqConfigureWait']) {
+  test('quit during '+boundary+' cannot launch QQ after final cleanup', async () => {
+    let release;
+    const wait = new Promise(resolve=>{release=resolve;});
+    const h=harness({backendRunning:false,qqRunning:false,[boundary]:wait});
+    const started=h.perform('start');
+    const result=assert.rejects(started,/退出|取消/);
+    await new Promise(resolve=>setImmediate(resolve));
+    h.requestShutdown();
+    // Release the wait while shutdown stops its owned processes.
+    release();
+    await h.stopAll();
+    await result;
+    assert.equal(h.events.includes('launch-qq'),false);
+    assert.equal(h.napcat.running,false);
+    assert.equal(h.supervisor.running,false);
+  });
+}

@@ -22,7 +22,7 @@ app.setName('DSWhale');
 if (!app.isPackaged && process.env.DSWHALE_DESKTOP_TEST_DATA) app.setPath('userData', path.resolve(process.env.DSWHALE_DESKTOP_TEST_DATA));
 protocol.registerSchemesAsPrivileged([{ scheme: 'dswhale', privileges: { standard: true, secure: true, supportFetchAPI: true } }]);
 let operations, appUpdater, updateScheduler, napcat, workspace, preferenceStore, tray, preferences = {tray:false,startAtLogin:false,resumeAfterWake:false}, installerHandedOff = false;
-let window, panelView, manager, supervisor, extensions, quitting = false, shutdownRequested = false, activeAction, startupInProgress = false, externalConnectionMonitor;
+let window, panelView, manager, supervisor, extensions, quitting = false, shutdownRequested = false, activeAction, startupInProgress = false, startupOperation, externalConnectionMonitor;
 const activeCommands = new Set();
 let state = { version: app.getVersion(), platform: { id: '', label: '本机', supported: true, detail: '' }, phase: 'idle', installed: false, running: false, components: [], setup: { ownerConfigured: false, qqConfigured: false, modelConfigured: false, memoryConfigured: false, biliEnabled: false } };
 function publish(patch = {}) { state = { ...state, ...patch }; if (window && !window.isDestroyed()) window.webContents.send('dswhale:state', state); return state; }
@@ -120,7 +120,14 @@ async function hostCommand(args) {
 async function stopAll() { closePanel(); await napcat?.stop(); await supervisor.stop(); }
 // QQ login has its own lifetime. A backend restart must not become a new QQ login.
 async function stopConversation() { closePanel(); await supervisor.stop(); publish({ running: false, startup: { stage: 'stopped' } }); }
-async function startAll() {
+function startAll() {
+  if (startupOperation) return startupOperation;
+  const pending = startServices().finally(() => { if (startupOperation === pending) startupOperation = null; });
+  startupOperation = pending; return pending;
+}
+async function startServices() {
+  const stillOpen = () => { if (shutdownRequested) throw new UserActionError('应用正在退出，启动已取消'); };
+  stillOpen();
   if (!state.installed) throw new UserActionError('请先准备运行环境');
   const recovery = appUpdater ? (await appUpdater.status()).recovery : null;
   if (recovery?.servicesMustRemainStopped) throw new UserActionError('更新或回退尚未完成，请先在应用设置中修复并体检');
@@ -131,13 +138,17 @@ async function startAll() {
   publish({ startup: { stage: supervisor.running ? 'checking-qq' : 'starting-conversation' }, error: undefined });
   try {
     await supervisor.start();
+    stillOpen();
     publish({ running: true, startup: { stage: 'checking-qq' } });
     if (napcat) {
       const configured = await napcat.status();
+      stillOpen();
       if (configured.canStart) {
         publish({ startup: { stage: napcat.running ? 'reusing-qq' : 'starting-qq' } });
         if (!napcat.running) await napcat.configure();
+        stillOpen();
         publishQQ(await napcat.start(), true);
+        stillOpen();
       } else publishQQ(configured, true);
     }
     return await refresh();
@@ -175,7 +186,7 @@ function applyPreferences(value) {
   preferences=value;
   if(!value.tray) { tray?.destroy();tray=null;return; }
   if(!tray) { const icon=nativeImage.createFromPath(path.join(__dirname,'assets/icon.png')).resize({width:process.platform==='darwin'?18:20,height:process.platform==='darwin'?18:20}); if(process.platform==='darwin')icon.setTemplateImage(true); tray=new Tray(icon);tray.setToolTip('DSWhale');tray.on('click',showWindow); }
-  tray.setContextMenu(Menu.buildFromTemplate([{label:'打开 DSWhale',click:showWindow},{label:'启动全部',click:()=>perform('start').catch(()=>publish({error:'启动未完成，请打开窗口查看体检结果'}))},{label:'停止全部',click:()=>perform('stop').catch(()=>{})},{type:'separator'},{label:'退出',click:()=>app.quit()}]));
+  tray.setContextMenu(Menu.buildFromTemplate([{label:'打开 DSWhale',click:showWindow},{label:'启动对话与 QQ',click:()=>perform('start').catch(()=>publish({error:'启动未完成，请打开窗口查看体检结果'}))},{label:'停止对话服务',click:()=>perform('stop').catch(()=>{})},{type:'separator'},{label:'退出',click:()=>app.quit()}]));
 }
 async function finishPendingUpdate() {
   const status=await appUpdater.status();
@@ -334,6 +345,6 @@ else {
     clearInterval(externalConnectionMonitor);
     updateScheduler?.stop();
     for (const child of activeCommands) child.kill();
-    Promise.resolve().then(async()=>{for(const close of [()=>appUpdater?.cancel(),()=>operations?.close(),()=>extensions?.close(),()=>manager?.cancel(),()=>napcat?.stop(),()=>supervisor?.stop()]){try{await close();}catch{}}}).finally(()=>{quitting=true;app.quit();});
+    Promise.resolve().then(async()=>{for(const close of [()=>appUpdater?.cancel(),()=>operations?.close(),()=>extensions?.close(),()=>manager?.cancel(),()=>napcat?.stop(),()=>supervisor?.stop(),()=>startupOperation?.catch(()=>{}),()=>stopAll()]){try{await close();}catch{}}}).finally(()=>{quitting=true;app.quit();});
   });
 }

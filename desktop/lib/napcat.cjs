@@ -44,6 +44,9 @@ function updateEnvironment(text, values) {
   const pending = new Set(Object.keys(values)), lines = [];
   for (const raw of text.split(/\r?\n/)) {
     const key = raw.trim().split('=', 1)[0].trim();
+    // The upstream launcher reads this file after inheriting our environment.
+    // Keep quick-account selection authoritative and never enable passwords.
+    if (/^NAPCAT_QUICK_(?:ACCOUNT|PASSWORD|PASSWORD_MD5)$/i.test(key)) continue;
     if (Object.hasOwn(values, key)) { if (pending.delete(key)) lines.push(`${key}=${values[key]}`); }
     else lines.push(raw);
   }
@@ -118,10 +121,11 @@ class NapCatManager {
     if (!this.running) return { loginState: 'stopped' };
     if (this.livePending) return this.livePending;
     const generation = this.generation, child = this.child;
-    const guard = () => { this._active(generation); if (!this.running || this.child !== child) throw new NapCatError('NAP-CANCELLED', '独立组件已停止'); };
+    let identityRevision;
+    const guard = () => { this._active(generation); if (!this.running || this.child !== child || identityRevision !== this.session.identityRevision) throw new NapCatError('NAP-CANCELLED', '独立组件或登录状态已变化'); };
     const pending = (async () => {
       try {
-        const observed = await this.session.inspect(await this._webui()); guard();
+        const observed = await this.session.inspect(await this._webui()); identityRevision = this.session.identityRevision; guard();
         const phases = ['online', 'offline', 'connecting', 'confirming', 'scan-required', 'unknown'];
         const loginState = phases.includes(observed?.loginState) ? observed.loginState : 'unknown';
         if (loginState !== 'online') return { loginState };
@@ -166,6 +170,7 @@ class NapCatManager {
     if (Object.keys(current).some(key => /^(NODE_OPTIONS|NODE_PATH|NAPCAT_PRELOAD_NODE_ADDON_PATH)$/i.test(key))) throw unsafe();
     await safePath(this.data); await safePath(this.work);
     const webui = await this._webui();
+    if (Object.keys(current).some(key => /^NAPCAT_QUICK_(?:ACCOUNT|PASSWORD|PASSWORD_MD5)$/i.test(key)) || webui.autoLoginAccount) return false;
     return Object.entries(this._values(folder)).every(([key, value]) => current[key] === value)
       && current.NAPCAT_WEBUI_PREFERRED_PORT === String(webui.port);
   }
@@ -292,7 +297,7 @@ class NapCatManager {
     let webui;
     try { webui = JSON.parse(await readText(webuiFile, '{}', 65536)); } catch { throw unsafe(); }
     if (!webui || typeof webui !== 'object' || Array.isArray(webui)) throw unsafe();
-    webui.host = '127.0.0.1'; webui.disableWebUI = false;
+    webui.host = '127.0.0.1'; webui.disableWebUI = false; webui.autoLoginAccount = '';
     if (!Number.isInteger(webui.port) || webui.port < 1024 || webui.port > 65535) webui.port = 6099;
     if (typeof webui.token !== 'string' || webui.token.length < 8 || webui.token.length > 4096 || /[\x00-\x1f\x7f]/.test(webui.token)) webui.token = crypto.randomBytes(32).toString('base64url');
     await atomic(webuiFile, JSON.stringify(webui, null, 2) + '\n');
@@ -373,9 +378,15 @@ class NapCatManager {
     const generation = this.generation, child = this.child;
     try {
       const webui = await this._webui(), connection = await this._connection();
+      const identity = await this.session.inspect(webui, { fresh: true }); this._active(generation);
+      if (identity?.loginState !== 'online' || !/^[1-9]\d{4,19}$/.test(identity.account || '')) throw new NapCatError('NAP-ACCOUNT', '请先在登录面板确认机器人账号在线，再应用连接。');
       const config = await this.session.getConfig(webui); this._active(generation);
       if (!this.running || this.child !== child) throw new NapCatError('NAP-CANCELLED', '独立组件已停止');
-      if (applyConnection(config, connection)) await this.session.setConfig(webui, config);
+      if (applyConnection(config, connection)) {
+        const current = await this.session.inspect(webui, { fresh: true }); this._active(generation);
+        if (!this.running || this.child !== child || current?.loginState !== 'online' || current.account !== identity.account) throw new NapCatError('NAP-ACCOUNT', '机器人账号状态已变化，尚未应用连接。请在登录面板确认后重试。');
+        await this.session.setConfig(webui, config);
+      }
       this._active(generation);
       const result = await this.status(); this.onChange(result); return result;
     } catch (error) {

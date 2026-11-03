@@ -45,6 +45,7 @@ class NapCatSession {
   }
   reset() {
     this.generation++; this.controller?.abort(); this.controller = new AbortController();
+    this.identityRevision = (this.identityRevision || 0) + 1;
     this.key = null; this.credential = null; this.credentialUntil = 0; this.nextAuth = 0;
     this.cached = null; this.pending = null; this.authPending = null;
   }
@@ -83,9 +84,12 @@ class NapCatSession {
     }
     return result.data;
   }
-  async inspect(context) {
+  async inspect(context, { fresh = false } = {}) {
     try { this._prepare(context); } catch { return unknown(); }
-    if (this.cached && this.cached.until > this.now()) return this.cached.value;
+    // A mutation must not reuse the identity that preceded an account switch,
+    // including an older read still in flight when that mutation began.
+    if (fresh && this.pending) { await this.pending; return this.inspect(context, { fresh: true }); }
+    if (!fresh && this.cached && this.cached.until > this.now()) return this.cached.value;
     if (this.pending) return this.pending;
     const generation = this.generation;
     const pending = (async () => {
@@ -104,6 +108,7 @@ class NapCatSession {
         }
       } catch { value = unknown(); }
       if (generation !== this.generation) return unknown();
+      this.identityRevision++;
       this.cached = { until: this.now() + 5000, value }; return value;
     })().finally(() => { if (this.pending === pending) this.pending = null; });
     this.pending = pending; return pending;
