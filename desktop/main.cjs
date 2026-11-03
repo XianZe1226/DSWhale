@@ -6,7 +6,7 @@ const { pathToFileURL } = require('node:url');
 const { spawn } = require('node:child_process');
 const { RuntimeManager, SetupError } = require('./lib/runtime.cjs');
 const { validateRequest, permittedNavigation, biliURL, consolePopupTarget } = require('./lib/security.cjs');
-const { ServiceSupervisor, settingsCommand, portOpen } = require('./lib/services.cjs');
+const { ServiceSupervisor, settingsCommand, portOpen, readQQConnectionHealth } = require('./lib/services.cjs');
 const { ExtensionRunner, runExtensionAction } = require('./lib/extensions.cjs');
 const { Operations } = require('./lib/operations.cjs');
 const { Workspace, WORKSPACE_ACTIONS } = require('./lib/workspace.cjs');
@@ -22,13 +22,23 @@ app.setName('DSWhale');
 if (!app.isPackaged && process.env.DSWHALE_DESKTOP_TEST_DATA) app.setPath('userData', path.resolve(process.env.DSWHALE_DESKTOP_TEST_DATA));
 protocol.registerSchemesAsPrivileged([{ scheme: 'dswhale', privileges: { standard: true, secure: true, supportFetchAPI: true } }]);
 let operations, appUpdater, updateScheduler, napcat, workspace, preferenceStore, tray, preferences = {tray:false,startAtLogin:false,resumeAfterWake:false}, installerHandedOff = false;
-let window, panelView, manager, supervisor, extensions, quitting = false, shutdownRequested = false, activeAction;
+let window, panelView, manager, supervisor, extensions, quitting = false, shutdownRequested = false, activeAction, startupInProgress = false, externalConnectionMonitor;
 const activeCommands = new Set();
 let state = { version: app.getVersion(), platform: { id: '', label: '本机', supported: true, detail: '' }, phase: 'idle', installed: false, running: false, components: [], setup: { ownerConfigured: false, qqConfigured: false, modelConfigured: false, memoryConfigured: false, biliEnabled: false } };
 function publish(patch = {}) { state = { ...state, ...patch }; if (window && !window.isDestroyed()) window.webContents.send('dswhale:state', state); return state; }
-function publishQQ(patch) {
+function connectionStage(qq) {
+  if (!supervisor?.running) return state.error ? 'failed' : 'stopped';
+  if (qq.configured && !qq.externalOnly && !qq.running) return 'qq-stopped';
+  if (qq.protocolConnected === true && (qq.externalOnly || !['scan-required', 'offline'].includes(qq.loginState))) return 'ready';
+  if (qq.externalOnly) return 'external';
+  if (!qq.configured) return 'setup-qq';
+  if (qq.loginState === 'online') return qq.connectionConfigured ? 'awaiting-link' : 'apply-connection';
+  return ['resuming', 'connecting', 'confirming', 'scan-required', 'offline'].includes(qq.loginState) ? qq.loginState : 'unknown';
+}
+function publishQQ(patch, completeStartup = false) {
   if (patch.phase === 'installing') return publish({ step: patch.step, progress: patch.progress });
-  return publish({ workspace: { ...state.workspace, napcat: patch } });
+  return publish({ workspace: { ...state.workspace, napcat: patch },
+    ...(!startupInProgress || completeStartup ? { startup: { stage: connectionStage(patch) } } : {}) });
 }
 function closePanel() {
   if (panelView) { if (window && !window.isDestroyed()) window.contentView.removeChildView(panelView); panelView.webContents.close(); panelView = null; }
@@ -109,17 +119,34 @@ async function hostCommand(args) {
 }
 async function stopAll() { closePanel(); await napcat?.stop(); await supervisor.stop(); }
 // QQ login has its own lifetime. A backend restart must not become a new QQ login.
-async function stopConversation() { closePanel(); await supervisor.stop(); }
+async function stopConversation() { closePanel(); await supervisor.stop(); publish({ running: false, startup: { stage: 'stopped' } }); }
 async function startAll() {
   if (!state.installed) throw new UserActionError('请先准备运行环境');
   const recovery = appUpdater ? (await appUpdater.status()).recovery : null;
   if (recovery?.servicesMustRemainStopped) throw new UserActionError('更新或回退尚未完成，请先在应用设置中修复并体检');
   await extensions.run('status');
   if (shutdownRequested) throw new UserActionError('应用正在退出');
-  await supervisor.start();
-  try { if (napcat && (await napcat.status()).canStart) {if(!napcat.running)await napcat.configure();await napcat.start();} }
-  catch (error) { await napcat.stop(); await supervisor.stop(); throw error; }
-  return refresh();
+  const reuseQQ = napcat?.running;
+  startupInProgress = true;
+  publish({ startup: { stage: supervisor.running ? 'checking-qq' : 'starting-conversation' }, error: undefined });
+  try {
+    await supervisor.start();
+    publish({ running: true, startup: { stage: 'checking-qq' } });
+    if (napcat) {
+      const configured = await napcat.status();
+      if (configured.canStart) {
+        publish({ startup: { stage: napcat.running ? 'reusing-qq' : 'starting-qq' } });
+        if (!napcat.running) await napcat.configure();
+        publishQQ(await napcat.start(), true);
+      } else publishQQ(configured, true);
+    }
+    return await refresh();
+  } catch (error) {
+    if (!reuseQQ) await napcat?.stop();
+    await supervisor.stop();
+    publish({ running: false, startup: { stage: 'failed' } });
+    throw error;
+  } finally { startupInProgress = false; }
 }
 async function restoreFile(file, {rebuild = true} = {}) {
   if (!state.installed) throw new UserActionError('请先准备运行环境，再导入自己的备份');
@@ -233,7 +260,9 @@ async function createWindow() {
   extensions = new ExtensionRunner(manager);
   supervisor = new ServiceSupervisor({ manager, onChange: patch => { if (!patch.running && panelView) closePanel(); publish(patch); } });
   preferenceStore=new Preferences({userData:app.getPath('userData'),app});
-  napcat=new NapCatManager({manager,userData:app.getPath('userData'),fetch:transport,onChange:publishQQ});
+  napcat=new NapCatManager({manager,userData:app.getPath('userData'),fetch:transport,onChange:publishQQ,
+    getProtocolState:()=>readQQConnectionHealth({host:manager.host,running:supervisor.running,
+      startedAt:Math.max(supervisor.startedAt,napcat?.running ? napcat.startedAt || 0 : 0)})});
   operations=new Operations({manager,supervisor,snapshotTo});
   const distro={};if(process.platform==='linux'){try{for(const line of(await fs.readFile('/etc/os-release','utf8')).split('\n')){const m=line.match(/^(ID|VERSION_ID)=["']?([^"']+)["']?$/);if(m)distro[m[1]]=m[2];}}catch{}}
   appUpdater=new AppUpdater({runtime:manager.runtime,currentVersion:app.getVersion(),distro,
@@ -277,6 +306,11 @@ async function createWindow() {
     onResult:appUpdate=>publish({appUpdate}),
   });
   updateScheduler.start();
+  externalConnectionMonitor = setInterval(() => {
+    if (shutdownRequested || activeAction || napcat.running || !supervisor.running) return;
+    napcat.status().then(publishQQ).catch(() => {});
+  }, 5000);
+  externalConnectionMonitor.unref?.();
   let wasRunning=false;powerMonitor.on('suspend',()=>{wasRunning=supervisor.running;});powerMonitor.on('resume',()=>{if(shutdownRequested)return;updateScheduler?.resume();if(preferences.resumeAfterWake&&wasRunning&&!supervisor.running&&!activeAction)perform('start').catch(()=>publish({error:'系统已唤醒，请重新检查连接'}));else publish({notice:'系统已唤醒，可重新检查连接状态'});});
   window.on('closed', () => { window = null; });
 }

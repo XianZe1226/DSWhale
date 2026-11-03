@@ -8,6 +8,44 @@ const vm = require('node:vm');
 const { EventEmitter } = require('node:events');
 const { PassThrough } = require('node:stream');
 
+test('QQ readiness comes from a fresh host connection snapshot rather than open ports or saved configuration', async t => {
+  const { readQQConnectionHealth } = require('../lib/services.cjs');
+  assert.equal(typeof readQQConnectionHealth, 'function');
+  const host = await fs.mkdtemp(path.join(os.tmpdir(), 'dswhale-qq-health-'));
+  t.after(() => fs.rm(host, { recursive: true, force: true }));
+  const file = path.join(host, 'data/plugin_data/astrbot_plugin_dswhale/health.json');
+  await fs.mkdir(path.dirname(file), { recursive: true });
+  const context = { host, running: true, startedAt: 1980000, now: 2000000 };
+  for (const [snapshot, expected] of [
+    [{ updatedAt: 1999, qqConnected: true, token: 'synthetic-private-token' }, true],
+    [{ updatedAt: 1999, qqConnected: false }, false],
+    [{ updatedAt: 1900, qqConnected: true }, null],
+    [{ updatedAt: 1979, qqConnected: true }, null],
+    [{ updatedAt: 2000000, qqConnected: true }, null],
+    [{ updatedAt: 1999, qqConnected: 'true' }, null],
+  ]) {
+    await fs.writeFile(file, JSON.stringify(snapshot));
+    assert.equal(await readQQConnectionHealth(context), expected);
+  }
+  await fs.writeFile(file, JSON.stringify({ updatedAt: 1999, qqConnected: true }));
+  assert.equal(await readQQConnectionHealth({ ...context, running: false }), false);
+});
+
+test('missing, malformed and oversized QQ snapshots cannot invent connection readiness', async t => {
+  const { readQQConnectionHealth } = require('../lib/services.cjs');
+  assert.equal(typeof readQQConnectionHealth, 'function');
+  const host = await fs.mkdtemp(path.join(os.tmpdir(), 'dswhale-qq-invalid-health-'));
+  t.after(() => fs.rm(host, { recursive: true, force: true }));
+  const context = { host, running: true, startedAt: 0, now: 2000000 };
+  assert.equal(await readQQConnectionHealth(context), null);
+  const file = path.join(host, 'data/plugin_data/astrbot_plugin_dswhale/health.json');
+  await fs.mkdir(path.dirname(file), { recursive: true });
+  for (const body of ['not-json', '[]', 'x'.repeat(17000)]) {
+    await fs.writeFile(file, body);
+    assert.equal(await readQQConnectionHealth(context), null);
+  }
+});
+
 test('host refuses an occupied port and never adopts or stops another process', async () => {
   const { ServiceSupervisor } = require('../lib/services.cjs');
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'dswhale-services-'));

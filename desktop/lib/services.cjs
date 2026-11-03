@@ -4,8 +4,28 @@ const path = require('node:path');
 const net = require('node:net');
 const { spawn } = require('node:child_process');
 const { once } = require('node:events');
+const { constants } = require('node:fs');
 
 async function readJSON(file) { return JSON.parse((await fs.readFile(file, 'utf8')).replace(/^\uFEFF/, '')); }
+async function readQQConnectionHealth({ host, running, startedAt = 0, now = Date.now() }) {
+  if (!running) return false;
+  let handle;
+  try {
+    const file = path.join(host, 'data/plugin_data/astrbot_plugin_dswhale/health.json');
+    const stat = await fs.lstat(file);
+    if (!stat.isFile() || stat.isSymbolicLink() || stat.nlink > 1 || stat.size > 16384) return null;
+    handle = await fs.open(file, constants.O_RDONLY | (constants.O_NOFOLLOW || 0) | (constants.O_NONBLOCK || 0));
+    const actual = await handle.stat();
+    if (!actual.isFile() || actual.nlink > 1 || actual.size > 16384) return null;
+    const bytes = Buffer.alloc(16385), read = await handle.read(bytes, 0, bytes.length, 0);
+    if (read.bytesRead > 16384) return null;
+    const value = JSON.parse(bytes.subarray(0, read.bytesRead).toString('utf8'));
+    if (typeof value?.updatedAt !== 'number' || !Number.isFinite(value.updatedAt) || typeof value.qqConnected !== 'boolean'
+      || value.updatedAt < Math.max(startedAt / 1000, now / 1000 - 90) || value.updatedAt > now / 1000 + 5) return null;
+    return value.qqConnected;
+  } catch { return null; }
+  finally { await handle?.close().catch(() => {}); }
+}
 function dashboardURL(config) {
   const dashboard = config.dashboard;
   if (!dashboard || dashboard.enable === false || dashboard.host !== '127.0.0.1' || !Number.isInteger(dashboard.port) || dashboard.port < 1024 || dashboard.port > 65535 || dashboard.ssl?.enable) throw new Error('管理页面需启用本机 HTTP 地址 127.0.0.1；请检查高级配置');
@@ -149,4 +169,4 @@ async function settingsCommand(manager, action, payload) {
   });
 }
 
-module.exports = { ServiceSupervisor, settingsCommand, dashboardURL, portFree, portOpen, preflightPorts, PortConflictError };
+module.exports = { ServiceSupervisor, settingsCommand, dashboardURL, portFree, portOpen, preflightPorts, PortConflictError, readQQConnectionHealth };

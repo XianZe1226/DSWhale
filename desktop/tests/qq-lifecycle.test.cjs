@@ -6,16 +6,16 @@ const path = require('node:path');
 const vm = require('node:vm');
 const { createRequire } = require('node:module');
 
-function harness({ saveFails = false, recovery = {} } = {}) {
+function harness({ saveFails = false, recovery = {}, backendRunning = true, qqRunning = true, loginState = 'online', backendReadyWait, startFails = false } = {}) {
   const file = path.resolve(__dirname, '../main.cjs'), native = createRequire(file);
-  const events = [];
-  const supervisor = { running: true, async stop() { events.push('stop-conversation'); this.running = false; },
-    async start() { events.push('start-conversation'); this.running = true; } };
-  const napcat = { running: true, async stop() { events.push('stop-qq'); this.running = false; },
+  const events = [], snapshots = [];
+  const supervisor = { running: backendRunning, async stop() { events.push('stop-conversation'); this.running = false; },
+    async start() { if (this.running) return; events.push('start-conversation'); if(startFails)throw Error('synthetic backend failure'); await backendReadyWait; this.running = true; } };
+  const napcat = { running: qqRunning, async stop() { events.push('stop-qq'); this.running = false; },
     async start() { if (!this.running) { events.push('launch-qq'); this.running = true; } return this.status(); },
     async configure() { if (this.running) throw Error('cannot reconfigure running QQ'); },
     async wire() { events.push('apply-connection'); return this.status(); },
-    async status() { return { configured: true, externalOnly: false, canStart: true, running: this.running }; } };
+    async status() { return { configured: true, externalOnly: false, canStart: true, running: this.running, loginState: this.running ? loginState : 'stopped', hasSavedLogin: true, connectionConfigured: true, protocolConnected: false }; } };
   const manager = { host: 'synthetic-host', async inspect() { return { installed: true }; },
     async install() { events.push('prepare-backend'); } };
   const electron = { app: { setName() {}, getVersion: () => '0.3.0-alpha.8', requestSingleInstanceLock: () => true,
@@ -27,11 +27,12 @@ function harness({ saveFails = false, recovery = {} } = {}) {
   const context = { require: name => name === 'electron' ? electron : name === './lib/services.cjs' ? fakeServices
     : name === 'node:fs/promises' ? { readdir: async () => { throw Object.assign(Error(), { code: 'ENOENT' }); } } : native(name),
     __dirname: path.dirname(file), process, console, Buffer, setTimeout, clearTimeout };
-  vm.runInNewContext(fs.readFileSync(file, 'utf8') + `;globalThis.hooks={perform,stopAll,set(values){
+  vm.runInNewContext(fs.readFileSync(file, 'utf8') + `;globalThis.hooks={perform,stopAll,publishQQ,getState:()=>state,set(values){
     state.installed=true; manager=values.manager; supervisor=values.supervisor; napcat=values.napcat;
+    window={isDestroyed:()=>false,webContents:{send:(_channel,value)=>values.snapshot(value)}};
     extensions={operation:null,run:async()=>({})};appUpdater={status:async()=>({recovery:values.recovery})};}};`, context);
-  context.hooks.set({ manager, supervisor, napcat, recovery });
-  return { ...context.hooks, events, napcat, supervisor };
+  context.hooks.set({ manager, supervisor, napcat, recovery, snapshot: value => snapshots.push(JSON.parse(JSON.stringify(value))) });
+  return { ...context.hooks, events, snapshots, napcat, supervisor };
 }
 
 test('ordinary conversation stop preserves an already logged-in owned QQ process', async () => {
@@ -87,4 +88,39 @@ test('update recovery still stops QQ when all managed services must remain stopp
   await h.perform('install');
   assert.equal(h.napcat.running, false);
   assert.deepEqual(h.events, ['stop-qq', 'stop-conversation', 'prepare-backend']);
+});
+
+test('startup shows backend readiness before it starts QQ, then shows the actual login-resume wait', async () => {
+  let ready;
+  const wait = new Promise(resolve => { ready = resolve; });
+  const h = harness({ backendRunning: false, qqRunning: false, loginState: 'resuming', backendReadyWait: wait });
+  const pending = h.perform('start');
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(h.getState().startup?.stage, 'starting-conversation');
+  assert.equal(h.events.includes('launch-qq'), false);
+  ready(); await pending;
+  assert.deepEqual(h.events.filter(e => ['start-conversation', 'launch-qq'].includes(e)), ['start-conversation', 'launch-qq']);
+  assert.equal(h.getState().startup.stage, 'resuming');
+  assert.ok(h.snapshots.some(s => s.startup?.stage === 'starting-qq'));
+});
+
+test('starting conversation with an online QQ explicitly reuses that process and waits for the real host connection', async () => {
+  const h = harness({ backendRunning: false, qqRunning: true });
+  await h.perform('start');
+  assert.equal(h.events.includes('launch-qq'), false);
+  assert.equal(h.events.includes('stop-qq'), false);
+  assert.ok(h.snapshots.some(s => s.startup?.stage === 'reusing-qq'));
+  assert.equal(h.getState().startup.stage, 'awaiting-link');
+  h.publishQQ({ running: true, configured: true, loginState: 'online', connectionConfigured: true, protocolConnected: true });
+  assert.equal(h.getState().startup.stage, 'ready');
+  h.publishQQ({ running: true, configured: true, loginState: 'scan-required', connectionConfigured: true, protocolConnected: true });
+  assert.equal(h.getState().startup.stage, 'scan-required', 'stale host health cannot conceal a current login verification request');
+});
+
+test('a failed backend start reports its failed stage without relaunching an existing QQ', async () => {
+  const h = harness({ backendRunning: false, qqRunning: true, startFails: true });
+  await assert.rejects(h.perform('start'), /synthetic backend failure/);
+  assert.equal(h.getState().startup?.stage, 'failed');
+  assert.equal(h.napcat.running, true);
+  assert.equal(h.events.includes('launch-qq'), false);
 });

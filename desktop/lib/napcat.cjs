@@ -85,10 +85,11 @@ async function defaultStopOwned(child) {
 class NapCatManager {
   constructor({ manager, userData, platform = process.platform, assets = officialAssets, getConnection,
     spawn = childProcess.spawn, stopOwned = defaultStopOwned, onChange = () => {}, fetch = globalThis.fetch, runner,
-    session = new NapCatSession(), now = Date.now } = {}) {
+    session = new NapCatSession(), now = Date.now, getProtocolState = async () => null } = {}) {
     this.manager = manager; this.platform = platform; this.assets = assets; this.getConnection = getConnection;
     this.spawn = spawn; this.stopOwned = stopOwned; this.onChange = onChange; this.fetch = fetch; this.runner = runner;
     this.session = session; this.now = now; this.monitor = null; this.livePending = null; this.polling = null; this.startedAt = null; this.stopping = null;
+    this.getProtocolState = getProtocolState;
     this.base = path.resolve(userData ? path.join(userData, 'napcat') : path.join(manager.runtime, 'napcat'));
     this.data = path.join(this.base, 'qq-data'); this.work = path.join(this.base, 'work');
     this.receipt = path.join(this.base, 'receipt.json'); this.child = null; this.starting = null; this.installing = null; this.generation = 0; this.controller = null;
@@ -226,9 +227,10 @@ class NapCatManager {
   async status() {
     const externalOnly = this.platform !== 'win32';
     const state = { supported: ['win32', 'linux'].includes(this.platform), externalOnly, configured: false, isolationApplied: false,
-      version: '', loginState: 'stopped', needsLogin: false, hasSavedLogin: false, needsAccountSelection: false, connectionConfigured: false,
+      version: '', loginState: 'stopped', protocolConnected: null, needsLogin: false, hasSavedLogin: false, needsAccountSelection: false, connectionConfigured: false,
       canStart: false, canInstall: !externalOnly, running: this.running, code: externalOnly ? 'NAP-EXTERNAL' : null,
       nextStep: externalOnly ? '按指南连接外部独立协议端' : '安装官方独立组件或选择已解压的受支持目录', guideURL: GUIDE };
+    try { const protocol = await this.getProtocolState(); state.protocolConnected = typeof protocol === 'boolean' ? protocol : null; } catch {}
     if (this.platform === 'darwin') return state;
     try {
       const record = await this._record(); if (!record) return state;
@@ -237,7 +239,7 @@ class NapCatManager {
       const live = await this._observe();
       state.configured = true; state.version = this.assets.version; state.isolationApplied = await this._isolation(record.folder);
       state.loginState = live.loginState;
-      if (state.loginState === 'scan-required' && resume && Number.isFinite(this.startedAt) && this.now() - this.startedAt < 15000) state.loginState = 'resuming';
+      if (['scan-required', 'unknown'].includes(state.loginState) && Number.isFinite(this.startedAt) && this.now() - this.startedAt < 15000) state.loginState = resume ? 'resuming' : 'connecting';
       state.hasSavedLogin = Boolean(live.account || resume);
       state.needsLogin = state.loginState === 'scan-required'; state.needsAccountSelection = !live.account && !resume && (names.length > 1 || record.needsAccountSelection === true);
       state.connectionConfigured = await this._connectionSaved(live.account || resume);
