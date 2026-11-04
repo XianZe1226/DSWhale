@@ -24,3 +24,25 @@ test('one-action update IPC rejects renderer installer locations and URLs',()=>{
  const {validateRequest}=require('../lib/security.cjs');const shell={mainFrame:{}},event={sender:shell,senderFrame:shell.mainFrame};
  for(const payload of [{file:'C:\\other.exe'},{directory:'D:\\other'},{url:'https://evil.invalid'}])assert.throws(()=>validateRequest(event,shell,'app-update-start',payload));
 });
+
+test('workspace snapshot is read-only and does not run a full health check', async () => {
+  const { Workspace } = require('../lib/workspace.cjs');
+  let healthCalls = 0, backupCalls = 0;
+  const workspace = new Workspace({
+    isInstalled: () => true,
+    operations: { health: async () => { healthCalls += 1; return { checks: [], summary: { requiredFailures: 0, warnings: 0 } }; }, backups: async () => { backupCalls += 1; return []; } },
+    appUpdater: { status: async () => ({ phase: 'idle' }) },
+    napcat: { status: async () => ({ running: false }) },
+    getQQStatus: async () => ({ running: false }),
+    preferences: { read: async () => ({ tray: false, startAtLogin: false, resumeAfterWake: false }) },
+  });
+  const snapshot = await workspace.perform('workspace-status');
+  assert.equal(healthCalls, 0);
+  assert.equal(backupCalls, 1);
+  assert.equal(snapshot.health, null);
+  await workspace.perform('health-check');
+  assert.equal(healthCalls, 1);
+  const full = await workspace.status();
+  assert.equal(healthCalls, 2);
+  assert.ok(full.health);
+});

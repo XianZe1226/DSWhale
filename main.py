@@ -31,13 +31,19 @@ class OwnerOnly(filter.CustomFilter):
     settings = Settings()
 
     def filter(self, event: AstrMessageEvent, cfg: AstrBotConfig) -> bool:
-        if self.settings.qq_connection_mode == "official" and not is_official_c2c(event):
+        channel = event.get_platform_name()
+        # Official C2C ownership requires provenance: a channel DM or a forged
+        # platform event must never inherit the bound OpenID.
+        if channel == "qq_official" and not is_official_c2c(event):
             return False
-        return self.settings.matches(
-            event.get_sender_id(),
-            event.unified_msg_origin,
-            private=event.is_private_chat(),
-            platform_type=event.get_platform_name(),
+        return (
+            self.settings.binding_for(
+                event.get_sender_id(),
+                event.unified_msg_origin,
+                private=event.is_private_chat(),
+                platform_type=channel,
+            )
+            is not None
         )
 
 
@@ -166,24 +172,39 @@ class DSWhale(Star):
     @fish.command("whoami")
     async def whoami(self, event: AstrMessageEvent):
         settings = self.companion.settings
-        if settings.qq_connection_mode == "official" and not is_official_c2c(event):
+        channel = event.get_platform_name()
+        if channel == "qq_official" and not is_official_c2c(event):
             yield event.plain_result(
                 "请从 QQ 消息列表与官方机器人私聊发送此命令，频道私信不能用于主人绑定。"
             )
             event.stop_event()
             return
-        if event.is_private_chat() and (
-            not settings.owner_id or event.get_sender_id() == settings.owner_id
-        ):
-            if settings.qq_connection_mode == "official":
-                remember_c2c_scope(self.companion.store.path.parent, event)
+        if not event.is_private_chat():
+            event.stop_event()
+            return
+        binding = settings.binding_for(
+            event.get_sender_id(),
+            event.unified_msg_origin,
+            private=True,
+            platform_type=channel,
+        )
+        if channel == "qq_official":
+            # Hash evidence only; it never binds or grants anything by itself.
+            remember_c2c_scope(self.companion.store.path.parent, event)
+        if binding is None:
+            hint = (
+                "请将本会话填入官方机器人私聊绑定，再保存设置。"
+                if channel == "qq_official"
+                else "请在插件配置填写 owner_qq 和 owner_umo，再重载插件。"
+            )
+            yield event.plain_result(
+                f"当前用户标识：{event.get_sender_id()}\n本会话：{event.unified_msg_origin}\n{hint}"
+            )
+        else:
             yield event.plain_result(
                 f"当前用户标识：{event.get_sender_id()}\n本会话：{event.unified_msg_origin}\n"
-                + (
-                    "请将本会话填入官方机器人私聊绑定，再保存设置。"
-                    if settings.qq_connection_mode == "official"
-                    else "请在插件配置填写 owner_qq 和 owner_umo，再重载插件。"
-                )
+                f"已绑定为{('官方机器人' if binding.channel == 'official' else '普通 QQ 小号')}主人；"
+                "命令与记忆只作用于此会话。"
             )
         event.stop_event()
 
@@ -199,7 +220,8 @@ class DSWhale(Star):
     @fish.command("start")
     async def start(self, event: AstrMessageEvent):
         if self.companion.authorized(event):
-            self.companion.store.set_paused(event.unified_msg_origin, False)
+            for scope in self._bound_scopes(event):
+                self.companion.store.set_paused(scope, False)
             await self.companion.start_bili()
             yield event.plain_result(
                 "已解除暂停。"
@@ -214,7 +236,8 @@ class DSWhale(Star):
     @fish.command("pause")
     async def pause(self, event: AstrMessageEvent):
         if self.companion.authorized(event):
-            self.companion.store.set_paused(event.unified_msg_origin, True)
+            for scope in self._bound_scopes(event):
+                self.companion.store.set_paused(scope, True)
             await self.companion.pause_bili()
             yield event.plain_result("主动聊天与自动看视频已暂停；普通聊天仍可使用。")
         event.stop_event()
@@ -260,11 +283,16 @@ class DSWhale(Star):
                 yield event.plain_result("操作未完成或已经处理；不会自动重复发送，请核对平台结果。")
         event.stop_event()
 
+    def _bound_scopes(self, event: AstrMessageEvent):
+        scopes = [binding.umo for binding in self.companion.settings.owner_bindings]
+        return scopes or [event.unified_msg_origin]
+
     @fish.command("watch")
     async def watch(self, event: AstrMessageEvent, url: str):
         if self.companion.authorized(event):
             try:
-                text = await self.companion.watch(url)
+                binding = self.companion.binding_for(event)
+                text = await self.companion.watch(url, scope=binding.umo if binding else None)
             except Exception as error:
                 text = f"这次没能读取视频（{type(error).__name__}）。请检查标准链接、视频长度、登录和图片模型配置。"
             yield event.plain_result(text)
@@ -308,8 +336,9 @@ class DSWhale(Star):
             url(string): HTTPS 标准视频页面地址。
         """
         self.companion.require_owner(event)
+        binding = self.companion.binding_for(event)
         try:
-            return await self.companion.watch(url)
+            return await self.companion.watch(url, scope=binding.umo if binding else None)
         except Exception as error:
             return f"视频未读取成功（{type(error).__name__}），不要声称已经看过。请检查标准链接、登录和图片模型。"
 

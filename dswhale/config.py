@@ -5,6 +5,8 @@ from dataclasses import dataclass, fields
 from datetime import datetime
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
+from . import qq_routing
+
 
 @dataclass(frozen=True)
 class Settings:
@@ -12,6 +14,8 @@ class Settings:
     owner_umo: str = ""
     qq_connection_mode: str = "napcat"
     official_owner_umo: str = ""
+    qq_default_delivery: str = ""
+    config_migration_version: int = 0
     proactive_enabled: bool = False
     timezone: str = "Asia/Shanghai"
     quiet_start: str = "23:00"
@@ -67,10 +71,8 @@ class Settings:
                 or not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", parts[2])
             ):
                 raise ValueError("官方机器人绑定必须是 /fish whoami 返回的完整私聊会话 ID")
-        if self.qq_connection_mode == "official" and (
-            self.qq_signature_enabled or self.qzone_enabled
-        ):
-            raise ValueError("QQ 官方接口不支持修改个人 QQ 签名或发表 QQ 空间")
+        if self.qq_default_delivery not in {"", *qq_routing.CHANNELS}:
+            raise ValueError("主动消息默认渠道无效")
         try:
             ZoneInfo(self.timezone)
         except (ZoneInfoNotFoundError, ValueError) as exc:
@@ -138,30 +140,52 @@ class Settings:
         return start <= minute < end if start < end else minute >= start or minute < end
 
     @property
-    def owner_scope(self):
-        return self.official_owner_umo if self.qq_connection_mode == "official" else self.owner_umo
-
-    @property
-    def owner_id(self):
-        return (
-            self.official_owner_umo.rsplit(":", 1)[-1]
-            if self.qq_connection_mode == "official" and self.official_owner_umo
-            else self.owner_qq
-            if self.qq_connection_mode == "napcat"
-            else ""
+    def owner_bindings(self):
+        """All valid bindings, independent of which channel is the default."""
+        return qq_routing.build_bindings(
+            owner_qq=self.owner_qq,
+            owner_umo=self.owner_umo,
+            official_owner_umo=self.official_owner_umo,
         )
 
     @property
+    def delivery_binding(self):
+        """The binding used for proactive activity, or None when unavailable."""
+        return qq_routing.select_delivery(
+            self.owner_bindings,
+            default=self.qq_default_delivery,
+            legacy_mode=self.qq_connection_mode,
+        )
+
+    @property
+    def owner_scope(self):
+        binding = self.delivery_binding
+        return binding.umo if binding else ""
+
+    @property
+    def owner_id(self):
+        binding = self.delivery_binding
+        return binding.user_id if binding else ""
+
+    @property
     def adapter_name(self):
-        return "qq_official" if self.qq_connection_mode == "official" else "aiocqhttp"
+        binding = self.delivery_binding
+        return binding.adapter_name if binding else "aiocqhttp"
+
+    def binding_for(self, sender, scope, *, private, platform_type):
+        """Resolve a passive event's binding; default delivery is irrelevant here."""
+        return qq_routing.match_binding(
+            self.owner_bindings,
+            sender,
+            scope,
+            private=private,
+            platform_type=platform_type,
+        )
 
     def matches(
         self, sender: str, scope: str, *, private: bool, platform_type: str = "aiocqhttp"
     ) -> bool:
-        return bool(
-            self.owner_scope
-            and private
-            and str(sender) == self.owner_id
-            and scope == self.owner_scope
-            and platform_type == self.adapter_name
+        return (
+            self.binding_for(sender, scope, private=private, platform_type=platform_type)
+            is not None
         )

@@ -71,13 +71,22 @@ def factory(tmp_path):
         return httpx.Response(200, text='_Callback({"code":0,"tid":"post-1"});')
 
     def make(*, enabled=True, handler=response, path=None, require_owner=None, **kwargs):
+        binding_settings = Settings.from_mapping(
+            {
+                "owner_qq": "123",
+                "owner_umo": SCOPE,
+                "qq_signature_enabled": enabled,
+                "qzone_enabled": enabled,
+            }
+        )
         settings = SimpleNamespace(
             owner_qq="123",
             owner_umo=SCOPE,
             timezone="Asia/Shanghai",
             qq_signature_enabled=enabled,
             qzone_enabled=enabled,
-            matches=Settings(owner_qq="123", owner_umo=SCOPE).matches,
+            matches=binding_settings.matches,
+            binding_for=binding_settings.binding_for,
         )
         social = importlib.import_module("dswhale.social")
         obj = social.SocialActions(

@@ -5,8 +5,9 @@
 })(typeof globalThis === 'object' ? globalThis : this, function () {
   'use strict';
   const workspaceActions = new Set(['workspace-status','health-check','backup-list','backup-restore','backup-delete','diagnostics-export','app-update-check','app-update-start','app-update-download','app-update-install','app-update-rollback','napcat-install','napcat-configure','napcat-wire','napcat-stop','napcat-guide','napcat-login-code','preferences-save']);
-  const noPayloadActions = new Set(['app-update-start','workspace-status','health-check','backup-list','diagnostics-export','app-update-download','app-update-install','napcat-install','napcat-configure','napcat-wire','napcat-stop','napcat-guide','napcat-login-code']);
-  const actions = new Set(['inspect', 'install', 'start', 'stop', 'open-panel', 'home', 'settings-get', 'settings-save', 'open-data', 'backup', 'restore', 'initial-login', 'extensions-status', 'extension-check', 'extension-update', 'extension-rollback',...workspaceActions]);
+  const concurrentReadActions = new Set(['settings-get','workspace-status','backup-list','connections-status','settings-history']);
+  const noPayloadActions = new Set(['app-update-start','settings-history','connections-status','workspace-status','health-check','backup-list','diagnostics-export','app-update-download','app-update-install','napcat-install','napcat-configure','napcat-wire','napcat-stop','napcat-guide','napcat-login-code']);
+  const actions = new Set(['inspect', 'install', 'start', 'stop', 'open-panel', 'home', 'settings-get', 'settings-save', 'open-data', 'backup', 'restore', 'initial-login', 'extensions-status', 'extension-check', 'extension-update', 'extension-rollback','connections-status','connection-change','connection-confirm','settings-history','settings-restore-field',...workspaceActions]);
   const panels = new Set(['astrbot', 'models', 'memory', 'bilibili', 'qq', 'napcat']);
   const extensionIds = new Set(['memory', 'memes']);
   const extensionActions = new Set(['extension-check', 'extension-update', 'extension-rollback']);
@@ -19,20 +20,63 @@
   function escapeHTML(value) {
     return String(value ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
   }
+  const settingsFields = new Set(['qqConnectionMode','officialOwnerUMO','dashboardPort','ownerQQ','platformId','onebotPort','onebotToken','biliEnabled','proactiveEnabled','signatureEnabled','qzoneEnabled','defaultDelivery']);
+  const settingsSwitches = new Set(['biliEnabled','proactiveEnabled','signatureEnabled','qzoneEnabled']);
   function settingsPayload(value) {
-    const port = Number(value.onebotPort);
-    const dashboardPort=Number(value.dashboardPort??6185);
-    if ([port,dashboardPort].some(p=>!Number.isInteger(p)||p<1024||p>65535)) throw new Error('端口应为 1024–65535 之间的整数。');
-    if(port===dashboardPort)throw new Error('OneBot 与控制台端口不能相同。');
-    return { ...(value.qqConnectionMode!==undefined?{qqConnectionMode:value.qqConnectionMode}:{}),...(value.officialOwnerUMO!==undefined?{officialOwnerUMO:String(value.officialOwnerUMO||'').trim()}:{}),ownerQQ: String(value.ownerQQ ?? '').trim(), platformId: String(value.platformId ?? '').trim(), onebotPort: port, dashboardPort, onebotToken: String(value.onebotToken ?? ''), biliEnabled: Boolean(value.biliEnabled), proactiveEnabled: Boolean(value.proactiveEnabled), signatureEnabled: value.signatureEnabled === true, qzoneEnabled: value.qzoneEnabled === true };
+    // Only serialize fields the caller actually supplied. Missing fields are not
+    // user intent: they must never become false/'' defaults in a save request.
+    if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('设置内容无效。');
+    const payload = {};
+    for (const key of Object.keys(value)) {
+      if (!settingsFields.has(key) || value[key] === undefined) continue;
+      const item = value[key];
+      if (key === 'qqConnectionMode') {
+        if (!['napcat', 'official'].includes(item)) throw new Error('QQ 接入方式无效。');
+        payload[key] = item;
+      } else if (key === 'defaultDelivery') {
+        if (!['', 'napcat', 'official'].includes(item)) throw new Error('主动消息默认渠道无效。');
+        payload[key] = item;
+      } else if (key === 'officialOwnerUMO' || key === 'ownerQQ' || key === 'onebotToken') {
+        payload[key] = String(item ?? '').trim();
+      } else if (key === 'platformId') {
+        payload[key] = String(item ?? '').trim();
+      } else if (key === 'onebotPort' || key === 'dashboardPort') {
+        const port = Number(item);
+        if (!Number.isInteger(port) || port < 1024 || port > 65535) throw new Error('端口应为 1024–65535 之间的整数。');
+        payload[key] = port;
+      } else if (settingsSwitches.has(key)) {
+        if (typeof item !== 'boolean') throw new Error('开关值无效。');
+        payload[key] = item;
+      }
+    }
+    if (payload.onebotPort !== undefined && payload.dashboardPort !== undefined && payload.onebotPort === payload.dashboardPort) throw new Error('OneBot 与控制台端口不能相同。');
+    return payload;
+  }
+  function settingsComparable(value) {
+    const normalized = settingsDefaults(value || {});
+    return { ownerQQ: String(normalized.ownerQQ ?? '').trim(), platformId: String(normalized.platformId ?? '').trim(), onebotPort: Number(normalized.onebotPort), dashboardPort: Number(normalized.dashboardPort), onebotToken: String(normalized.onebotToken ?? ''), qqConnectionMode: normalized.qqConnectionMode || 'napcat', officialOwnerUMO: String(normalized.officialOwnerUMO ?? '').trim(), defaultDelivery: normalized.defaultDelivery || '', ...Object.fromEntries([...settingsSwitches].map(key => [key, normalized[key] === true])) };
+  }
+  function settingsPatch(value, baseline) {
+    const payload = settingsPayload(value);
+    const before = settingsComparable(baseline);
+    const patch = {};
+    for (const [key, next] of Object.entries(payload)) {
+      if (String(before[key] ?? '') === String(next)) continue;
+      if (typeof before[key] === 'boolean' && before[key] === next) continue;
+      if (typeof before[key] !== 'boolean' && typeof next !== 'boolean' && before[key] === next) continue;
+      patch[key] = next;
+    }
+    return patch;
   }
   function connectionViewModel(data) {
     const state = data.state || {}, qq = data.workspace?.napcat;
+    const configuredMode = data.settings?.qqConnectionMode || state.qqConnectionMode || state.setup?.qqConnectionMode || 'napcat';
+    const viewing = ['napcat', 'official'].includes(data.connectionTab) ? data.connectionTab : configuredMode;
     const view = (stage, title, description, badge, tone, action = '', actionLabel = '') =>
       ({ stage, title, description, badge, tone, action, actionLabel, ...(action === 'open-panel' ? { panel: 'napcat' } : {}) });
     if (data.workspace?.appUpdate?.recovery?.servicesMustRemainStopped) return view('recovery', '先完成应用更新', '当前更新或恢复尚未完成，请先处理应用设置中的提示。', '等待恢复', 'warn', 'route-settings', '查看恢复步骤');
     if (!state.installed || state.platform?.supported === false) return view('environment', '先准备运行环境', '环境准备完成后，再连接 QQ。已有配置与登录数据会保留。', '尚未准备', '', 'route-environment', '准备运行环境');
-    const official=(data.settings?.qqConnectionMode||state.qqConnectionMode||state.setup?.qqConnectionMode)==='official';
+    const official = viewing === 'official';
     if(official){
       if(state.startup?.stage==='starting-conversation')return view('official-starting','正在启动对话服务','服务准备好后会连接官方网关。','正在启动','working');
       if(!state.running)return view('official-stopped','启动官方机器人','启动对话服务与官方接口，不安装或启动 NapCat，也不修改个人 QQ。','尚未启动','','start','启动');
@@ -40,7 +84,10 @@
       if(!configured)return {...view('official-setup','创建或连接 QQ 官方机器人','在内置控制台扫码创建，或填写已有机器人的 AppID 与 AppSecret。','待配置','','open-panel','配置官方机器人'),panel:'qq'};
       const bound=data.settings?!!data.settings.officialOwnerUMO:state.setup?.ownerConfigured;
       if(!bound)return view('official-owner','绑定你的官方私聊','用个人 QQ 私聊机器人发送 /fish whoami，复制完整“本会话”到下方。不要填写普通 QQ 号码。','待绑定','','save-settings','保存私聊绑定');
-      if(qq?.protocolConnected===true){
+      const officialConnection=(data.connections?.channels||[]).find(item=>item.channel==='official');
+      const officialHealth=data.workspace?.official;
+      const officialConnected=officialHealth && typeof officialHealth.protocolConnected==='boolean' ? officialHealth.protocolConnected===true : (officialConnection?.protocolConnected===true || officialConnection?.health==='connected');
+      if(officialConnected){
         if(state.setup?.modelConfigured===false)return view('model','配置聊天模型','官方接口已连接，接下来选择聊天模型。','QQ 已连接','good','route-intelligence','配置模型');
         return view('ready','QQ 官方机器人已连接','已确认官方网关连接。请用自己的 QQ 给机器人发一条消息，检查模型回复。','QQ 已连接','good');
       }
@@ -54,8 +101,12 @@
     }[state.startup?.stage];
     if (startup) return view(state.startup.stage, ...startup, '正在启动', 'working');
     if (!qq) return view('checking', '正在检查 QQ 连接', '读取已有配置和当前连接状态。', '检查中', 'working', 'workspace-status', '检查连接状态');
-    const ownerSaved = state.setup?.ownerConfigured || /^[1-9]\d{4,19}$/.test(data.settings?.ownerQQ || '');
+    const ownerSaved = data.settings ? /^[1-9]\d{4,19}$/.test(data.settings.ownerQQ || '') : state.setup?.ownerConfigured;
     if (!ownerSaved && data.settings) return view('owner', '先填写你的 QQ 号', '这是接收消息的账号。机器人小号将在下一步单独登录。', '首次设置', '', 'save-settings', '保存并继续');
+    const smallAccount = data.connections?.channels?.find(entry => entry.channel === 'napcat');
+    if (smallAccount?.platformEnabled === false && smallAccount.configured && !smallAccount.targetIssue) {
+      return { ...view('connection-disabled', '先启用 QQ 小号连接', '启用连接后，再准备独立组件并登录机器人小号。', '尚未启用', '', 'connection-change', '启用 QQ 小号连接'), channel: 'napcat', enabled: true };
+    }
     if (qq.code && qq.code !== 'NAP-EXTERNAL' && qq.code !== 'EXTERNAL_REQUIRED') return view('issue', 'QQ 连接需要检查', '已有登录数据会保留。请先查看连接选项，不必反复安装或扫码。', '需要处理', 'warn', 'show-connection-options', '查看连接选项');
     const managed = qq.configured && !qq.externalOnly;
     const onlineProof = state.running && qq.protocolConnected === true && (!managed || qq.running && !['scan-required', 'offline'].includes(qq.loginState));
@@ -79,23 +130,25 @@
   }
   function createController({ bridge, preview = false } = {}) {
     const available = !!bridge && typeof bridge.invoke === 'function' && typeof bridge.onState === 'function';
-    let data = { mode: available ? 'desktop' : preview ? 'preview' : 'unavailable', pending: '', pendingExtension: '', error: '', retry: null, settings: null, extensions: null, extensionChecks: { memory: false, memes: false }, workspaceLoaded:false, workspace:{health:null,backups:[],appUpdate:null,napcat:null,preferences:preferencesPayload(),diagnosticFiles:[]}, notice: '', state: { version: '', platform: { label: '正在读取系统信息', supported: true }, phase: 'idle', installed: false, running: false, components: [], setup: {}, panel: '' } };
+    let data = { mode: available ? 'desktop' : preview ? 'preview' : 'unavailable', pending: '', pendingExtension: '', error: '', retry: null, settings: null, extensions: null, extensionChecks: { memory: false, memes: false }, workspaceLoaded:false, connectionTab: '', connections:null, connectionPreview:null, settingsHistory:null, workspace:{health:null,backups:[],appUpdate:null,napcat:null,preferences:preferencesPayload(),diagnosticFiles:[]}, notice: '', state: { version: '', platform: { label: '正在读取系统信息', supported: true }, phase: 'idle', installed: false, running: false, components: [], setup: {}, panel: '' } };
     const subscribers = new Set();
     let unsubscribe;
+    let activeReads = 0;
     const emit = () => subscribers.forEach(callback => callback(data));
     function mergeWorkspace(next) {
       if(!next||typeof next!=='object'||Array.isArray(next))throw new Error('未能读取工作空间状态，请重试。');
-      for(const key of ['health','backups','appUpdate','napcat','diagnosticFiles'])if(Object.hasOwn(next,key))data.workspace[key]=next[key];
+      for(const key of ['health','backups','appUpdate','napcat','official','diagnosticFiles'])if(Object.hasOwn(next,key))data.workspace[key]=next[key];
       if(Object.hasOwn(next,'preferences'))data.workspace.preferences=preferencesPayload(next.preferences);
     }
     function merge(next) {
       if (!next || typeof next !== 'object') return;
-      const {workspace,appUpdate,...state}=next;if(workspace)mergeWorkspace(workspace);
+      const {workspace,appUpdate,connections,...state}=next;if(workspace)mergeWorkspace(workspace);
       if(Object.hasOwn(next,'appUpdate'))mergeWorkspace({appUpdate});
+      if(Object.hasOwn(next,'connections'))data.connections=connections||null;
       data.state = { ...data.state, ...state, platform: { ...data.state.platform, ...state.platform }, setup: { ...data.state.setup, ...state.setup } };
     }
     if (!available && preview) {
-      merge({ version: '0.3.0a10', platform: { id: 'darwin-arm64', label: 'macOS · Apple Silicon', supported: true }, components: [
+      merge({ version: '0.3.0a11', platform: { id: 'darwin-arm64', label: 'macOS · Apple Silicon', supported: true }, components: [
         { id: 'python', label: 'Python', version: '3.12', status: 'missing', detail: '将安装到独立环境' },
         { id: 'node', label: 'Node.js', version: '22 LTS', status: 'missing', detail: '用于扩展与网页能力' },
         { id: 'ffmpeg', label: 'FFmpeg', version: '6+', status: 'missing', detail: '音频与视频处理' },
@@ -121,7 +174,9 @@
       }
       if(action==='app-update-rollback')payload={restoreData:payload?.restoreData===true,confirmDataRestore:payload?.confirmDataRestore===true};
       if (!available) throw new Error(preview ? '界面预览为只读模式，请在桌面应用中执行操作。' : '请在 DSWhale 桌面应用中执行操作。');
-      if (data.pending) throw new Error('上一项操作仍在进行，请稍候。');
+      const readOnly = concurrentReadActions.has(action);
+      if (data.pending && (!readOnly || !concurrentReadActions.has(data.pending))) throw new Error('上一项操作仍在进行，请稍候。');
+      if (!readOnly && activeReads > 0) throw new Error('上一项操作仍在进行，请稍候。');
       if(action==='app-update-start'&&(!data.state.installed||!(data.workspace.appUpdate?.canDownload||data.workspace.appUpdate?.canInstall)))throw new Error('请先准备环境并检查应用更新。');
       if(action==='app-update-download'&&data.workspace.appUpdate?.canDownload!==true)throw new Error('请先检查应用更新，或继续未完成的下载。');
       if(action==='app-update-install'&&(!data.state.installed||data.workspace.appUpdate?.canInstall!==true))throw new Error('请先准备环境并下载经过校验的应用安装包。');
@@ -131,15 +186,29 @@
       if(action==='napcat-install'&&(data.state.platform.id!=='win32-x64'||data.workspace.napcat?.supported!==true))throw new Error('当前平台请连接已有的外部 QQ 环境。');
       if (action === 'extension-update' && (!data.extensionChecks[payload.id] || data.extensions?.[payload.id]?.canUpdate !== true)) throw new Error('请先检查插件更新，确认可安装的版本。');
       if (action === 'extension-rollback' && data.extensions?.[payload.id]?.canRollback !== true) throw new Error('当前没有可回退的插件备份。');
-      data.pending = action;
-      data.pendingExtension = extensionActions.has(action) ? payload.id : '';
+      if (readOnly) activeReads += 1;
+      else {
+        data.pending = action;
+        data.pendingExtension = extensionActions.has(action) ? payload.id : '';
+      }
       data.error = '';
       data.notice = '';
       if (action === 'extension-check') data.extensionChecks[payload.id] = false;
       emit();
       let retryOverride;
       try {
-        if (action === 'settings-save') payload = settingsPayload(payload);
+        if (action === 'settings-save') {
+          if (!payload || typeof payload !== 'object' || Array.isArray(payload)) throw new Error('设置请求无效。');
+          const envelope = Object.hasOwn(payload, 'patch') ? payload : { patch: payload };
+          if (Object.hasOwn(payload, 'patch')) {
+            const keys = Object.keys(payload).sort().join(',');
+            if (keys !== 'patch' && keys !== 'expectedRevision,patch') throw new Error('设置请求无效。');
+            if (Object.hasOwn(payload, 'expectedRevision') && (typeof payload.expectedRevision !== 'string' || !/^[a-f0-9]{8,64}$/.test(payload.expectedRevision))) throw new Error('设置修订标识无效。');
+          }
+          const patch = settingsPayload(envelope.patch || {});
+          if (!Object.keys(patch).length) throw new Error('没有需要保存的修改。');
+          payload = { patch, ...(envelope.expectedRevision !== undefined ? { expectedRevision: envelope.expectedRevision } : {}) };
+        }
         if(action==='preferences-save')payload=preferencesPayload(payload);
         const result = await bridge.invoke(action, payload);
         if (result && typeof result === 'object' && result.error) throw new Error(String(result.error));
@@ -156,8 +225,17 @@
           if(action==='backup-restore'){data.settings=null;data.extensions=null;data.extensionChecks={memory:false,memes:false};}
           if(action==='napcat-wire')data.notice='OneBot 连接设置已更新，请检查连接状态。';
         }
-        else if (action === 'settings-get') data.settings = settingsDefaults(result);
-        else if (action === 'settings-save') { if (result && 'ownerQQ' in result) data.settings = settingsDefaults(result); else data.settings = settingsDefaults({ ...data.settings, ...payload }); data.notice = '设置已保存。'; }
+        else if (action === 'settings-get') { data.settings = settingsDefaults(result); if (!data.connectionTab) data.connectionTab = ['napcat', 'official'].includes(result?.qqConnectionMode) ? result.qqConnectionMode : 'napcat'; }
+        else if (action === 'connections-status') { data.connections = result?.connections || null; }
+        else if (action === 'settings-history') { data.settingsHistory = result && typeof result === 'object' ? result : null; }
+        else if (action === 'settings-restore-field') { data.notice = '设置项已恢复。'; }
+        else if (action === 'connection-change') { if (result?.connections) data.connections = result.connections; data.connectionPreview = result?.plan && !result.plan.noop ? result.plan : null; data.notice = result?.plan?.noop ? '该连接状态没有变化。' : ''; }
+        else if (action === 'connection-confirm') { data.connectionPreview = null; if (result?.connections) data.connections = result.connections; data.notice = '连接设置已更新。'; }
+        else if (action === 'settings-save') {
+          if (result && 'ownerQQ' in result) data.settings = settingsDefaults(result);
+          else data.settings = settingsDefaults({ ...data.settings, ...(payload?.patch || {}) });
+          data.notice = result?.changed === false ? '设置没有变化，未写入。' : '设置已保存。';
+        }
         else if ((action === 'extensions-status' || extensionActions.has(action)) && !result?.canceled) {
           const next = extensionsStatus(result);
           const wasInstalled = data.extensions?.[payload?.id]?.installed;
@@ -187,17 +265,25 @@
       } catch (error) {
         data.error = error instanceof Error ? error.message : String(error);
         // Never retain a settings payload containing a local access token in retry metadata.
-        data.retry = retryOverride||(['settings-save','backup-restore','backup-delete','app-update-start','app-update-rollback'].includes(action) ? null : { action, payload });
+        data.retry = retryOverride||(['settings-save','backup-restore','backup-delete','app-update-start','app-update-rollback','connection-change','connection-confirm','settings-restore-field'].includes(action) ? null : { action, payload });
         throw error;
-      } finally { data.pending = ''; data.pendingExtension = ''; emit(); }
+      } finally {
+        if (readOnly) activeReads -= 1;
+        else { data.pending = ''; data.pendingExtension = ''; }
+        emit();
+      }
     }
     return {
       get: () => data,
+      invalidateSettingsHistory() { data.settingsHistory = null; },
+      dismissConnectionPreview() { if (data.connectionPreview) { data.connectionPreview = null; emit(); } },
+      setConnectionTab(tab) { if (!['napcat', 'official'].includes(tab)) throw new Error('连接页签无效。'); if (data.connectionTab === tab) return; data.connectionTab = tab; emit(); },
+
       subscribe(callback) { subscribers.add(callback); return () => subscribers.delete(callback); },
       async init() { if (!available) { emit(); return; } unsubscribe = bridge.onState(next => { merge(next); emit(); }); await act('inspect');await act('workspace-status'); },
       act,
       dispose() { if (typeof unsubscribe === 'function') unsubscribe(); subscribers.clear(); },
     };
   }
-  return { createController, escapeHTML, settingsPayload,preferencesPayload,connectionViewModel };
+  return { createController, escapeHTML, settingsPayload, settingsPatch, preferencesPayload, connectionViewModel };
 });

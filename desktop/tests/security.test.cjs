@@ -31,3 +31,44 @@ test('same-origin plugin popups stay in the current console; external popups are
   assert.equal(consolePopupTarget(base + 'api/plugin/pages/memory', base), base + 'api/plugin/pages/memory');
   for (const url of ['https://untrusted.example/', 'http://127.0.0.1:6099/', 'file:///private/file', 'javascript:alert(1)']) assert.equal(consolePopupTarget(url, base), null);
 });
+
+test('settings saves accept only allowlisted patches with a bounded revision envelope', () => {
+  const { validateRequest } = require('../lib/security.cjs');
+  const shell = { id: 1, mainFrame: {} };
+  const event = { sender: shell, senderFrame: shell.mainFrame };
+  const ok = payload => validateRequest(event, shell, 'settings-save', payload);
+  const bad = payload => assert.throws(() => validateRequest(event, shell, 'settings-save', payload), /设置无效/);
+  ok({ patch: { biliEnabled: true }, expectedRevision: 'abcdef12' });
+  ok({ patch: { onebotPort: 6199 } });
+  ok({ ownerQQ: '123456789' });
+  bad({ patch: { unknownField: true } });
+  bad({ patch: { biliEnabled: true }, expectedRevision: 'NOT-HEX' });
+  bad({ patch: { biliEnabled: true }, extra: true });
+  bad({ patch: { biliEnabled: true }, expectedRevision: 'abcdef12', extra: 1 });
+  bad({ execute: 'rm -rf /' });
+  bad({ patch: { onebotToken: 'x'.repeat(20000) } });
+  bad(null);
+});
+
+test('the actual default delivery UI payload passes the IPC allowlist', () => {
+  const { validateRequest } = require('../lib/security.cjs');
+  const { settingsPatch } = require('../ui/model.js');
+  const shell = { id: 1, mainFrame: {} };
+  const event = { sender: shell, senderFrame: shell.mainFrame };
+  const patch = settingsPatch({ defaultDelivery: 'official' }, { defaultDelivery: '' });
+  assert.deepEqual(patch, { defaultDelivery: 'official' });
+  assert.doesNotThrow(() => validateRequest(event, shell, 'settings-save', { patch, expectedRevision: 'abcdef12' }));
+  assert.throws(() => validateRequest(event, shell, 'settings-save', { patch: { qqDefaultDelivery: 'official' } }), /设置无效/);
+});
+
+test('settings history and field restore payloads are allowlisted', () => {
+  const { validateRequest } = require('../lib/security.cjs');
+  const shell = { id: 1, mainFrame: {} };
+  const event = { sender: shell, senderFrame: shell.mainFrame };
+  assert.doesNotThrow(() => validateRequest(event, shell, 'settings-history'));
+  const payload = { recordId: '1700000000000000000-abcdef12', field: 'proactiveEnabled', expectedRevision: 'abcdef12' };
+  assert.doesNotThrow(() => validateRequest(event, shell, 'settings-restore-field', payload));
+  assert.throws(() => validateRequest(event, shell, 'settings-restore-field', { ...payload, recordId: '../../x' }), /恢复请求无效/);
+  assert.throws(() => validateRequest(event, shell, 'settings-restore-field', { ...payload, field: 'onebotToken' }), /恢复请求无效/);
+  assert.throws(() => validateRequest(event, shell, 'settings-history', { extra: true }), /不接受额外参数/);
+});

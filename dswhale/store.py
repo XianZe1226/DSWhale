@@ -73,6 +73,31 @@ class Store:
         self.state(scope)
         self.db.execute("UPDATE sessions SET paused=? WHERE scope=?", (paused, scope))
 
+    def count_local_day(self, scopes, local_day, db=None):
+        scopes = tuple(dict.fromkeys(str(scope) for scope in scopes if scope))
+        if not scopes:
+            return 0
+        placeholders = ",".join("?" for _ in scopes)
+        return (
+            (db or self.db)
+            .execute(
+                f"SELECT COUNT(*) FROM activities WHERE scope IN ({placeholders}) AND local_day=?",
+                (*scopes, local_day),
+            )
+            .fetchone()[0]
+        )
+
+    def has_pending(self, scopes, db=None):
+        scopes = tuple(dict.fromkeys(str(scope) for scope in scopes if scope))
+        if not scopes:
+            return False
+        placeholders = ",".join("?" for _ in scopes)
+        return (db or self.db).execute(
+            f"SELECT 1 FROM activities WHERE scope IN ({placeholders}) "
+            "AND status IN ('reserved','queued') LIMIT 1",
+            scopes,
+        ).fetchone() is not None
+
     def activity(self, activity_id: str) -> Activity | None:
         row = self.db.execute("SELECT * FROM activities WHERE id=?", (activity_id,)).fetchone()
         return Activity(**{key: row[key] for key in Activity.__dataclass_fields__}) if row else None

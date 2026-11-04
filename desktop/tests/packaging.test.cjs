@@ -10,6 +10,14 @@ require('app-builder-lib');
 const { PlatformPackager } = require('app-builder-lib/out/platformPackager');
 const { verifyBinary } = require('../../scripts/verify-electron-fuses.cjs');
 
+test('packaged app ships the shared connection and status modules', () => {
+  const config = require('../../electron-builder.cjs');
+  for (const file of ['desktop/lib/qq-connections.cjs', 'desktop/lib/status-cache.cjs', 'desktop/lib/services.cjs', 'desktop/lib/security.cjs']) {
+    assert.ok(config.files.includes(file), file);
+  }
+  assert.ok(config.extraResources.some(item => item.from === 'desktop-resources/backend'));
+});
+
 test('builder startup policy disables inherited Node mode in a real copied Electron binary', async () => {
   const electron = require('electron');
   const source = process.platform === 'darwin'

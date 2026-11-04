@@ -18,44 +18,71 @@ class Scheduler:
             self.settings.max_interval_minutes,
         )
 
-    def human_received(self, now: datetime):
-        self.settings.local_time(now)
-        scope = self.settings.owner_scope
-        self.store.state(scope)
-        self.store.db.execute(
-            "UPDATE sessions SET last_human=?,unanswered=0,next_due=? WHERE scope=?",
-            (now.timestamp(), self._next_due(now), scope),
-        )
+    def _scopes(self, scopes=None):
+        if scopes is None:
+            delivery = self.settings.delivery_binding
+            ordered = ([delivery.umo] if delivery else []) + [
+                binding.umo
+                for binding in self.settings.owner_bindings
+                if not delivery or binding.umo != delivery.umo
+            ]
+        else:
+            ordered = list(scopes)
+        values = tuple(dict.fromkeys(str(scope) for scope in ordered if scope))
+        return values or (self.settings.owner_scope,)
 
-    def reserve(self, now: datetime, *, external_kind: str | None = None) -> Activity | None:
+    def human_received(self, now: datetime, scopes=None):
+        """Any bound channel's human message resets the shared proactive budget."""
+        self.settings.local_time(now)
+        due = self._next_due(now)
+        for scope in self._scopes(scopes):
+            self.store.state(scope)
+            self.store.db.execute(
+                "UPDATE sessions SET last_human=?,unanswered=0,next_due=? WHERE scope=?",
+                (now.timestamp(), due, scope),
+            )
+
+    def reserve(
+        self,
+        now: datetime,
+        *,
+        external_kind: str | None = None,
+        scopes=None,
+        target_scope=None,
+    ) -> Activity | None:
         if external_kind not in {None, "bili-share", "bili-note", "bili-watch"}:
             raise ValueError("Unknown activity kind")
         cfg = self.settings
         local = cfg.local_time(now)
         if not cfg.proactive_enabled or not cfg.owner_scope or cfg.is_quiet(now):
             return None
-        ts, scope = now.timestamp(), cfg.owner_scope
+        scopes = self._scopes(scopes)
+        target = str(target_scope or scopes[0])
+        if target not in scopes:
+            scopes = (target, *scopes)
+        ts = now.timestamp()
         with self.store.transaction() as db:
-            state = self.store.state(scope)
-            if state["paused"] or state["unanswered"] >= cfg.unanswered_limit:
+            states = [self.store.state(scope) for scope in scopes]
+            if any(state["paused"] for state in states):
                 return None
-            if state["next_due"] is None and external_kind is None:
-                db.execute(
-                    "UPDATE sessions SET next_due=? WHERE scope=?", (self._next_due(now), scope)
-                )
+            if max(state["unanswered"] for state in states) >= cfg.unanswered_limit:
                 return None
-            if external_kind is None and ts < state["next_due"]:
+            dues = [state["next_due"] for state in states]
+            if all(due is None for due in dues) and external_kind is None:
+                scheduled = self._next_due(now)
+                for scope in scopes:
+                    db.execute("UPDATE sessions SET next_due=? WHERE scope=?", (scheduled, scope))
                 return None
-            count = db.execute(
-                "SELECT COUNT(*) FROM activities WHERE scope=? AND local_day=?",
-                (scope, local.date().isoformat()),
-            ).fetchone()[0]
-            pending = db.execute(
-                "SELECT 1 FROM activities WHERE scope=? AND status IN ('reserved','queued')",
-                (scope,),
-            ).fetchone()
-            if count >= cfg.daily_limit or pending:
+            if external_kind is None and ts < max(due for due in dues if due is not None):
                 return None
+            if self.store.has_pending(scopes, db=db):
+                return None
+            if (
+                self.store.count_local_day(scopes, local.date().isoformat(), db=db)
+                >= cfg.daily_limit
+            ):
+                return None
+            scope = target
             item = Activity(
                 uuid.uuid4().hex,
                 scope,
@@ -67,8 +94,10 @@ class Scheduler:
                 "INSERT INTO activities VALUES(?,?,?,?,?,?,?,?)",
                 (item.id, scope, item.kind, local.date().isoformat(), item.status, ts, ts, ""),
             )
-            db.execute(
-                "UPDATE sessions SET next_due=?,unanswered=unanswered+1 WHERE scope=?",
-                (self._next_due(now), scope),
-            )
+            scheduled = self._next_due(now)
+            for target in scopes:
+                db.execute(
+                    "UPDATE sessions SET next_due=?,unanswered=unanswered+1 WHERE scope=?",
+                    (scheduled, target),
+                )
             return item

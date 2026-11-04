@@ -96,6 +96,7 @@ class NapCatManager {
     this.base = path.resolve(userData ? path.join(userData, 'napcat') : path.join(manager.runtime, 'napcat'));
     this.data = path.join(this.base, 'qq-data'); this.work = path.join(this.base, 'work');
     this.receipt = path.join(this.base, 'receipt.json'); this.child = null; this.starting = null; this.installing = null; this.generation = 0; this.controller = null;
+    this.identityAccount = ''; this.identityKnown = false; this.identityToken = crypto.randomBytes(16).toString('hex');
   }
   get running() { return Boolean(this.child && this.child.exitCode === null && !this.child.killed); }
   _supported(configure = false) { if (this.platform !== 'win32' && !(configure && this.platform === 'linux')) throw new NapCatError('NAP-EXTERNAL', '此平台使用外部独立协议端连接；请按指南设置，不修改官方 QQ'); }
@@ -229,6 +230,23 @@ class NapCatManager {
     if (!value || !Number.isInteger(value.port) || value.port < 1024 || value.port > 65535 || typeof value.token !== 'string' || value.token.length < 16 || value.token.length > 4096 || /[\r\n\0]/.test(value.token)) throw new NapCatError('NAP-HOST', '请先完成 DSWhale 本机连接端口与安全令牌配置');
     return { url: `ws://127.0.0.1:${value.port}/ws`, token: value.token };
   }
+  async identityRevision({ fresh = true } = {}) {
+    // Opaque per-identity token: a stable account or a stable unknown state keeps
+    // the same token, while an actual login change gets a new one. Raw accounts
+    // never leave this process.
+    if (!this.running) return { token: 'stopped', known: true };
+    let observed = null;
+    try { observed = await this.session.inspect(await this._webui(), { fresh }); } catch {}
+    const account = observed?.loginState === 'online' && /^[1-9]\d{4,19}$/.test(observed?.account || '') ? observed.account : '';
+    const known = Boolean(account);
+    if (account !== this.identityAccount || known !== this.identityKnown) {
+      this.identityAccount = account;
+      this.identityKnown = known;
+      this.identityToken = crypto.randomBytes(16).toString('hex');
+    }
+    return { token: this.identityToken, known };
+  }
+
   async status() {
     const externalOnly = this.platform !== 'win32';
     const state = { supported: ['win32', 'linux'].includes(this.platform), externalOnly, configured: false, isolationApplied: false,

@@ -33,7 +33,12 @@ async function main() {
     if (process.platform !== 'win32') assert.equal((await fs.stat(credentialFile)).mode & 0o777, 0o600);
     const fishPath = path.join(manager.host, 'data/config/astrbot_plugin_dswhale_config.json');
     await fs.mkdir(path.dirname(fishPath), { recursive: true });
-    const synthetic = { persona: 'Synthetic CI companion; no personal information.', owner_qq: '', proactive_enabled: false };
+    const synthetic = {
+      persona: 'Synthetic CI companion; no personal information.',
+      owner_qq: '123456789', owner_umo: 'synthetic-qq:FriendMessage:123456789',
+      proactive_enabled: true, bili_enabled: true, qq_signature_enabled: true, qzone_enabled: true,
+      discover_enabled: true, daily_limit: 0,
+    };
     await fs.writeFile(fishPath, JSON.stringify(synthetic));
     const marker = path.join(manager.host, 'data/plugin_data/synthetic-memory-marker.txt');
     await fs.mkdir(path.dirname(marker), { recursive: true });
@@ -43,7 +48,15 @@ async function main() {
     await fs.writeFile(receipt, JSON.stringify({ ...value, version: '0.0.0' }));
     assert.equal((await manager.inspect()).installed, false);
     assert.equal((await manager.install()).installed, true);
-    assert.deepEqual(JSON.parse(await fs.readFile(fishPath, 'utf8')), synthetic);
+    const upgradedSettings = JSON.parse(await fs.readFile(fishPath, 'utf8'));
+    // Additive migrations and the pinned schema may supply missing fields;
+    // every value that existed before upgrading must remain exactly the same.
+    for (const [key, expected] of Object.entries(synthetic)) assert.deepEqual(upgradedSettings[key], expected, key);
+    assert.equal(upgradedSettings.config_migration_version, 1);
+    const migrationReceipt = JSON.parse(await fs.readFile(path.join(manager.host, 'data/plugin_data/astrbot_plugin_dswhale/config-migration-receipt.json'), 'utf8'));
+    assert.equal(migrationReceipt.migrationVersion, 1);
+    assert.equal(migrationReceipt.sdkVersion, '4.29.3');
+    assert.match(migrationReceipt.schemaSha256, /^[a-f0-9]{64}$/);
     assert.equal(await fs.readFile(marker, 'utf8'), 'synthetic memory survives upgrade');
     assert.deepEqual(await fs.readFile(credentialFile), credentials);
     assert.ok((await fs.readdir(path.join(runtime, 'backups'))).length);
@@ -73,7 +86,7 @@ async function main() {
     assert.equal(updated.memes.canRollback, true);
     phase='extension-rollback';
     assert.equal((await extensions.run('rollback', 'memes')).memes.installed, false);
-    assert.deepEqual(JSON.parse(await fs.readFile(fishPath, 'utf8')), synthetic);
+    assert.deepEqual(JSON.parse(await fs.readFile(fishPath, 'utf8')), upgradedSettings);
     assert.equal(await fs.readFile(marker, 'utf8'), 'synthetic memory survives upgrade');
     console.log('Independent plugin check, installation and rollback verified.');
     console.log('Fresh install and repeated upgrade verified; synthetic data preserved.');

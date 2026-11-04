@@ -221,6 +221,9 @@ class RuntimeManager {
     return platformInfo(process.platform,process.arch,os.release(),distro);
   }
   async _version(command,tool,env) {
+    const key = `${tool}\0${command}`;
+    if (this._versionMemo?.has(key)) return this._versionMemo.get(key);
+    const pending = (async () => {
     try {
       const output=(await runBounded(command,[tool==='ffmpeg'||tool==='ffprobe'?'-version':'--version'],{env})).toString('utf8');
       const media=tool==='ffmpeg'||tool==='ffprobe';
@@ -229,6 +232,10 @@ class RuntimeManager {
         (tool==='python'?first.match(/^Python \d+\.\d+\.\d+(?:[a-zA-Z0-9.+-]*)?$/)?.[0]:first.match(/^v\d+\.\d+\.\d+(?:[a-zA-Z0-9.+-]*)?$/)?.[0])||'未知版本';
       return {version:version.slice(0,120),ok:compatibleVersion(tool,output)};
     }catch{return null;}
+    })();
+    if (!this._versionMemo) this._versionMemo = new Map();
+    this._versionMemo.set(key, pending);
+    return pending;
   }
   async _pythonChoice(env,{includeIncompatible=false}={}) {
     let incompatible=null;
@@ -240,6 +247,7 @@ class RuntimeManager {
     return includeIncompatible?incompatible:null;
   }
   async inspect() {
+    this._versionMemo = new Map();
     const platform=await this._platform(), env=await this.environment(), components=[];
     let expectedVersion='';
     try{expectedVersion=(await fs.readFile(path.join(this.source,'pyproject.toml'),'utf8')).match(/^version\s*=\s*"([0-9][0-9a-z.+-]*)"/m)?.[1]||'';}catch{}

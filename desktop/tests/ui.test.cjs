@@ -5,6 +5,7 @@ const path = require('node:path');
 const vm = require('node:vm');
 const uiPath = path.join(__dirname, '../ui/model.js');
 const load = () => { assert.ok(fs.existsSync(uiPath), 'desktop UI controller exists'); return require(uiPath); };
+const TrueValue = 1;
 
 function connectionData({ state = {}, qq = {}, settings = { ownerQQ: '12345678' }, appUpdate = null } = {}) {
   return { settings, state: { installed: true, running: false, platform: { id: 'win32-x64', supported: true },
@@ -93,13 +94,27 @@ test('actions pass only contracted panel identifiers and preserve error for retr
   assert.equal(c.get().retry.action, 'install');
 });
 
-test('settings-save serializes supported values and excludes hasModels', async () => {
+test('settings payload serializes only supplied fields and excludes hasModels', async () => {
   const { settingsPayload } = load();
   assert.deepEqual(settingsPayload({ ownerQQ: ' 123456 ', platformId: ' qq ', onebotPort: '6199', onebotToken: 'local secret', biliEnabled: true, proactiveEnabled: false, hasModels: true }), {
-    ownerQQ: '123456', platformId: 'qq', onebotPort: 6199, dashboardPort: 6185, onebotToken: 'local secret', biliEnabled: true, proactiveEnabled: false, signatureEnabled: false, qzoneEnabled: false,
+    ownerQQ: '123456', platformId: 'qq', onebotPort: 6199, onebotToken: 'local secret', biliEnabled: true, proactiveEnabled: false,
   });
+  assert.deepEqual(settingsPayload({}), {});
+  assert.equal(settingsPayload({ proactiveEnabled: false }).proactiveEnabled, false);
+  assert.equal('biliEnabled' in settingsPayload({ proactiveEnabled: false }), false);
   assert.throws(() => settingsPayload({ onebotPort: '0' }), /端口/);
   assert.throws(() => settingsPayload({ onebotPort: '6199.5' }), /端口/);
+  assert.throws(() => settingsPayload({ proactiveEnabled: TrueValue }), /开关/);
+});
+
+test('settings patch keeps only fields the user actually changed', () => {
+  const { settingsPatch } = load();
+  const baseline = { ownerQQ: '123456', platformId: 'qq', onebotPort: 6199, dashboardPort: 6185, onebotToken: 'token', proactiveEnabled: true, biliEnabled: false, signatureEnabled: false, qzoneEnabled: false, configRevision: 'abcdef12' };
+  assert.deepEqual(settingsPatch(baseline, baseline), {});
+  assert.deepEqual(settingsPatch({ ...baseline, proactiveEnabled: false }, baseline), { proactiveEnabled: false });
+  assert.deepEqual(settingsPatch({ ...baseline, onebotPort: '6200' }, baseline), { onebotPort: 6200 });
+  assert.deepEqual(settingsPatch({ ownerQQ: ' 123456 ' }, baseline), {});
+  assert.deepEqual(settingsPatch({ ownerQQ: '123456', biliEnabled: false }, { ...baseline, biliEnabled: false }), {});
 });
 
 test('text escaping prevents backend detail from becoming active markup', () => {
@@ -194,8 +209,8 @@ test('social settings default off and survive saving unrelated Bilibili settings
   await c.act('settings-get');
   assert.equal(c.get().settings.signatureEnabled, true);
   assert.equal(c.get().settings.qzoneEnabled, false);
-  await c.act('settings-save', { ...c.get().settings, biliEnabled: true, qzoneEnabled: true });
-  assert.deepEqual(saved, { ownerQQ: '123456', platformId: 'qq', onebotPort: 6199, dashboardPort: 6185, onebotToken: 'token', biliEnabled: true, proactiveEnabled: true, signatureEnabled: true, qzoneEnabled: true });
+  await c.act('settings-save', { patch: { biliEnabled: true, qzoneEnabled: true }, expectedRevision: 'abcdef12' });
+  assert.deepEqual(saved, { patch: { biliEnabled: true, qzoneEnabled: true }, expectedRevision: 'abcdef12' });
 });
 
 test('opening the plugin store reads local status without checking or installing', async () => {
@@ -311,22 +326,25 @@ function renderApp({ screen = 'intelligence', invoke, workspace=workspaceStatus(
   const announcer = { textContent: '' };
   const body = {};
   let markup = '';
+  let htmlWrites = 0;
   let buttons = [];
+  const inputValues = {};
   let document;
   const root = {
     get innerHTML() { return markup; },
     set innerHTML(value) {
+      htmlWrites += 1;
       markup = value;
       document.activeElement = body;
       buttons = [...value.matchAll(/<button\b([^>]*)>/g)].map(([, attrs]) => {
         const attr = key => attrs.match(new RegExp(`(?:^|\\s)${key}="([^"]*)"`))?.[1];
-        return { id: attr('id'), disabled: /\sdisabled(?:\s|$)/.test(attrs), dataset: { action: attr('data-action'), panel: attr('data-panel'), route: attr('data-route'), extension: attr('data-extension'), item:attr('data-item') }, focus() { if (!this.disabled) document.activeElement = this; } };
+        return { id: attr('id'), disabled: /\sdisabled(?:\s|$)/.test(attrs), dataset: { action: attr('data-action'), panel: attr('data-panel'), route: attr('data-route'), extension: attr('data-extension'), item:attr('data-item'), record:attr('data-record'), field:attr('data-field'), channel:attr('data-channel'), enabled:attr('data-enabled') }, focus() { if (!this.disabled) document.activeElement = this; } };
       });
     },
     addEventListener(name, callback) { handlers[name] = callback; },
     querySelectorAll() { return buttons; },
   };
-  document = { body, activeElement: body, getElementById(id) { return id === 'app' ? root : id === 'announcer' ? announcer : id === 'main-content' ? page : buttons.find(button => button.id === id); }, querySelector() { return page; } };
+  document = { body, activeElement: body, getElementById(id) { if (inputValues[id] !== undefined) return { value: inputValues[id], focus() {}, type: 'text' }; return id === 'app' ? root : id === 'announcer' ? announcer : id === 'main-content' ? page : buttons.find(button => button.id === id); }, querySelector() { return page; } };
   const calls = [];
   let stateListener;
   const bridge = { invoke: async (action, payload) => { calls.push([action, payload && JSON.parse(JSON.stringify(payload))]); return action==='workspace-status'?workspace:invoke(action, payload); }, onState: callback => { stateListener = callback; return () => {}; } };
@@ -335,19 +353,24 @@ function renderApp({ screen = 'intelligence', invoke, workspace=workspaceStatus(
     location: { search: `?screen=${screen}` }, URLSearchParams,
   });
   return {
-    calls, html: () => root.innerHTML, announcement: () => announcer.textContent,
+    calls, html: () => root.innerHTML, htmlWrites: () => htmlWrites, announcement: () => announcer.textContent,
     focused: () => document.activeElement?.id,
     focus: (action, id) => buttons.find(button => button.dataset.action === action && button.dataset.extension === id)?.focus(),
     focusItem: (action,item) => buttons.find(button=>button.dataset.action===action&&button.dataset.item===item)?.focus(),
     settle: () => new Promise(resolve => setImmediate(resolve)),
-    click: (action, id, operation) => handlers.click({ target: { closest() { return this; }, dataset: { action, extension: id, operation }, hasAttribute() { return false; } } }),
+    click: (action, id, operation, mode) => handlers.click({ target: { closest() { return this; }, dataset: { action, extension: id, operation, ...(mode ? { mode } : {}) }, hasAttribute() { return false; } } }),
     clickItem: (action, item, operation) => handlers.click({ target: { closest() { return this; }, dataset: { action, item, operation }, hasAttribute() { return false; } } }),
+    clickWithDataset: action => { const button=buttons.find(item=>item.dataset.action===action); assert.ok(button); return handlers.click({target:{...button,closest(){return this;},hasAttribute(){return false;}}}); },
     clickPrimary: () => { const button=buttons.find(button=>button.id==='connection-primary');assert.ok(button,'one clear connection action is present');return handlers.click({target:{...button,closest(){return this;},hasAttribute(){return false;}}}); },
     pushState: value => stateListener(value),
     toggle: (id, open) => { assert.equal(typeof handlers.toggle,'function','expanded sections track their state');handlers.toggle({target:{id,open}}); },
     navigate: route => handlers.click({target:{closest(){return this;},dataset:{route},hasAttribute(){return false;}}}),
     change: (id, checked) => handlers.change({ target: { id, type: 'checkbox', checked, matches() { return true; } } }),
     input: (id, value) => handlers.input({target:{id,type:'text',value,matches(){return true;}}}),
+    setInput: (id, value) => { inputValues[id] = value; },
+    compositionStart: id => handlers.compositionstart({target:{id,closest(){return this;}}}),
+    compositionEnd: id => handlers.compositionend({target:{id,closest(){return this;}}}),
+    clickConnection: (channel, enabled) => handlers.click({ target: { closest() { return this; }, dataset: { action: 'connection-change', channel, enabled }, hasAttribute() { return false; } } }),
     select: (id, value) => handlers.change({target:{id,type:'select-one',value,matches(){return true;}}}),
   };
 }
@@ -369,6 +392,28 @@ test('the previously configured but stopped QQ page has one obvious start action
   await app.clickPrimary();
   assert.equal(app.calls.filter(([action]) => action === 'start').length, 1);
   assert.match(app.html(), /正在恢复已有登录/);
+});
+
+test('a disabled small-account platform offers enablement before installing or starting QQ', async () => {
+  const settings = { ownerQQ: '12345678', napcatBound: true, platformId: 'qq', onebotPort: 6199, dashboardPort: 6185 };
+  const connections = { channels: [{ channel: 'napcat', label: '普通 QQ 小号', platformId: 'qq', platformEnabled: false, configured: true, bound: true, health: 'unknown', targetIssue: '' }] };
+  const app = renderApp({ screen: 'connect', workspace: workspaceStatus({ napcat: { supported: true, configured: false, externalOnly: false, running: false } }), invoke: async action => {
+    if (action === 'inspect') return { installed: true, running: false, platform: { id: 'win32-x64', supported: true }, setup: { ownerConfigured: true } };
+    if (action === 'connections-status' || action === 'connection-change') return { connections };
+    return settings;
+  } });
+  await app.settle();
+  const hero = app.html().match(/<section\b[^>]*id="qq-connection"[\s\S]*?<\/section>/)?.[0];
+  assert.match(hero, /启用 QQ 小号连接/);
+  await app.clickPrimary();
+  assert.deepEqual(app.calls.find(([action]) => action === 'connection-change'), ['connection-change', { channel: 'napcat', enabled: true }]);
+  assert.equal(app.calls.some(([action]) => ['start', 'napcat-install', 'settings-save'].includes(action)), false);
+});
+
+test('an official binding does not replace the small-account owner setup step', () => {
+  const data = connectionData({ state: { setup: { ownerConfigured: true } }, settings: { ownerQQ: '', officialOwnerUMO: 'official:FriendMessage:SYNTHETIC' } });
+  data.connectionTab = 'napcat';
+  assert.equal(load().connectionViewModel(data).stage, 'owner');
 });
 
 test('the connection page follows live mobile confirmation and real connection readiness', async () => {
@@ -428,7 +473,7 @@ test('first-time owner setup guides an empty field without writing settings, the
   await app.clickPrimary();
   const saves=app.calls.filter(([action])=>action==='settings-save');
   assert.equal(saves.length,1);
-  assert.equal(saves[0][1].ownerQQ,'87654321');
+  assert.deepEqual(saves[0][1].patch, { ownerQQ: '87654321' });
   assert.match(app.html(),/准备 QQ 连接/);
 });
 
@@ -480,7 +525,7 @@ test('connection controls save owner-only social choices alongside existing conn
   app.change('signatureEnabled', true);
   app.change('qzoneEnabled', true);
   await app.click('save-settings');
-  assert.deepEqual(app.calls.at(-1), ['settings-save', { ...initial, dashboardPort:6185, signatureEnabled: true, qzoneEnabled: true }]);
+  assert.deepEqual(app.calls.filter(([action]) => action === 'settings-save').at(-1), ['settings-save', { patch: { signatureEnabled: true, qzoneEnabled: true } }]);
 });
 
 test('a failed repeated check disables an old update candidate until checking succeeds', async () => {
@@ -575,8 +620,8 @@ test('workspace action patches preserve other cards and never enter environment 
 
 test('connection ports include dashboard and reject privileged or colliding local ports',()=>{
   const {settingsPayload}=load();
-  assert.equal(settingsPayload({onebotPort:6199}).dashboardPort,6185);
-  assert.equal(settingsPayload({onebotPort:6200,dashboardPort:'6186'}).dashboardPort,6186);
+  assert.deepEqual(settingsPayload({onebotPort:6199}),{onebotPort:6199});
+  assert.deepEqual(settingsPayload({onebotPort:6200,dashboardPort:'6186'}),{onebotPort:6200,dashboardPort:6186});
   assert.throws(()=>settingsPayload({onebotPort:80,dashboardPort:6185}),/端口/);
   assert.throws(()=>settingsPayload({onebotPort:6199,dashboardPort:6199}),/端口/);
 });
@@ -618,7 +663,7 @@ test('settings show networking before install without checking updates or enabli
   assert.match(app.html(),/更新清单.*签名|签名.*更新清单/);
   assert.match(app.html(),/系统签名|系统公证/);
   assert.equal(app.calls.some(([a])=>a.startsWith('app-update-')),false);
-  assert.deepEqual(app.calls,[['inspect',undefined],['workspace-status',undefined]]);
+  assert.deepEqual(app.calls,[['inspect',undefined],['workspace-status',undefined],['settings-get',undefined]]);
 });
 
 test('backup restore and delete require inline review and cancellation never invokes a mutation',async()=>{
@@ -771,6 +816,299 @@ test('official mode offers official setup and exact private binding without NapC
  base.state.running=false;let view=load().connectionViewModel(base);assert.equal(view.action,'start');
  base.state.running=true;view=load().connectionViewModel(base);assert.equal(view.action,'open-panel');assert.equal(view.panel,'qq');
  base.settings.officialConfigured=true;view=load().connectionViewModel(base);assert.equal(view.stage,'official-owner');assert.equal(view.action,'save-settings');
- base.settings.officialOwnerUMO='official-test:FriendMessage:OPAQUE-TEST';base.workspace.napcat.protocolConnected=true;
+ base.settings.officialOwnerUMO='official-test:FriendMessage:OPAQUE-TEST';base.workspace.napcat.protocolConnected=false;base.workspace.official={protocolConnected:true};
  view=load().connectionViewModel(base);assert.equal(view.stage,'ready');assert.doesNotMatch(JSON.stringify(view),/napcat-install|napcat-wire/);
+});
+
+test('viewing the other connection tab is local only and never saves or restarts', async () => {
+  const settings = { ownerQQ: '123456', platformId: 'qq', onebotPort: 6199, dashboardPort: 6185, onebotToken: 'token', qqConnectionMode: 'napcat', biliEnabled: true, proactiveEnabled: true, signatureEnabled: true, qzoneEnabled: true };
+  const qq = { ...connectionData().workspace.napcat, running: true, loginState: 'online', protocolConnected: true };
+  const app = renderApp({ screen: 'connect', workspace: workspaceStatus({ napcat: qq }), invoke: async action => action === 'inspect'
+    ? { installed: true, running: true, platform: { id: 'win32-x64', supported: true }, setup: { ownerConfigured: true, modelConfigured: true } }
+    : settings });
+  await app.settle();
+  const initialCalls = app.calls.length;
+  const mutations = () => app.calls.filter(([action]) => ['settings-save', 'start', 'stop'].includes(action));
+  for (let index = 0; index < 100; index += 1) {
+    await app.click('select-qq-mode', undefined, undefined, index % 2 ? 'napcat' : 'official');
+    await app.settle();
+  }
+  assert.equal(mutations().length, 0);
+  assert.equal(app.calls.length, initialCalls);
+  assert.equal(app.calls.some(([action]) => action === 'settings-save'), false);
+  await app.click('select-qq-mode', undefined, undefined, 'napcat');
+  await app.settle();
+  assert.match(app.html(), /QQ 已在线|QQ 已连接/);
+  assert.match(app.html(), /官方机器人/);
+  assert.match(app.html(), /待配置/);
+});
+
+test('saving an unchanged connection form reports no changes without writing', async () => {
+  const settings = { ownerQQ: '123456', platformId: 'qq', onebotPort: 6199, dashboardPort: 6185, onebotToken: 'token', proactiveEnabled: true };
+  const app = renderApp({ screen: 'connect', workspace: workspaceStatus(), invoke: async action => action === 'inspect'
+    ? { installed: true, running: true, platform: { id: 'win32-x64', supported: true }, setup: { ownerConfigured: true } }
+    : settings });
+  await app.settle();
+  await app.click('save-settings');
+  assert.equal(app.calls.some(([action]) => action === 'settings-save'), false);
+  assert.match(app.announcement(), /没有需要保存的修改/);
+});
+
+test('default delivery is an explicit choice and saves as a one-field patch', async () => {
+  const settings = { ownerQQ: '123456', platformId: 'qq', onebotPort: 6199, dashboardPort: 6185, onebotToken: 'token', officialOwnerUMO: 'official-test:FriendMessage:OPAQUE', officialConfigured: true, napcatConfigured: true, defaultDelivery: '', signatureEnabled: false, qzoneEnabled: false };
+  const app = renderApp({ screen: 'connect', workspace: workspaceStatus(), invoke: async action => action === 'inspect'
+    ? { installed: true, running: true, platform: { id: 'win32-x64', supported: true }, setup: { ownerConfigured: true } }
+    : settings });
+  await app.settle();
+  assert.match(app.html(), /id="defaultDelivery"/);
+  assert.equal(app.calls.filter(([action]) => action === 'settings-save').length, 0);
+  app.select('defaultDelivery', 'official');
+  await app.click('save-settings');
+  assert.deepEqual(app.calls.filter(([action]) => action === 'settings-save').at(-1), ['settings-save', { patch: { defaultDelivery: 'official' } }]);
+});
+
+test('connect page shows both channel cards and requires typed confirmation before disabling', async () => {
+  const settings = { ownerQQ: '123456', platformId: 'qq', onebotPort: 6199, dashboardPort: 6185, onebotToken: 'token', officialOwnerUMO: 'official-test:FriendMessage:OPAQUE', officialConfigured: true, napcatConfigured: true, defaultDelivery: 'napcat' };
+  const connections = libSnapshot();
+  const app = renderApp({ screen: 'connect', workspace: workspaceStatus(), invoke: async (action, payload) => {
+    if (action === 'inspect') return { installed: true, running: true, platform: { id: 'win32-x64', supported: true }, setup: { ownerConfigured: true } };
+    if (action === 'connections-status') return { connections };
+    if (action === 'connection-change') return { connections, plan: { id: 'a'.repeat(24), channel: payload.channel, enabled: false, label: 'QQ 官方机器人', message: '将停用 QQ 官方机器人。', effects: ['结束官方机器人连接', '普通 QQ 小号连接保持运行'], typedLabel: '官方', prompt: '请输入「官方」确认：将停用 QQ 官方机器人。' } };
+    if (action === 'connection-confirm') return { connections };
+    return settings;
+  } });
+  await app.settle();
+  assert.match(app.html(), /连接管理/);
+  assert.match(app.html(), /QQ 官方机器人/);
+  assert.match(app.html(), /普通 QQ 小号/);
+  assert.match(app.html(), /data-action="connection-change"/);
+  await app.clickConnection('official', '0');
+  assert.match(app.html(), /connection-confirm-typed/);
+  assert.match(app.html(), /请输入「官方」/);
+  assert.equal(app.calls.some(([action]) => action === 'connection-confirm'), false);
+  app.setInput('connection-confirm-typed', '官方');
+  await app.click('connection-confirm');
+  const change = app.calls.find(([action]) => action === 'connection-change');
+  const confirm = app.calls.find(([action]) => action === 'connection-confirm');
+  assert.deepEqual(change, ['connection-change', { channel: 'official', enabled: false }]);
+  assert.deepEqual(confirm, ['connection-confirm', { planId: 'a'.repeat(24), typed: '官方' }]);
+  assert.doesNotMatch(app.html(), /connection-confirm-typed/);
+});
+
+test('canceling a connection change clears the preview without any confirm call', async () => {
+  const connections = libSnapshot();
+  const app = renderApp({ screen: 'connect', invoke: async (action, payload) => {
+    if (action === 'inspect') return { installed: true, running: true, platform: { id: 'win32-x64', supported: true }, setup: { ownerConfigured: true } };
+    if (action === 'connections-status') return { connections };
+    if (action === 'connection-change') return { connections, plan: { id: 'b'.repeat(24), channel: payload.channel, enabled: false, label: '普通 QQ 小号', message: '将停用普通 QQ 小号。', effects: ['结束普通 QQ 小号进程'], typedLabel: '小号', prompt: '请输入「小号」' } };
+    return { ownerQQ: '123456', onebotPort: 6199 };
+  } });
+  await app.settle();
+  await app.clickConnection('napcat', '0');
+  assert.match(app.html(), /connection-confirm-typed/);
+  await app.click('connection-cancel');
+  assert.match(app.html(), /已取消连接操作/);
+  assert.doesNotMatch(app.html(), /connection-confirm-typed/);
+  assert.equal(app.calls.some(([action]) => action === 'connection-confirm'), false);
+});
+
+function libSnapshot() {
+  const connections = require('../lib/qq-connections.cjs');
+  return connections.snapshot({
+    revision: 'rev-1', running: true, defaultDelivery: 'napcat',
+    platforms: [
+      { id: 'qq', type: 'aiocqhttp', enable: true, configured: true },
+      { id: 'official-test', type: 'qq_official', enable: true, configured: true },
+    ],
+    bindings: { napcat: true, official: true },
+    napcat: { running: true, loginState: 'online' },
+    health: { channels: { napcat: { state: 'connected', platformReady: true, protocolConnected: true }, official: { state: 'connecting', platformReady: true, protocolConnected: false } } },
+  });
+}
+
+test('identical state pushes do not rebuild the page while changed state still updates', async () => {
+  const settings = { ownerQQ: '123456', platformId: 'qq', onebotPort: 6199, dashboardPort: 6185, onebotToken: 'token' };
+  const qq = { ...connectionData().workspace.napcat, running: true, loginState: 'online', protocolConnected: true };
+  const app = renderApp({ screen: 'connect', workspace: workspaceStatus({ napcat: qq }), invoke: async action => action === 'inspect'
+    ? { installed: true, running: true, platform: { id: 'win32-x64', supported: true }, setup: { ownerConfigured: true } }
+    : settings });
+  await app.settle();
+  const writes = app.htmlWrites();
+  for (let index = 0; index < 100; index += 1) app.pushState({});
+  assert.equal(app.htmlWrites(), writes);
+  app.pushState({ workspace: { napcat: { ...qq, protocolConnected: false, loginState: 'confirming' } } });
+  assert.equal(app.htmlWrites(), writes + 1);
+  assert.match(app.html(), /等待手机确认|confirming/);
+});
+
+test('Chinese input composition defers rebuilds and applies the latest state afterwards', async () => {
+  const settings = { ownerQQ: '123456', platformId: 'qq', onebotPort: 6199, dashboardPort: 6185, onebotToken: 'token' };
+  const app = renderApp({ screen: 'connect', invoke: async action => action === 'inspect'
+    ? { installed: true, running: true, platform: { id: 'win32-x64', supported: true }, setup: { ownerConfigured: true } }
+    : settings });
+  await app.settle();
+  const writes = app.htmlWrites();
+  app.compositionStart('ownerQQ');
+  app.pushState({ workspace: { napcat: { ...connectionData().workspace.napcat, loginState: 'confirming' } } });
+  assert.equal(app.htmlWrites(), writes);
+  app.compositionEnd('ownerQQ');
+  await app.settle();
+  assert.equal(app.htmlWrites(), writes + 1);
+});
+
+test('viewing the official tab on an old napcat install renders the official binding field', async () => {
+  const settings = { ownerQQ: '123456', platformId: 'qq', onebotPort: 6199, dashboardPort: 6185, onebotToken: 'token', qqConnectionMode: 'napcat', officialConfigured: true, officialOwnerUMO: '', napcatConfigured: true };
+  const app = renderApp({ screen: 'connect', workspace: workspaceStatus(), invoke: async action => {
+    if (action === 'inspect') return { installed: true, running: true, platform: { id: 'win32-x64', supported: true }, setup: { ownerConfigured: true } };
+    if (action === 'connections-status') return { connections: { channels: [
+      { channel: 'napcat', platformEnabled: true, platformId: 'qq', bound: true, health: 'connected', protocolConnected: true, targetIssue: '', platformCandidates: [] },
+      { channel: 'official', platformEnabled: true, platformId: 'official-test', bound: false, health: 'connecting', protocolConnected: false, targetIssue: '', platformCandidates: [] },
+    ] } };
+    return settings;
+  } });
+  await app.settle();
+  await app.click('select-qq-mode', undefined, undefined, 'official');
+  await app.settle();
+  assert.match(app.html(), /id="officialOwnerUMO"/);
+  assert.doesNotMatch(app.html(), /id="ownerQQ"/);
+  assert.match(app.html(), /QQ 官方机器人/);
+});
+
+test('channel status is rendered from the fixed channel rather than the other channel', () => {
+  const base = connectionData();
+  base.settings = { qqConnectionMode: 'napcat', officialConfigured: true, officialOwnerUMO: 'official-test:FriendMessage:OPAQUE' };
+  base.state.running = true;
+  base.workspace.napcat = { ...base.workspace.napcat, running: true, loginState: 'online', protocolConnected: true };
+  base.workspace.official = { protocolConnected: false };
+  base.connections = { channels: [{ channel: 'official', protocolConnected: false, health: 'offline', bound: true, platformEnabled: true }] };
+  assert.equal(load().connectionViewModel({ ...base, connectionTab: 'official' }).stage, 'official-connecting');
+  base.workspace.napcat = { ...base.workspace.napcat, protocolConnected: false };
+  base.connections.channels[0] = { channel: 'official', protocolConnected: true, health: 'connected', bound: true, platformEnabled: true };
+  base.workspace.official = { protocolConnected: true };
+  assert.equal(load().connectionViewModel({ ...base, connectionTab: 'official' }).stage, 'ready');
+  assert.notEqual(load().connectionViewModel({ ...base, connectionTab: 'napcat' }).stage, 'ready');
+});
+
+test('settings page shows recent local changes and restores one field with the real payload', async () => {
+  const settings = { ownerQQ: '123456', platformId: 'qq', onebotPort: 6199, dashboardPort: 6185, onebotToken: 'token', proactiveEnabled: false, configRevision: 'abcdef12' };
+  const history = {
+    format: 1,
+    records: [{ id: '1700000000000000000-abcdef12', changedAt: 1700000000, changes: [{ field: 'proactiveEnabled', before: true, after: false }] }],
+    migrationReceipt: { migrationVersion: 1, archivedFields: ['legacy_field'], verifiedAt: 1700000000 },
+  };
+  const app = renderApp({
+    screen: 'settings',
+    workspace: workspaceStatus(),
+    invoke: async action => {
+      if (action === 'inspect') return { installed: true, running: true, platform: { id: 'win32-x64', supported: true }, setup: { ownerConfigured: true } };
+      if (action === 'settings-history') return history;
+      if (action === 'workspace-status') return workspaceStatus();
+      if (action === 'settings-get' || action === 'settings-save' || action === 'settings-restore-field') return settings;
+      return {};
+    },
+  });
+  await app.settle();
+  assert.match(app.html(), /最近修改/);
+  assert.match(app.html(), /升级保护检查：迁移版本 1/);
+  assert.match(app.html(), /恢复主动互动/);
+  const restore = app.html().match(/data-action="settings-restore-field"[^>]*data-record="([^"]+)"[^>]*data-field="([^"]+)"/);
+  assert.ok(restore);
+  await app.clickWithDataset('settings-restore-field');
+  await app.settle();
+  const call = app.calls.filter(([action]) => action === 'settings-restore-field').at(-1);
+  assert.deepEqual(call[1], {
+    recordId: '1700000000000000000-abcdef12',
+    field: 'proactiveEnabled',
+    expectedRevision: 'abcdef12',
+  });
+  assert.ok(app.calls.filter(([action]) => action === 'settings-history').length >= 2);
+});
+
+test('controller merges pushed official health and connection snapshots into the view source', async () => {
+  const model = load();
+  let listener;
+  const bridge = {
+    onState: callback => { listener = callback; return () => {}; },
+    invoke: async action => {
+      if (action === 'inspect') return { installed: true, running: true, platform: { id: 'darwin-arm64', supported: true }, setup: {} };
+      if (action === 'workspace-status') return {
+        health: null, backups: [], appUpdate: {}, napcat: { running: true, loginState: 'online', protocolConnected: true },
+        official: { protocolConnected: false }, preferences: { tray: false, startAtLogin: false, resumeAfterWake: false }, diagnosticFiles: [],
+      };
+      if (action === 'settings-get') return { qqConnectionMode: 'napcat', officialConfigured: true, officialOwnerUMO: 'official-test:FriendMessage:OPAQUE', configRevision: 'abcdef12' };
+      return {};
+    },
+  };
+  const controller = model.createController({ bridge });
+  await controller.init();
+  await controller.act('settings-get');
+  controller.setConnectionTab('official');
+  assert.equal(model.connectionViewModel(controller.get()).stage, 'official-connecting');
+  listener({ workspace: { official: { protocolConnected: true } } });
+  assert.equal(model.connectionViewModel(controller.get()).stage, 'ready');
+  assert.deepEqual(controller.get().workspace.official, { protocolConnected: true });
+  listener({ workspace: { official: { protocolConnected: false } } });
+  assert.equal(model.connectionViewModel(controller.get()).stage, 'official-connecting');
+  // The pushed official health is authoritative when it carries a boolean;
+  // a connection snapshot alone is the fallback source.
+  listener({ connections: { channels: [{ channel: 'official', protocolConnected: true, health: 'connected' }] } });
+  assert.deepEqual(controller.get().connections.channels[0].channel, 'official');
+  assert.equal(model.connectionViewModel(controller.get()).stage, 'official-connecting');
+  listener({ workspace: { official: null } });
+  assert.equal(model.connectionViewModel(controller.get()).stage, 'ready');
+});
+
+test('controller allows concurrent read-only actions but keeps the mutation fence', async () => {
+  const model = load();
+  let releaseWorkspace;
+  const bridge = {
+    onState: () => () => {},
+    invoke: async action => {
+      if (action === 'workspace-status') {
+        await new Promise(resolve => { releaseWorkspace = () => resolve({ health: null, backups: [], appUpdate: {}, napcat: {}, preferences: {}, diagnosticFiles: [] }); });
+        return { health: null, backups: [], appUpdate: {}, napcat: {}, preferences: {}, diagnosticFiles: [] };
+      }
+      if (action === 'settings-get') return { configRevision: 'abcdef12' };
+      return {};
+    },
+  };
+  const controller = model.createController({ bridge });
+  const first = controller.act('workspace-status');
+  for (let attempt = 0; attempt < 50 && typeof releaseWorkspace !== 'function'; attempt += 1) await new Promise(resolve => setImmediate(resolve));
+  assert.equal(typeof releaseWorkspace, 'function');
+  const settings = await controller.act('settings-get');
+  assert.ok(settings && typeof settings === 'object');
+  await assert.rejects(controller.act('settings-save', { patch: { dashboardPort: 6285 } }), /上一项操作/);
+  releaseWorkspace();
+  await first;
+  assert.equal(controller.get().pending, '');
+  await controller.act('settings-save', { patch: { dashboardPort: 6285 } });
+});
+
+test('connection cards use live official health without another navigation', async () => {
+  const connections = { channels: [
+    { channel: 'napcat', label: '普通 QQ 小号', platformEnabled: true, platformId: 'qq', bound: true, health: 'offline', protocolConnected: false, targetIssue: '', platformCandidates: [] },
+    { channel: 'official', label: 'QQ 官方机器人', platformEnabled: true, platformId: 'official-test', bound: true, health: 'offline', protocolConnected: false, targetIssue: '', platformCandidates: [] },
+  ] };
+  const settings = { ownerQQ: '123456', platformId: 'qq', onebotPort: 6199, dashboardPort: 6185, onebotToken: 'token', qqConnectionMode: 'napcat', officialConfigured: true, officialOwnerUMO: 'official-test:FriendMessage:OPAQUE', napcatConfigured: true };
+  const app = renderApp({
+    screen: 'connect',
+    workspace: workspaceStatus({ napcat: { running: true, loginState: 'online', protocolConnected: false }, official: { protocolConnected: false } }),
+    invoke: async action => {
+      if (action === 'inspect') return { installed: true, running: true, platform: { id: 'win32-x64', supported: true }, setup: { ownerConfigured: true } };
+      if (action === 'connections-status') return { connections };
+      if (action === 'settings-hist' + 'ory') return { format: 1, records: [], migrationReceipt: null };
+      return settings;
+    },
+  });
+  await app.settle();
+  await app.click('select-qq-mode', undefined, undefined, 'official');
+  await app.settle();
+  const officialCard = () => app.html().match(/<section class="card connection-channel-card"[^>]*aria-labelledby="connection-official-title"[\s\S]*?<\/section>/)?.[0] || '';
+  assert.match(officialCard(), /离线/);
+  app.pushState({ workspace: { official: { protocolConnected: true } } });
+  assert.match(officialCard(), /已连接/);
+  assert.match(app.html(), /QQ 官方机器人已连接/);
+  app.pushState({ workspace: { official: { protocolConnected: false } } });
+  assert.match(officialCard(), /离线/);
 });

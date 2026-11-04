@@ -173,13 +173,21 @@ async def test_qq_recommendation_only_targets_owner_and_respects_shared_budget(t
         }
     )
     store = Store(tmp_path / "state.db")
-    client = SimpleNamespace(send_private_msg=AsyncMock(return_value={"message_id": 1}))
+    client = SimpleNamespace(
+        send_private_msg=AsyncMock(return_value={"message_id": 1}),
+        _wsr_api_clients={"synthetic": object()},
+    )
     platform = SimpleNamespace(
         meta=lambda: SimpleNamespace(name="aiocqhttp"), get_client=lambda: client
     )
     context = SimpleNamespace(get_platform_inst=lambda ident: platform if ident == "qq" else None)
     c = SimpleNamespace(
-        settings=cfg, store=store, scheduler=Scheduler(cfg, store), context=context, closed=False
+        settings=cfg,
+        store=store,
+        scheduler=Scheduler(cfg, store),
+        context=context,
+        closed=False,
+        delivery_platform_ready=lambda binding=None: True,
     )
     (tmp_path / ".dsh").mkdir()
     (tmp_path / ".dsh/bili-whale.config.json").write_text(
@@ -205,5 +213,167 @@ async def test_qq_recommendation_only_targets_owner_and_respects_shared_budget(t
         assert store.recent_activities(cfg.owner_umo)[0]["status"] == "sent"
         assert "预算" in await share_qq(service, "第二次摘要")
         assert client.send_private_msg.await_count == 1
+    finally:
+        store.close()
+
+
+async def test_autonomous_bili_share_waits_when_the_target_gateway_is_offline(tmp_path):
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+
+    from dswhale.bili_agent import share_qq
+    from dswhale.config import Settings
+    from dswhale.scheduler import Scheduler
+    from dswhale.store import Store
+
+    cfg = Settings.from_mapping(
+        {
+            "owner_qq": "123",
+            "owner_umo": "qq:FriendMessage:123",
+            "proactive_enabled": True,
+            "quiet_start": "00:00",
+            "quiet_end": "00:00",
+            "daily_limit": 2,
+        }
+    )
+    store = Store(tmp_path / "state.db")
+    client = SimpleNamespace(send_private_msg=AsyncMock())
+    platform = SimpleNamespace(
+        meta=lambda: SimpleNamespace(name="aiocqhttp"), get_client=lambda: client
+    )
+    context = SimpleNamespace(get_platform_inst=lambda ident: platform if ident == "qq" else None)
+    online = {"value": False}
+    c = SimpleNamespace(
+        settings=cfg,
+        store=store,
+        scheduler=Scheduler(cfg, store),
+        context=context,
+        closed=False,
+        delivery_platform_ready=lambda binding=None: online["value"],
+    )
+    (tmp_path / ".dsh").mkdir()
+    (tmp_path / ".dsh/bili-whale.config.json").write_text(
+        '{"share":{"via":"qq","enabled":true},"diary":{"push":true}}'
+    )
+    service = SimpleNamespace(
+        settings=cfg,
+        companion=c,
+        root=tmp_path,
+        allowed=lambda: True,
+        command=AsyncMock(return_value={"ok": True}),
+    )
+    try:
+        offline = await share_qq(
+            service, "这条有意思", "BV1234567890", "声音实验适合主人喜欢的主题", 16, 1
+        )
+        assert "未在线" in offline
+        assert client.send_private_msg.await_count == 0
+        assert store.recent_activities(cfg.owner_umo) == []
+        assert store.state(cfg.owner_umo)["unanswered"] == 0
+        online["value"] = True
+        accepted = await share_qq(
+            service, "这条有意思", "BV1234567890", "声音实验适合主人喜欢的主题", 16, 1
+        )
+        assert "已提交" in accepted
+        assert client.send_private_msg.await_count == 1
+        assert len(store.recent_activities(cfg.owner_umo)) == 1
+    finally:
+        store.close()
+
+
+async def test_autonomous_agent_share_tool_waits_offline_then_claims_once(tmp_path, monkeypatch):
+    import json
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+
+    from astrbot.core.agent.tool import ToolSet
+
+    import dswhale.bili_agent as agent
+    from dswhale.config import Settings
+    from dswhale.scheduler import Scheduler
+    from dswhale.store import Store
+
+    cfg = Settings.from_mapping(
+        {
+            "owner_qq": "123",
+            "owner_umo": "qq:FriendMessage:123",
+            "proactive_enabled": True,
+            "quiet_start": "00:00",
+            "quiet_end": "00:00",
+            "daily_limit": 2,
+        }
+    )
+    store = Store(tmp_path / "state.db")
+    client = SimpleNamespace(send_private_msg=AsyncMock(return_value={"message_id": 1}))
+    platform = SimpleNamespace(
+        meta=lambda: SimpleNamespace(name="aiocqhttp"), get_client=lambda: client
+    )
+    online = {"value": False}
+    results = []
+
+    async def loop(**kwargs):
+        assert isinstance(kwargs["tools"], ToolSet)
+        tools = {t.name: t for t in kwargs["tools"].tools}
+        results.append(
+            await tools["share_to_owner_qq"].call(
+                None,
+                text="这条有意思",
+                bvid="BV1234567890",
+                reason="声音实验适合主人喜欢的主题",
+                score=16,
+                rank=1,
+            )
+        )
+        online["value"] = True
+        results.append(
+            await tools["share_to_owner_qq"].call(
+                None,
+                text="这条有意思",
+                bvid="BV1234567890",
+                reason="声音实验适合主人喜欢的主题",
+                score=16,
+                rank=1,
+            )
+        )
+        return SimpleNamespace(completion_text="分享处理完毕")
+
+    context = SimpleNamespace(
+        tool_loop_agent=loop,
+        get_platform_inst=lambda ident: platform if ident == "qq" else None,
+        get_using_provider_async=AsyncMock(
+            return_value=SimpleNamespace(meta=lambda: SimpleNamespace(id="chat-fixture"))
+        ),
+    )
+    c = SimpleNamespace(
+        context=context,
+        settings=cfg,
+        store=store,
+        scheduler=Scheduler(cfg, store),
+        closed=False,
+        delivery_platform_ready=lambda binding=None: online["value"],
+    )
+    (tmp_path / ".dsh").mkdir()
+    (tmp_path / ".dsh/bili-whale.config.json").write_text(
+        json.dumps({"share": {"via": "qq", "enabled": True, "minScore": 13}})
+    )
+    service = SimpleNamespace(
+        root=tmp_path,
+        companion=c,
+        settings=cfg,
+        allowed=lambda: True,
+        command=AsyncMock(return_value={"ok": True}),
+    )
+    monkeypatch.setattr(agent, "owner_event", AsyncMock(return_value=object()))
+    try:
+        await agent.run_agent(
+            service, {"sessionId": "fixture", "content": [{"type": "text", "text": "read"}]}
+        )
+        assert "未在线" in results[0]
+        assert "已提交" in results[1]
+        assert client.send_private_msg.await_count == 1
+        activities = store.recent_activities(cfg.owner_umo)
+        assert len(activities) == 1
+        assert activities[0]["kind"] == "bili-share"
+        assert store.state(cfg.owner_umo)["unanswered"] == 1
     finally:
         store.close()

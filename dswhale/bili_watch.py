@@ -13,8 +13,11 @@ BV = re.compile(r"BV[0-9A-Za-z]{10}")
 def enqueue_watch(service, event, topic):
     c = service.companion
     c.require_owner(event)
+    binding = c.binding_for(event)
+    if binding is None:
+        return "此功能仅限已绑定主人的 QQ 私聊"
     now = datetime.now(UTC)
-    if c.store.state(c.settings.owner_scope)["paused"]:
+    if c.store.state(binding.umo)["paused"]:
         return "现在暂停着，先解除暂停再去看"
     if (
         service.closed
@@ -43,7 +46,10 @@ def enqueue_watch(service, event, topic):
         return "正在看另一条，等这次结束再喊我吧"
     if service.ledger.recent_watch(time.time() - 600):
         return "刚去看过一轮，稍等一会儿再出发吧（间隔10分钟）"
-    activity = c.scheduler.reserve(now, external_kind="bili-watch")
+    scopes = [item.umo for item in c.settings.owner_bindings]
+    activity = c.scheduler.reserve(
+        now, external_kind="bili-watch", scopes=scopes, target_scope=binding.umo
+    )
     if not activity:
         return "今天额度到了、还有未回复活动或任务处理中，这次先不去看"
     prompt = (
@@ -63,6 +69,7 @@ def enqueue_watch(service, event, topic):
                 "sessionId": "qq-requested-watch",
                 "source": "qq-watch",
                 "activity_id": activity.id,
+                "origin": binding.umo,
                 "content": [{"type": "text", "text": prompt}],
             }
         )
@@ -259,6 +266,17 @@ async def finish_watch(service, job, outcome, *, error=""):
                 if record.get("ok"):
                     text += "\nhttps://www.bilibili.com/video/" + bvid
     service.ledger.save_result(job["requestId"], text)
+    origin = str(job.get("origin") or "")
+    if not origin:
+        # Old ledger jobs predate the origin field. Their durable activity still
+        # records the exact conversation that asked; verify that scope instead of
+        # guessing the current default.
+        record = c.store.activity(job["activity_id"])
+        origin = str(record.scope) if record else ""
+    binding = c.binding_by_scope(origin) if origin else None
+    if binding is None or c.store.state(binding.umo)["paused"]:
+        c.store.transition(activity.id, "failed", time.time(), "原会话已解绑或已暂停")
+        return
     if not service.allowed() or not service.settings.bili_qq_recommendations:
         c.store.transition(
             activity.id, "failed", time.time(), "看完汇报已保存；暂停、安静时段或推送关闭"
@@ -270,7 +288,7 @@ async def finish_watch(service, job, outcome, *, error=""):
     try:
         from .qq_transport import send_owner_text
 
-        confirmed = await send_owner_text(c, text)
+        confirmed = await send_owner_text(c, text, binding)
         c.store.transition(activity.id, "sent" if confirmed else "uncertain", time.time())
     except BaseException:
         c.store.transition(activity.id, "uncertain", time.time(), "看完汇报投递未确认")

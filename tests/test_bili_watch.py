@@ -543,3 +543,86 @@ def test_unchanged_old_artifact_cannot_be_reused_even_with_future_mtime(tmp_path
     ev.record(["debrief", "BV1234567890"], {"ok": True, "out": "标题: 实验"})
     ev.consumed(frame, vision=True)
     assert not ev.videos["BV1234567890"]["frames"]
+
+
+async def test_chat_watch_returns_to_its_originating_channel_after_default_switch(watching):
+    from dswhale.bili_watch import finish_watch
+
+    c, service = watching
+    dual = Settings.from_mapping(
+        {
+            **vars(c.settings),
+            "official_owner_umo": "official-test:FriendMessage:OPAQUE_CASE_001",
+            "qq_default_delivery": "official",
+        }
+    )
+    c.settings = service.settings = dual
+    c.scheduler.settings = dual
+    assert dual.delivery_binding.channel == "official"
+    assert "去看看" in c.request_bili_watch(event(c.context), "科技")
+    job = service.ledger.next_job()
+    assert job["origin"] == "qq:FriendMessage:123"
+    outcome = {
+        "text": "这条讲的是声音传播",
+        "evidence": {
+            "BV1234567890": {
+                "title": "声音实验",
+                "metadata": True,
+                "subtitles": True,
+                "comments": False,
+                "frames": False,
+            }
+        },
+        "recommendation": None,
+    }
+    c.settings = service.settings = Settings.from_mapping(
+        {**vars(dual), "qq_default_delivery": "official"}
+    )
+    await finish_watch(service, job, outcome)
+    sent = c.context.client.send_private_msg
+    assert sent.await_count == 1
+    assert sent.await_args.kwargs["user_id"] == 123
+    assert c.store.activity(job["activity_id"]).status == "sent"
+
+
+async def test_unbound_task_origin_never_falls_back_to_default(watching):
+    from dswhale.bili_watch import finish_watch
+
+    c, service = watching
+    assert "去看看" in c.request_bili_watch(event(c.context), "")
+    job = service.ledger.next_job()
+    assert job["origin"] == "qq:FriendMessage:123"
+    # The requesting conversation is gone; only the official channel remains and
+    # it is now the default. The completion must not be delivered there.
+    c.settings = service.settings = Settings.from_mapping(
+        {
+            "official_owner_umo": "official-test:FriendMessage:OPAQUE",
+            "qq_default_delivery": "official",
+            "bili_enabled": True,
+            "proactive_enabled": True,
+            "quiet_start": "00:00",
+            "quiet_end": "00:00",
+            "daily_limit": 2,
+        }
+    )
+    c.scheduler.settings = c.settings
+    outcome = {
+        "text": "这条讲的是声音传播",
+        "evidence": {
+            "BV1234567890": {
+                "title": "声音实验",
+                "metadata": True,
+                "subtitles": True,
+                "comments": False,
+                "frames": False,
+            }
+        },
+        "recommendation": None,
+    }
+    await finish_watch(service, job, outcome)
+    assert c.store.activity(job["activity_id"]).status == "failed"
+    assert service.ledger.result(job["requestId"])
+    assert c.context.client.send_private_msg.await_count == 0
+    # Unknown result is retained, never replayed to the default channel.
+    await finish_watch(service, job, outcome)
+    assert c.context.client.send_private_msg.await_count == 0

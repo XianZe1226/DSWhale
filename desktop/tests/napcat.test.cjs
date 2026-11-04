@@ -487,3 +487,32 @@ test('a newer identity observation fences an older private identity write', asyn
     assert.equal(await original(file,'utf8'),previous);
   }finally{release();fs.readFile=original;await f.app.stop();}
 });
+
+test('wire targets the bound OneBot instance among several enabled robots', async t => {
+  let config, f, writes = 0;
+  const session = { inspect: async () => ({ loginState: 'online', account: '12345678' }), reset() {},
+    getConfig: async () => structuredClone(config), setConfig: async (_context, next) => {
+      writes++; config = structuredClone(next);
+      await fs.writeFile(path.join(f.app.work, 'config/onebot11_12345678.json'), JSON.stringify(config));
+    } };
+  f = await fixture(t, { session });
+  await f.app.configure(f.folder);
+  config = JSON.parse(await fs.readFile(path.join(f.app.work, 'config/onebot11_12345678.json'), 'utf8'));
+  await f.app.start();
+  const platforms = [
+    { id: 'other-bot', type: 'aiocqhttp', enable: true, ws_reverse_host: '127.0.0.1', ws_reverse_port: 6201, ws_reverse_token: 'synthetic-other-token-123' },
+    { id: 'bound-qq', type: 'aiocqhttp', enable: true, ws_reverse_host: '127.0.0.1', ws_reverse_port: 6299, ws_reverse_token: 'synthetic-bound-token-456' },
+  ];
+  const { selectNapcatConnection } = require('../lib/qq-connections.cjs');
+  f.app.getConnection = async () => {
+    const selected = selectNapcatConnection(platforms, 'bound-qq');
+    return selected ? { port: selected.port, token: selected.token } : null;
+  };
+  await f.app.wire();
+  assert.equal(writes, 1);
+  assert.equal(config.network.websocketClients[1].url, 'ws://127.0.0.1:6299/ws');
+  assert.equal(config.network.websocketClients[1].token, 'synthetic-bound-token-456');
+  assert.deepEqual(config.network.websocketClients[0], f.config.network.websocketClients[0]);
+  assert.equal(f.launches.length, 1);
+  assert.deepEqual(f.stopped, []);
+});

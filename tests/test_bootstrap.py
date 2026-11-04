@@ -668,3 +668,343 @@ def test_existing_desktop_upgrade_repairs_categories_through_host_python(tmp_pat
     assert after["provider_sources"] == [{**source, "provider_type": "chat_completion"}]
     assert after["dashboard"] == config["dashboard"]
     assert not (host.parent / "desktop-auth.json").exists()
+
+
+def test_desktop_init_applies_additive_migration_after_provider_repair(tmp_path, monkeypatch):
+    module = bootstrap()
+    host = tmp_path / "runtime/astrbot"
+    (host / "data/config").mkdir(parents=True)
+    config = {
+        "dashboard": {"host": "127.0.0.1", "port": 6185},
+        "provider_sources": [{"id": "source", "key": ["SYNTHETIC-KEY"]}],
+        "provider": [{"id": "model", "model": "cloud-model", "enable": True}],
+    }
+    fish = {
+        "owner_qq": "123456789",
+        "owner_umo": "old-qq:FriendMessage:123456789",
+        "proactive_enabled": True,
+        "bili_enabled": True,
+        "qq_signature_enabled": True,
+        "qzone_enabled": True,
+        "persona": "SYNTHETIC-PRIVATE-PERSONA",
+    }
+    config_file = host / "data/cmd_config.json"
+    fish_file = host / "data/config/astrbot_plugin_dswhale_config.json"
+    config_file.write_text(json.dumps(config), encoding="utf-8")
+    fish_file.write_text(json.dumps(fish), encoding="utf-8")
+    calls = []
+
+    def fake_run(args, **kwargs):
+        calls.append([str(item) for item in args])
+        if "migrate" in [str(item) for item in args]:
+            from dswhale.desktop_settings import migrate_settings
+
+            migrate_settings(host)
+
+    monkeypatch.setattr(module, "run", fake_run)
+    module.initialize_host_config(host, "managed-python", {"ASTRBOT_ROOT": str(host)}, desktop=True)
+    assert any("migrate" in call for call in calls)
+    migrated = json.loads(fish_file.read_text(encoding="utf-8"))
+    for key, value in fish.items():
+        assert migrated[key] == value, key
+    assert migrated["qq_default_delivery"] == ""
+    assert migrated["config_migration_version"] == 1
+    assert json.loads(config_file.read_text())["provider_sources"] == config["provider_sources"]
+
+
+def test_repeat_prepare_migration_uses_one_real_host_lock(tmp_path, monkeypatch):
+    """An upgrade with existing settings must run the migration child as the
+    single holder of the real host FileLock (fresh, existing, repeat, failure)."""
+    import os
+    import shutil
+    import subprocess
+    import sys
+
+    from filelock import FileLock
+
+    module = bootstrap()
+    source = tmp_path / "installed-source"
+    (source / "scripts").mkdir(parents=True)
+    (source / "pyproject.toml").write_text('[project]\nversion = "0.3.0a10"\n')
+    monkeypatch.setattr(module, "__file__", str(source / "scripts/bootstrap.py"))
+    runtime = tmp_path / "app-data/runtime"
+    host = runtime / "astrbot"
+    (host / "data").mkdir(parents=True)
+    monkeypatch.setenv("DSWHALE_RUNTIME_DIR", str(runtime))
+    monkeypatch.setenv("DSWHALE_DESKTOP", "1")
+    monkeypatch.setenv("DSWHALE_UV", str(tmp_path / "uv"))
+    repo = Path(__file__).parents[1]
+    migrations = []
+
+    def fake_run(args, **kwargs):
+        values = [str(item) for item in args]
+        if "venv" in values:
+            python = runtime / ("venv/Scripts/python.exe" if os.name == "nt" else "venv/bin/python")
+            python.parent.mkdir(parents=True, exist_ok=True)
+            python.touch()
+            return
+        if "astrbot.cli" in values and "init" in values:
+            (host / "data").mkdir(parents=True, exist_ok=True)
+            (host / "data/cmd_config.json").write_text(
+                json.dumps({"dashboard": {"host": "0.0.0.0", "port": 6185}, "provider": []})
+            )
+            return
+        if values[1:3] == ["-m", "dswhale"] and "install" in values:
+            plugin = host / "data/plugins/astrbot_plugin_dswhale"
+            plugin.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(repo / "_conf_schema.json", plugin / "_conf_schema.json")
+            return
+        if values[1:4] == ["-m", "dswhale.desktop_settings", "migrate"]:
+            migrations.append(values)
+            migration_env = {
+                **os.environ,
+                **{key: str(value) for key, value in (kwargs.get("env") or {}).items()},
+            }
+            migration_env["PYTHONPATH"] = os.pathsep.join(
+                [str(repo), migration_env.get("PYTHONPATH", "")]
+            ).strip(os.pathsep)
+            completed = subprocess.run(
+                [sys.executable, "-m", "dswhale.desktop_settings", "migrate", "--host", str(host)],
+                cwd=repo,
+                env=migration_env,
+                capture_output=True,
+                text=True,
+                timeout=120,
+            )
+            if completed.returncode != 0:
+                raise subprocess.CalledProcessError(
+                    completed.returncode, values, completed.stdout, completed.stderr
+                )
+            return
+        # Every other bootstrap command is synthetic: no packages, platforms or
+        # network are ever started by this test.
+        return
+
+    def fake_output(args, **kwargs):
+        if "--version" in [str(item) for item in args]:
+            return "Python 3.12.15"
+        if "ensure_node" in " ".join(str(item) for item in args):
+            return str(runtime / "tools/node/bin/node")
+        return json.dumps(
+            {
+                "ffmpeg": str(runtime / "tools/media/ffmpeg"),
+                "ffprobe": str(runtime / "tools/media/ffprobe"),
+            }
+        )
+
+    monkeypatch.setattr(module, "run", fake_run)
+    monkeypatch.setattr(module, "output", fake_output)
+
+    # 1. Fresh install: no fish settings yet, so no migration child is needed.
+    module.main()
+    receipt = runtime / "desktop-install.json"
+    assert json.loads(receipt.read_text())["version"] == "0.3.0a10"
+    assert migrations == []
+
+    # 2. Existing install with old fish settings: the child must take the real
+    #    host lock after the parent released it.
+    fish_file = host / "data/config/astrbot_plugin_dswhale_config.json"
+    fish_file.parent.mkdir(parents=True)
+    fish = {
+        "owner_qq": "123456789",
+        "owner_umo": "old-qq:FriendMessage:123456789",
+        "proactive_enabled": True,
+        "persona": "SYNTHETIC-PRIVATE-PERSONA",
+    }
+    fish_file.write_text(json.dumps(fish), encoding="utf-8")
+    module.main()
+    assert len(migrations) == 1
+    migrated = json.loads(fish_file.read_text(encoding="utf-8"))
+    for key, value in fish.items():
+        assert migrated[key] == value, key
+    assert migrated["qq_default_delivery"] == ""
+    assert migrated["config_migration_version"] == 1
+    assert json.loads(receipt.read_text())["version"] == "0.3.0a10"
+
+    # 3. Repeated upgrade: idempotent, still one lock owner per run.
+    module.main()
+    assert len(migrations) == 2
+    assert json.loads(fish_file.read_text(encoding="utf-8")) == migrated
+    assert json.loads(receipt.read_text())["version"] == "0.3.0a10"
+
+    # 4. A failing child migration must abort the upgrade before any receipt,
+    #    leave the corrupt settings untouched and leave the host lock free.
+    corrupt = b"{not json after a failed migration"
+    fish_file.write_bytes(corrupt)
+    with pytest.raises(subprocess.CalledProcessError):
+        module.main()
+    assert not receipt.exists()
+    assert fish_file.read_bytes() == corrupt
+    with FileLock(host / "astrbot.lock", timeout=0):
+        pass
+
+
+def test_upgrade_first_sdk_read_preserves_supported_values_and_migration_receipt(
+    tmp_path, monkeypatch
+):
+    """The production prepare flow performs the first fixed-SDK plugin read,
+    keeps supported values and the migration receipt, archives legacy values
+    the schema cannot represent, and aborts before the install receipt."""
+    import os
+    import shutil
+    import subprocess
+    import sys
+
+    module = bootstrap()
+    source = tmp_path / "installed-source"
+    (source / "scripts").mkdir(parents=True)
+    (source / "pyproject.toml").write_text('[project]\nversion = "0.3.0a10"\n')
+    monkeypatch.setattr(module, "__file__", str(source / "scripts/bootstrap.py"))
+    runtime = tmp_path / "app-data/runtime"
+    host = runtime / "astrbot"
+    (host / "data").mkdir(parents=True)
+    monkeypatch.setenv("DSWHALE_RUNTIME_DIR", str(runtime))
+    monkeypatch.setenv("DSWHALE_DESKTOP", "1")
+    monkeypatch.setenv("DSWHALE_UV", str(tmp_path / "uv"))
+    repo = Path(__file__).parents[1]
+    migrations = []
+    verifications = []
+    ordered = []
+    invalid_schema = {"value": False}
+
+    def child_environment(kwargs):
+        env = {
+            **os.environ,
+            **{key: str(value) for key, value in (kwargs.get("env") or {}).items()},
+        }
+        env["PYTHONPATH"] = os.pathsep.join([str(repo), env.get("PYTHONPATH", "")]).strip(
+            os.pathsep
+        )
+        return env
+
+    def real_child(arguments, kwargs):
+        completed = subprocess.run(
+            [sys.executable, *arguments],
+            cwd=repo,
+            env=child_environment(kwargs),
+            capture_output=True,
+            text=True,
+            timeout=180,
+        )
+        if completed.returncode != 0:
+            raise subprocess.CalledProcessError(
+                completed.returncode, arguments, completed.stdout, completed.stderr
+            )
+
+    def fake_run(args, **kwargs):
+        values = [str(item) for item in args]
+        if "venv" in values:
+            python = runtime / ("venv/Scripts/python.exe" if os.name == "nt" else "venv/bin/python")
+            python.parent.mkdir(parents=True, exist_ok=True)
+            python.touch()
+            return
+        if "astrbot.cli" in values and "init" in values:
+            (host / "data").mkdir(parents=True, exist_ok=True)
+            (host / "data/cmd_config.json").write_text(
+                json.dumps({"dashboard": {"host": "0.0.0.0", "port": 6185}, "provider": []})
+            )
+            return
+        if values[1:3] == ["-m", "dswhale"] and "install" in values:
+            ordered.append("install")
+            plugin = host / "data/plugins/astrbot_plugin_dswhale"
+            plugin.mkdir(parents=True, exist_ok=True)
+            target = plugin / "_conf_schema.json"
+            if invalid_schema["value"]:
+                target.write_text("{not a schema", encoding="utf-8")
+            else:
+                shutil.copy2(repo / "_conf_schema.json", target)
+            return
+        if values[1:4] == ["-m", "dswhale.desktop_settings", "migrate"]:
+            ordered.append("migrate")
+            migrations.append(values)
+            real_child(["-m", "dswhale.desktop_settings", "migrate", "--host", str(host)], kwargs)
+            return
+        if values[1:3] == ["-m", "dswhale.upgrade_verify"]:
+            ordered.append("verify")
+            verifications.append(values)
+            real_child(["-m", "dswhale.upgrade_verify", "--host", str(host)], kwargs)
+            return
+        return
+
+    def fake_output(args, **kwargs):
+        if "--version" in [str(item) for item in args]:
+            return "Python 3.12.15"
+        if "ensure_node" in " ".join(str(item) for item in args):
+            return str(runtime / "tools/node/bin/node")
+        return json.dumps(
+            {
+                "ffmpeg": str(runtime / "tools/media/ffmpeg"),
+                "ffprobe": str(runtime / "tools/media/ffprobe"),
+            }
+        )
+
+    monkeypatch.setattr(module, "run", fake_run)
+    monkeypatch.setattr(module, "output", fake_output)
+    receipt = runtime / "desktop-install.json"
+
+    # Fresh install has no plugin settings yet, so no first-read verification.
+    module.main()
+    assert migrations == [] and verifications == []
+    assert json.loads(receipt.read_text())["version"] == "0.3.0a10"
+
+    # Existing upgrade: migration runs first, then install, then the real
+    # fixed-SDK first read, all before the install receipt is written.
+    fish_file = host / "data/config/astrbot_plugin_dswhale_config.json"
+    fish_file.parent.mkdir(parents=True)
+    fish = {
+        "owner_qq": "123456789",
+        "owner_umo": "old-qq:FriendMessage:123456789",
+        "proactive_enabled": False,
+        "daily_limit": 0,
+        "quiet_end": "",
+        "persona": "SYNTHETIC-PRIVATE-PERSONA",
+        "legacy_unknown_field": {"a": [1, 2, 3]},
+        "legacy_empty_dict": {},
+        "legacy_empty_list": [],
+    }
+    fish_file.write_text(json.dumps(fish), encoding="utf-8")
+    module.main()
+    assert migrations and verifications
+    assert ordered[-2:] == ["install", "verify"]
+    saved = json.loads(fish_file.read_text(encoding="utf-8"))
+    assert saved["proactive_enabled"] is False
+    assert saved["daily_limit"] == 0
+    assert saved["quiet_end"] == ""
+    assert saved["persona"] == fish["persona"]
+    assert saved["owner_umo"] == fish["owner_umo"]
+    assert saved["config_migration_version"] == 1
+    assert "legacy_unknown_field" not in saved
+    receipts = host / "data/plugin_data/astrbot_plugin_dswhale/config-migration-receipt.json"
+    receipt_value = json.loads(receipts.read_text(encoding="utf-8"))
+    assert receipt_value["migrationVersion"] == 1
+    assert receipt_value["sdkVersion"] == "4.29.3"
+    assert set(receipt_value["archivedFields"]) >= {
+        "legacy_unknown_field",
+        "legacy_empty_dict",
+        "legacy_empty_list",
+    }
+    archive_file = host / receipt_value["archiveFile"]
+    archived = json.loads(archive_file.read_text(encoding="utf-8"))
+    assert archived["fields"]["legacy_unknown_field"] == fish["legacy_unknown_field"]
+    assert archived["fields"]["legacy_empty_dict"] == {}
+    assert archive_file.stat().st_mode & 0o777 == 0o600
+    assert json.loads(receipt.read_text())["version"] == "0.3.0a10"
+
+    # Second upgrade pass is idempotent: no new archive and stable values.
+    archives = list((host / "data/config/.dswhale-config-archives").glob("*.json"))
+    module.main()
+    assert len(verifications) >= 2
+    assert list((host / "data/config/.dswhale-config-archives").glob("*.json")) == archives
+    repeat = json.loads(fish_file.read_text(encoding="utf-8"))
+    assert repeat == saved
+    assert json.loads(receipts.read_text(encoding="utf-8"))["normalizedConfig"] is False
+
+    # A failed verification aborts before the install receipt and does not
+    # rewrite the already normalized settings.
+    before_failure = fish_file.read_bytes()
+    invalid_schema["value"] = True
+    with pytest.raises(subprocess.CalledProcessError):
+        module.main()
+    assert not receipt.exists()
+    assert fish_file.read_bytes() == before_failure
+    assert json.loads(receipts.read_text(encoding="utf-8"))["migrationVersion"] == 1

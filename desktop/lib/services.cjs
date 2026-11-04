@@ -7,8 +7,13 @@ const { once } = require('node:events');
 const { constants } = require('node:fs');
 
 async function readJSON(file) { return JSON.parse((await fs.readFile(file, 'utf8')).replace(/^\uFEFF/, '')); }
-async function readQQConnectionHealth({ host, running, startedAt = 0, now = Date.now() }) {
-  if (!running) return false;
+const CONNECTION_CHANNELS = ['napcat', 'official'];
+function unknownChannels() {
+  return Object.fromEntries(CONNECTION_CHANNELS.map(channel => [channel, { bound: false, platformReady: false, protocolConnected: false, state: 'unknown' }]));
+}
+function unknownConnectionHealth() { return { format: 0, updatedAt: 0, channels: unknownChannels() }; }
+async function readRawHealth({ host }) {
+  if (typeof host !== 'string') return null;
   let handle;
   try {
     const file = path.join(host, 'data/plugin_data/astrbot_plugin_dswhale/health.json');
@@ -19,12 +24,46 @@ async function readQQConnectionHealth({ host, running, startedAt = 0, now = Date
     if (!actual.isFile() || actual.nlink > 1 || actual.size > 16384) return null;
     const bytes = Buffer.alloc(16385), read = await handle.read(bytes, 0, bytes.length, 0);
     if (read.bytesRead > 16384) return null;
-    const value = JSON.parse(bytes.subarray(0, read.bytesRead).toString('utf8'));
-    if (typeof value?.updatedAt !== 'number' || !Number.isFinite(value.updatedAt) || typeof value.qqConnected !== 'boolean'
-      || value.updatedAt < Math.max(startedAt / 1000, now / 1000 - 90) || value.updatedAt > now / 1000 + 5) return null;
-    return value.qqConnected;
+    return JSON.parse(bytes.subarray(0, read.bytesRead).toString('utf8'));
   } catch { return null; }
   finally { await handle?.close().catch(() => {}); }
+}
+function fresh(value, { startedAt = 0, now = Date.now() } = {}) {
+  return Boolean(value && typeof value.updatedAt === 'number' && Number.isFinite(value.updatedAt)
+    && value.updatedAt >= Math.max(startedAt / 1000, now / 1000 - 90) && value.updatedAt <= now / 1000 + 5);
+}
+function normalizeConnectionHealth(value, options = {}) {
+  if (!value || value.format !== 2 || !value.channels || typeof value.channels !== 'object' || !fresh(value, options)) return unknownConnectionHealth();
+  const channels = {};
+  for (const channel of CONNECTION_CHANNELS) {
+    const entry = value.channels[channel];
+    if (!entry || typeof entry !== 'object') { channels[channel] = { bound: false, platformReady: false, protocolConnected: false, state: 'unknown' }; continue; }
+    const bound = entry.bound === true;
+    const platformReady = entry.platformReady === true;
+    const protocolConnected = entry.protocolConnected === true;
+    const state = !options.running || !bound ? 'unknown' : protocolConnected ? 'connected' : platformReady ? 'connecting' : 'offline';
+    channels[channel] = { bound, platformReady, protocolConnected, state };
+  }
+  return { format: 2, updatedAt: value.updatedAt, channels };
+}
+async function readConnectionHealth(options) {
+  if (!options?.running) return unknownConnectionHealth();
+  const value = await readRawHealth(options);
+  return normalizeConnectionHealth(value, options);
+}
+async function readQQConnectionHealth({ host, running, startedAt = 0, now = Date.now(), channel = 'napcat', legacyChannel = '' }) {
+  if (!running) return false;
+  if (!['napcat', 'official'].includes(channel)) return null;
+  const value = await readRawHealth({ host });
+  if (!value || !fresh(value, { startedAt, now })) return null;
+  if (value.format === 2) {
+    const normalized = normalizeConnectionHealth(value, { startedAt, now, running });
+    return normalized.format === 2 ? normalized.channels[channel].state === 'connected' : null;
+  }
+  // Format 1 only recorded one boolean. It may be attributed only to the
+  // legacy channel that produced it; otherwise the health is unknown.
+  if (!['napcat', 'official'].includes(legacyChannel) || channel !== legacyChannel) return null;
+  return typeof value.qqConnected === 'boolean' ? value.qqConnected : null;
 }
 function dashboardURL(config) {
   const dashboard = config.dashboard;
@@ -165,8 +204,8 @@ async function settingsCommand(manager, action, payload) {
       catch { reject(new Error('配置未完成，请停止服务并检查输入后重试')); }
     });
     child.stdin.on('error', () => {});
-    child.stdin.end(action === 'save' ? JSON.stringify(payload) : '');
+    child.stdin.end(action === 'save' || action === 'restore-field' ? JSON.stringify(payload) : '');
   });
 }
 
-module.exports = { ServiceSupervisor, settingsCommand, dashboardURL, portFree, portOpen, preflightPorts, PortConflictError, readQQConnectionHealth };
+module.exports = { ServiceSupervisor, settingsCommand, dashboardURL, portFree, portOpen, preflightPorts, PortConflictError, readQQConnectionHealth, readConnectionHealth };

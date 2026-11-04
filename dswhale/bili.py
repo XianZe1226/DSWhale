@@ -505,15 +505,32 @@ class BiliService:
             if not job:
                 await asyncio.sleep(1)
                 continue
+            source = job.get("source")
+            activity = None
+            if source == "qq-watch":
+                activity = self.companion.store.activity(job["activity_id"])
+                if not activity or activity.status != "reserved":
+                    self.ledger.finish(job["requestId"], "uncertain")
+                    continue
+                origin = str(job.get("origin") or activity.scope or "")
+                binding = self.companion.binding_by_scope(origin) if origin else None
+                if binding is None:
+                    # Never fall back to the current default: the origin
+                    # conversation is gone, so keep the result and deliver nothing.
+                    self.companion.store.transition(
+                        activity.id, "failed", time.time(), "原会话已解绑"
+                    )
+                    self.ledger.finish(job["requestId"], "uncertain")
+                    continue
+                self.active_binding = binding
+                self.origin_required = True
+            else:
+                self.active_binding = None
+                self.origin_required = False
             try:
-                if job.get("source") == "qq-watch":
-                    activity = self.companion.store.activity(job["activity_id"])
-                    if not activity or activity.status != "reserved":
-                        self.ledger.finish(job["requestId"], "uncertain")
-                        continue
                 async with asyncio.timeout(600):
                     outcome = await self.run_agent(job)
-                    if job.get("source") == "qq-watch":
+                    if source == "qq-watch":
                         from .bili_watch import finish_watch
 
                         await finish_watch(self, job, outcome)
@@ -541,6 +558,9 @@ class BiliService:
                             )
                     except Exception:
                         pass
+            finally:
+                self.active_binding = None
+                self.origin_required = False
 
     async def run_agent(self, job):
         from .bili_agent import run_agent

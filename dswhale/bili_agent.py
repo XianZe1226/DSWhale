@@ -62,10 +62,24 @@ def append_diary(root, kind, text):
         stream.write("\n\n## " + datetime.now(UTC).isoformat() + "\n" + text + "\n")
 
 
+def job_binding(service):
+    """A qq-watch task must use its captured origin; new autonomy uses delivery."""
+    binding = getattr(service, "active_binding", None)
+    if binding is None and getattr(service, "origin_required", False):
+        raise RuntimeError("原会话已解绑，拒绝跨渠道投递")
+    if binding is None:
+        binding = service.companion.settings.delivery_binding
+    if binding is None:
+        raise RuntimeError("尚未绑定主人私聊或默认主动渠道不可用")
+    return binding
+
+
 async def owner_event(service):
     from .qq_transport import owner_event as make_event
 
-    return await make_event(service.companion, "DSWhale 内部活动", "bili-internal")
+    return await make_event(
+        service.companion, "DSWhale 内部活动", "bili-internal", job_binding(service)
+    )
 
 
 async def share_qq(service, text, bvid="", reason="", score=0, rank=1):
@@ -98,8 +112,15 @@ async def share_qq(service, text, bvid="", reason="", score=0, rank=1):
     elif cfg.get("diary", {}).get("push") is False:
         return "日记摘要推送已关闭。"
     c = service.companion
+    # Resolve the destination before reserving budget: a required-but-unbound
+    # origin (or missing default) must not consume a proactive slot.
+    binding = job_binding(service)
+    if not c.delivery_platform_ready(binding):
+        return "当前 QQ 连接未在线，没有发送。"
     now = datetime.now(UTC)
-    activity = c.scheduler.reserve(now, external_kind="bili-share" if bvid else "bili-note")
+    activity = c.scheduler.reserve(
+        now, external_kind="bili-share" if bvid else "bili-note", target_scope=binding.umo
+    )
     if not activity:
         return "QQ 的每日预算、未回复限制或暂停规则阻止了本次发送。"
     try:
@@ -129,7 +150,7 @@ async def share_qq(service, text, bvid="", reason="", score=0, rank=1):
         from .qq_transport import send_owner_text
 
         c.store.transition(activity.id, "queued", now.timestamp())
-        confirmed = await send_owner_text(c, text)
+        confirmed = await send_owner_text(c, text, binding)
         c.store.transition(
             activity.id, "sent" if confirmed else "uncertain", datetime.now(UTC).timestamp()
         )
@@ -144,7 +165,8 @@ async def share_qq(service, text, bvid="", reason="", score=0, rank=1):
 async def run_agent(service, job):
     c = service.companion
     event = await owner_event(service)
-    provider = await c.context.get_using_provider_async(c.settings.owner_scope)
+    scope = job.get("origin") if job.get("source") == "qq-watch" else c.settings.owner_scope
+    provider = await c.context.get_using_provider_async(scope)
     if not provider:
         raise RuntimeError("未配置聊天模型")
     texts = [
@@ -201,7 +223,7 @@ async def run_agent(service, job):
                 if len(attempted) >= limit:
                     return "本轮已达到视频数量上限，先整理已读资料。"
                 if not c.store.claim_video(
-                    c.settings.owner_scope,
+                    scope,
                     "https://www.bilibili.com/video/" + bvid,
                     datetime.now(UTC).timestamp(),
                 ):

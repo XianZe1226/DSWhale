@@ -162,3 +162,62 @@ def test_cli_outputs_utf8_under_legacy_windows_pipe_encoding(tmp_path):
     )
     assert result.returncode == 0
     assert "已安装" in result.stdout.decode("utf-8")
+
+
+def test_repeated_upgrade_preserves_full_settings_unknown_fields_and_database(tmp_path):
+    from dswhale.desktop_settings import migrate_settings
+
+    host = tmp_path / "升级 主机"
+    data = host / "data"
+    (data / "config").mkdir(parents=True)
+    config = {
+        "dashboard": {"host": "127.0.0.1", "port": 6185},
+        "platform": [
+            {
+                "id": "old-qq",
+                "type": "aiocqhttp",
+                "enable": True,
+                "ws_reverse_port": 6199,
+                "ws_reverse_token": "SYNTHETIC-ONEBOT-TOKEN",
+            }
+        ],
+        "provider_sources": [{"id": "source", "key": ["SYNTHETIC-KEY"]}],
+        "provider": [{"id": "model", "model": "cloud-model", "enable": True}],
+        "admins_id": ["123456789"],
+        "unknown_top_level": {"keep": [{"x": None}]},
+    }
+    fish = {
+        "owner_qq": "123456789",
+        "owner_umo": "old-qq:FriendMessage:123456789",
+        "proactive_enabled": True,
+        "bili_enabled": True,
+        "qq_signature_enabled": True,
+        "qzone_enabled": True,
+        "discover_enabled": True,
+        "daily_limit": 0,
+        "quiet_end": "",
+        "persona": "SYNTHETIC-PRIVATE-PERSONA",
+        "legacy_unknown": {"a": [1, 2]},
+    }
+    config_file = data / "cmd_config.json"
+    fish_file = data / "config/astrbot_plugin_dswhale_config.json"
+    config_file.write_text(json.dumps(config, ensure_ascii=False), encoding="utf-8")
+    fish_file.write_text(json.dumps(fish, ensure_ascii=False), encoding="utf-8")
+    database = data / "state.db"
+    database.write_bytes(b"SYNTHETIC-DATABASE-SENTINEL")
+    config_bytes = config_file.read_bytes()
+
+    install_plugin(host)
+    install_plugin(host)
+    assert config_file.read_bytes() == config_bytes
+    assert database.read_bytes() == b"SYNTHETIC-DATABASE-SENTINEL"
+    first = migrate_settings(host)
+    assert first["changed"] is True
+    migrated = json.loads(fish_file.read_text(encoding="utf-8"))
+    for key, value in fish.items():
+        assert migrated[key] == value, key
+    assert migrated["qq_default_delivery"] == ""
+    assert migrated["config_migration_version"] == 1
+    assert config_file.read_bytes() == config_bytes
+    assert database.read_bytes() == b"SYNTHETIC-DATABASE-SENTINEL"
+    assert migrate_settings(host)["changed"] is False

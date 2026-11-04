@@ -15,6 +15,23 @@
     "default": "",
     "hint": "用官方机器人私聊发送 /fish whoami，复制完整本会话；不是普通 QQ 号码。先关闭签名和空间开关再切换官方模式。"
   },
+  "qq_default_delivery": {
+    "description": "主动消息默认渠道（留空沿用旧接入方式）",
+    "type": "string",
+    "default": "",
+    "options": [
+      "",
+      "napcat",
+      "official"
+    ],
+    "hint": "两路可同时接入；主动聊天和自动推荐只走这里选定的已绑定渠道。留空时沿用旧 qq_connection_mode 兼容行为。"
+  },
+  "config_migration_version": {
+    "description": "内部：配置迁移版本",
+    "type": "int",
+    "default": 0,
+    "hint": "由升级迁移维护，请勿手动修改。"
+  },
   "owner_qq": {
     "description": "主人 QQ 号码",
     "type": "string",

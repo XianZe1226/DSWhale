@@ -285,3 +285,19 @@ test('GUI environment detects trusted platform tool directories with an empty PA
     assert.equal(repeated.length,new Set(repeated).size);
   }finally {if(previous===undefined)delete process.env.PATH;else process.env.PATH=previous;await fs.rm(dir,{recursive:true,force:true});}
 });
+
+test('duplicate version probes for one tool are coalesced inside an inspect pass', async () => {
+  const fsSync = require('node:fs');
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'dswhale-version-memo-'));
+  const counter = path.join(directory, 'count');
+  const script = path.join(directory, 'fake-python');
+  fsSync.writeFileSync(script, `#!/bin/sh\necho x >> "${counter}"\necho "Python 3.12.15"\n`);
+  fsSync.chmodSync(script, 0o755);
+  const manager = Object.create(runtime.RuntimeManager.prototype);
+  manager._versionMemo = new Map();
+  const first = await manager._version(script, 'python', process.env);
+  const second = await manager._version(script, 'python', process.env);
+  assert.deepEqual(first, second);
+  assert.equal(fsSync.readFileSync(counter, 'utf8').trim().split('\n').length, 1);
+  await fs.rm(directory, { recursive: true, force: true });
+});

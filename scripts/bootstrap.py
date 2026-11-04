@@ -183,6 +183,36 @@ def repair_desktop_providers(host, python, env):
         )
 
 
+def migrate_desktop_settings(host, python, env):
+    # Additive config migrations run inside the managed Python's offline lock.
+    # Bootstrap itself only has filelock and must not import astrbot.core.
+    fish = host / "data/config/astrbot_plugin_dswhale_config.json"
+    if not fish.is_file():
+        return
+    run(
+        [python, "-m", "dswhale.desktop_settings", "migrate", "--host", str(host)],
+        cwd=host,
+        env=env,
+    )
+
+
+def verify_desktop_settings(host, python, env):
+    # Validate the first fixed-SDK config read after the new plugin schema is
+    # installed.  The child performs the read in an isolated ASTRBOT_ROOT and
+    # archives legacy values the schema cannot represent.
+    fish = host / "data/config/astrbot_plugin_dswhale_config.json"
+    if not fish.is_file():
+        return
+    schema = host / "data/plugins/astrbot_plugin_dswhale/_conf_schema.json"
+    if not schema.is_file():
+        raise SystemExit("安装后的插件缺少配置 schema，无法验证升级结果。")
+    run(
+        [python, "-m", "dswhale.upgrade_verify", "--host", str(host)],
+        cwd=host,
+        env=env,
+    )
+
+
 def _sync_directory(directory):
     if os.name == "nt":
         return  # Windows does not support opening a directory for fsync.
@@ -260,7 +290,7 @@ def _complete_initial_login(host, credential, pending_file, credential_file):
     _sync_directory(pending_file.parent)
 
 
-def initialize_host_config(host, python, env, *, desktop=False):
+def initialize_host_config(host, python, env, *, desktop=False, migrate=True):
     config_file = host / "data/cmd_config.json"
     credential_file = host.parent / "desktop-auth.json"
     pending_file = host.parent / ".desktop-auth.pending.json"
@@ -275,6 +305,8 @@ def initialize_host_config(host, python, env, *, desktop=False):
             _complete_initial_login(host, credential, pending_file, credential_file)
         if desktop:
             repair_desktop_providers(host, python, env)
+            if migrate:
+                migrate_desktop_settings(host, python, env)
         return
     if desktop:
         if pending_file.exists():
@@ -306,6 +338,8 @@ def initialize_host_config(host, python, env, *, desktop=False):
     if desktop:
         _complete_initial_login(host, credential, pending_file, credential_file)
         repair_desktop_providers(host, python, env)
+        if migrate:
+            migrate_desktop_settings(host, python, env)
 
 
 def main():
@@ -449,9 +483,14 @@ def prepare(source, runtime):
         # Run desktop recovery even when an interrupted SDK init already wrote
         # cmd_config.json. Legacy launchers defer SDK password creation to Start.
         if os.environ.get("DSWHALE_DESKTOP") == "1":
-            initialize_host_config(host, python, env, desktop=True)
+            initialize_host_config(host, python, env, desktop=True, migrate=False)
         progress("plugins", 0.82)
         lock.release()
+        # The migration child takes the host lock itself. It must run while the
+        # parent has released it, otherwise the child sees a foreign owner and
+        # an upgrade of an existing install fails before doing any work.
+        if os.environ.get("DSWHALE_DESKTOP") == "1":
+            migrate_desktop_settings(host, python, env)
         run(
             [
                 python,
@@ -468,6 +507,8 @@ def prepare(source, runtime):
             env=env,
         )
         lock.acquire()
+        if os.environ.get("DSWHALE_DESKTOP") == "1":
+            verify_desktop_settings(host, python, env)
         run(
             [
                 uv,
@@ -490,7 +531,8 @@ def prepare(source, runtime):
         receipt.replace(runtime / "desktop-install.json")
         progress("complete", 0.99)
     finally:
-        lock.release()
+        if lock.is_locked:
+            lock.release()
     print("环境准备完成。请从桌面应用或项目根目录 Start 启动。")
     print("QQ 登录、模型密钥和 B站扫码需要本人操作，请按设置说明配置。")
 

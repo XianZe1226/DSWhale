@@ -26,14 +26,35 @@ def test_runtime_health_file_contains_connection_flags_only(companion):
     c.write_health()
     value = json.loads(c.store.path.with_name("health.json").read_text())
     assert value["qqConnected"] is True
-    assert set(value) == {"format", "updatedAt", "qqConnected", "biliReady", "biliErrorCode"}
+    assert value["format"] == 2
+    assert set(value) == {
+        "format",
+        "updatedAt",
+        "channels",
+        "qqConnected",
+        "biliReady",
+        "biliErrorCode",
+    }
+    assert value["channels"]["napcat"] == {
+        "bound": True,
+        "platformReady": True,
+        "protocolConnected": True,
+    }
+    assert value["channels"]["official"] == {
+        "bound": False,
+        "platformReady": False,
+        "protocolConnected": False,
+    }
     assert "private-account" not in json.dumps(value)
+    assert "123" not in json.dumps(value["channels"])
 
 
 class Host:
     def __init__(self):
         self.queue = asyncio.Queue()
-        self.client = SimpleNamespace(call_action=self.action)
+        self.client = SimpleNamespace(
+            call_action=self.action, _wsr_api_clients={"synthetic-account": object()}
+        )
         self.platform = SimpleNamespace(
             meta=lambda: PlatformMetadata("aiocqhttp", "test", "qq"),
             create_event=self.event,
@@ -642,3 +663,55 @@ assert "dswhale" not in sys.modules
         cwd=tmp_path,
     )
     assert result.returncode == 0, result.stderr
+
+
+async def test_tick_waits_without_burning_budget_when_default_platform_is_unavailable(companion):
+    c = companion
+    scope = c.settings.owner_scope
+    local_day = c.settings.local_time(NOW).date().isoformat()
+
+    def assert_no_activity():
+        assert c.store.recent_activities(scope) == []
+        assert c.store.count_local_day([scope], local_day) == 0
+        assert c.store.state(scope)["unanswered"] == 0
+
+    c.store.state(scope)
+    c.store.db.execute(
+        "UPDATE sessions SET next_due=?,unanswered=0 WHERE scope=?",
+        (NOW.timestamp() - 1, scope),
+    )
+    original_platform = c.context.get_platform_inst
+    # Removed/unloaded default platform.
+    c.context.get_platform_inst = lambda ident: None
+    await c.tick(NOW)
+    assert_no_activity()
+    # Loaded platform but the OneBot client is offline.
+    c.context.get_platform_inst = original_platform
+    connected = c.context.client._wsr_api_clients
+    c.context.client._wsr_api_clients = {}
+    await c.tick(NOW)
+    assert_no_activity()
+    # Reconnected: one activity can be claimed, and it consumes the budget.
+    c.context.client._wsr_api_clients = connected
+    await c.tick(NOW)
+    assert len(c.store.recent_activities(scope)) == 1
+    assert c.store.count_local_day([scope], local_day) == 1
+    assert c.store.state(scope)["unanswered"] == 1
+
+
+async def test_offline_default_platform_still_expires_old_claims(companion):
+    c = companion
+    scope = c.settings.owner_scope
+    old = NOW.timestamp() - 1200
+    c.store.db.execute(
+        "INSERT INTO activities(id,scope,kind,local_day,status,created,updated,error) "
+        "VALUES(?,?,?,?,?,?,?,?)",
+        ("stale-claim", scope, "bili-note", NOW.date().isoformat(), "queued", old, old, ""),
+    )
+    assert c.store.has_pending([scope]) is True
+    c.context.client._wsr_api_clients = {}
+    await c.tick(NOW)
+    assert c.store.activity("stale-claim").status == "uncertain"
+    assert c.store.has_pending([scope]) is False
+    assert c.store.state(scope)["unanswered"] == 0
+    assert c.context.queue.empty()

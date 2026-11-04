@@ -122,10 +122,14 @@ class SocialActions:
             raise
 
     def _authorize(self, event):
-        if not self.settings.matches(
-            event.get_sender_id(), event.unified_msg_origin, private=event.is_private_chat()
-        ):
-            raise PermissionError("此功能仅限已绑定主人的 QQ 私聊")
+        binding = self.settings.binding_for(
+            event.get_sender_id(),
+            event.unified_msg_origin,
+            private=event.is_private_chat(),
+            platform_type=event.get_platform_name(),
+        )
+        if binding is None or binding.channel != "napcat":
+            raise PermissionError("此功能仅限已绑定的普通 QQ 小号私聊")
         if self.require_owner(event) is False:
             raise PermissionError("此功能仅限已绑定主人的 QQ 私聊")
         if event.get_extra("dswhale_activity_id") is not None or (

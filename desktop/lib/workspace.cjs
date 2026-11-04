@@ -4,9 +4,10 @@ const ACTIONS=new Set(['workspace-status','health-check','backup-list','backup-r
 class Workspace{
  constructor(options){Object.assign(this,options);this.healthReport=null;}
  async health(){if(!this.isInstalled())return null;this.healthReport=await this.operations.health();return this.healthReport;}
- async status(){return {health:await this.health(),backups:await this.operations.backups(),appUpdate:await this.appUpdater.status(),napcat:this.getQQStatus?await this.getQQStatus():await this.napcat.status(),preferences:await this.preferences.read(),diagnosticFiles:DIAGNOSTIC_FILES};}
+ async snapshot(){return {health:this.healthReport,backups:await this.operations.backups(),appUpdate:await this.appUpdater.status(),napcat:this.getQQStatus?await this.getQQStatus():await this.napcat.status(),preferences:await this.preferences.read(),diagnosticFiles:DIAGNOSTIC_FILES};}
+ async status(){return {...await this.snapshot(),health:await this.health()};}
  async perform(action,payload){
-  if(action==='workspace-status')return this.status();
+  if(action==='workspace-status')return this.snapshot();
   if(action==='health-check')return {health:await this.health()};
   if(action==='backup-list')return {backups:await this.operations.backups()};
   if(action==='backup-restore'){const file=await this.operations.backupFile(payload.id);await this.restoreFile(file);return {health:await this.health(),backups:await this.operations.backups()};}
@@ -15,7 +16,7 @@ class Workspace{
   if(action==='preferences-save'){const value=await this.preferences.save(payload);await this.applyPreferences(value);return {preferences:value};}
   if(action==='napcat-guide'){await this.openGuide();return {};}
   if(action==='napcat-login-code'){await this.showLoginInfo(await this.napcat.loginInfo());return {};}
-  if(['napcat-install','napcat-configure','napcat-wire'].includes(action)&&this.getQQMode?.()==='official')throw new Error('官方模式无需 NapCat，请先切换接入方式');
+
   if(action==='napcat-install'){if(!this.isInstalled())throw new Error('请先准备运行环境');await this.stopServices();return {napcat:await this.napcat.install()};}
   if(action==='napcat-configure'){const folder=await this.chooseNapCat();if(!folder)return {canceled:true};await this.napcat.stop();return {napcat:await this.napcat.configure(folder)};}
   if(action==='napcat-wire')return {napcat:await this.napcat.wire()};

@@ -1,4 +1,5 @@
 import asyncio
+from dataclasses import replace
 from datetime import datetime, timedelta
 from types import SimpleNamespace
 from zoneinfo import ZoneInfo
@@ -15,6 +16,19 @@ from dswhale.store import Store
 
 SCOPE = "official-test:FriendMessage:OPAQUE_CaseSensitive_001"
 NOW = datetime(2026, 10, 25, 10, tzinfo=ZoneInfo("Asia/Shanghai"))
+
+
+def dual_settings(**extra):
+    return Settings.from_mapping(
+        {
+            "owner_qq": "12345678",
+            "owner_umo": "old-qq:FriendMessage:12345678",
+            "official_owner_umo": SCOPE,
+            "qq_connection_mode": "napcat",
+            "qq_default_delivery": "official",
+            **extra,
+        }
+    )
 
 
 def settings(**extra):
@@ -42,17 +56,43 @@ def test_official_identity_is_private_adapter_and_instance_scoped_without_rewrit
     ]:
         with pytest.raises(ValueError):
             settings(official_owner_umo=scope)
-    with pytest.raises(ValueError):
-        settings(qq_signature_enabled=True)
-    with pytest.raises(ValueError):
-        settings(qzone_enabled=True)
+    dual = settings(
+        owner_qq="12345678",
+        owner_umo="old-qq:FriendMessage:12345678",
+        qq_signature_enabled=True,
+        qzone_enabled=True,
+    )
+    assert {binding.channel for binding in dual.owner_bindings} == {"napcat", "official"}
+    assert dual.delivery_binding.channel == "official"
+    napcat_binding = dual.binding_for(
+        "12345678", "old-qq:FriendMessage:12345678", private=True, platform_type="aiocqhttp"
+    )
+    assert napcat_binding is not None and napcat_binding.channel == "napcat"
+    official_binding = dual.binding_for(
+        dual.owner_id, SCOPE, private=True, platform_type="qq_official"
+    )
+    assert official_binding is not None and official_binding.channel == "official"
+    assert not dual.matches(cfg.owner_id, SCOPE, private=True, platform_type="aiocqhttp")
+    switched = replace(dual, qq_default_delivery="napcat")
+    assert switched.delivery_binding.channel == "napcat"
+    assert (
+        switched.binding_for(dual.owner_id, SCOPE, private=True, platform_type="qq_official")
+        is not None
+    )
 
 
 class Host:
     def __init__(self):
         self.queue = asyncio.Queue()
         self.sent = []
-        self.client = SimpleNamespace(_active_websockets=[])
+        self.client = SimpleNamespace(
+            _active_websockets=[
+                SimpleNamespace(
+                    _conn=SimpleNamespace(closed=False),
+                    _session={"session_id": "SYNTHETIC-GATEWAY"},
+                )
+            ]
+        )
         self.platform = SimpleNamespace(
             meta=lambda: PlatformMetadata("qq_official", "test", "official-test"),
             get_client=lambda: self.client,
@@ -137,11 +177,15 @@ async def test_official_health_requires_a_live_gateway_session_and_exposes_no_op
     c.write_health()
     file = tmp_path / "health.json"
     report = json.loads(file.read_text())
-    assert report["qqConnected"] is True
+    assert report["format"] == 2
+    assert report["channels"]["official"]["bound"] is True
+    assert report["channels"]["official"]["platformReady"] is True
+    assert report["channels"]["official"]["protocolConnected"] is True
+    assert report["channels"]["napcat"]["bound"] is False
     assert "OPAQUE" not in file.read_text() and "GATEWAY" not in file.read_text()
     host.client._active_websockets[0]._session = {}
     c.write_health()
-    assert json.loads(file.read_text())["qqConnected"] is False
+    assert json.loads(file.read_text())["channels"]["official"]["protocolConnected"] is False
     await c.close()
 
 
@@ -195,5 +239,111 @@ async def test_official_real_events_require_c2c_provenance_and_binding_evidence(
         assert remember_c2c_scope(tmp_path, event)
         assert confirmed_c2c_scope(tmp_path, SCOPE)
         assert c.settings.owner_id not in (tmp_path / "official-c2c.json").read_text()
+    finally:
+        await c.close()
+
+
+@pytest.mark.asyncio
+async def test_both_bindings_authorize_independently_of_the_default_delivery(tmp_path):
+    from astrbot.api.platform import AstrBotMessage, MessageMember, MessageType
+    from botpy.message import C2CMessage
+
+    host = Host()
+    companion = Companion(host, dual_settings(), Store(tmp_path / "state.db"))
+    try:
+        message = AstrBotMessage()
+        message.message_str = "synthetic"
+        message.message = []
+        message.type = MessageType.FRIEND_MESSAGE
+        message.sender = MessageMember(companion.settings.owner_id, "synthetic")
+        message.session_id = companion.settings.owner_id
+        event = host.event(message)
+        message.raw_message = C2CMessage(
+            None, "synthetic", {"author": {"user_openid": companion.settings.owner_id}}
+        )
+        assert companion.authorized(event)
+        for default in ("official", "napcat", ""):
+            companion.settings = replace(companion.settings, qq_default_delivery=default)
+            assert companion.authorized(event)
+        message.raw_message = None
+        assert not companion.authorized(event)
+    finally:
+        await companion.close()
+
+
+@pytest.mark.asyncio
+async def test_dual_official_tick_ledger_matches_event_and_stays_uncertain(tmp_path, monkeypatch):
+    monkeypatch.setattr("dswhale.adapter.now_utc", lambda: NOW)
+    host = Host()
+    dual = dual_settings(
+        proactive_enabled=True,
+        quiet_start="00:00",
+        quiet_end="00:00",
+        daily_limit=5,
+        min_interval_minutes=120,
+        max_interval_minutes=120,
+    )
+    c = Companion(host, dual, Store(tmp_path / "state.db"))
+    try:
+        # A due budget for both bound scopes; the default (official) is the target.
+        for binding in dual.owner_bindings:
+            c.store.state(binding.umo)
+            c.store.db.execute(
+                "UPDATE sessions SET next_due=?, paused=0 WHERE scope=?",
+                (NOW.timestamp() - 1, binding.umo),
+            )
+        await c.tick(NOW)
+        assert host.queue.qsize() == 1
+        event = await host.queue.get()
+        activity = c.store.activity(c.internal_id(event))
+        assert activity is not None
+        assert activity.scope == SCOPE
+        assert event.unified_msg_origin == SCOPE
+        await event.send(MessageChain([Plain("给你留句话")]))
+        assert len(host.sent) == 1 and host.sent[0][0] == SCOPE
+        assert event.get_extra("dswhale_transport_succeeded") is False
+        c.delivered(event, NOW)
+        assert c.store.activity(activity.id).status == "uncertain"
+    finally:
+        await c.close()
+
+
+@pytest.mark.asyncio
+async def test_official_tick_waits_when_default_gateway_is_known_offline(tmp_path):
+    host = Host()
+    c = Companion(
+        host,
+        settings(
+            proactive_enabled=True,
+            quiet_start="00:00",
+            quiet_end="00:00",
+            daily_limit=3,
+            min_interval_minutes=120,
+            max_interval_minutes=120,
+        ),
+        Store(tmp_path / "state.db"),
+    )
+    try:
+        scope = c.settings.owner_scope
+        local_day = c.settings.local_time(NOW).date().isoformat()
+        c.store.state(scope)
+        c.store.db.execute(
+            "UPDATE sessions SET next_due=?,unanswered=0 WHERE scope=?",
+            (NOW.timestamp() - 1, scope),
+        )
+        host.client._active_websockets = []
+        await c.tick(NOW)
+        assert c.store.recent_activities(scope) == []
+        assert c.store.count_local_day([scope], local_day) == 0
+        assert c.store.state(scope)["unanswered"] == 0
+        host.client._active_websockets = [
+            SimpleNamespace(
+                _conn=SimpleNamespace(closed=False),
+                _session={"session_id": "SYNTHETIC-GATEWAY"},
+            )
+        ]
+        await c.tick(NOW)
+        assert len(c.store.recent_activities(scope)) == 1
+        assert c.store.count_local_day([scope], local_day) == 1
     finally:
         await c.close()

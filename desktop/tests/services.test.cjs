@@ -15,7 +15,7 @@ test('QQ readiness comes from a fresh host connection snapshot rather than open 
   t.after(() => fs.rm(host, { recursive: true, force: true }));
   const file = path.join(host, 'data/plugin_data/astrbot_plugin_dswhale/health.json');
   await fs.mkdir(path.dirname(file), { recursive: true });
-  const context = { host, running: true, startedAt: 1980000, now: 2000000 };
+  const context = { host, running: true, startedAt: 1980000, now: 2000000, legacyChannel: 'napcat' };
   for (const [snapshot, expected] of [
     [{ updatedAt: 1999, qqConnected: true, token: 'synthetic-private-token' }, true],
     [{ updatedAt: 1999, qqConnected: false }, false],
@@ -29,6 +29,9 @@ test('QQ readiness comes from a fresh host connection snapshot rather than open 
   }
   await fs.writeFile(file, JSON.stringify({ updatedAt: 1999, qqConnected: true }));
   assert.equal(await readQQConnectionHealth({ ...context, running: false }), false);
+  // A format 1 boolean is never misattributed to the other channel.
+  assert.equal(await readQQConnectionHealth({ ...context, channel: 'official' }), null);
+  assert.equal(await readQQConnectionHealth({ ...context, channel: 'official', legacyChannel: 'official' }), true);
 });
 
 test('missing, malformed and oversized QQ snapshots cannot invent connection readiness', async t => {
