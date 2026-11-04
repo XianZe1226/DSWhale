@@ -10,6 +10,7 @@ from __future__ import annotations
 import argparse
 import json
 import sqlite3
+from contextlib import closing
 from pathlib import Path
 
 from .desktop_settings import _replace_documents
@@ -100,7 +101,7 @@ def pending_activity(host):
     if not file.is_file():
         return {"pending": False, "database": "missing"}
     try:
-        with sqlite3.connect(f"file:{file}?mode=ro", uri=True, timeout=2) as db:
+        with closing(sqlite3.connect(f"file:{file}?mode=ro", uri=True, timeout=2)) as db:
             row = db.execute(
                 "SELECT 1 FROM activities WHERE status IN ('reserved','queued') LIMIT 1"
             ).fetchone()
@@ -125,10 +126,10 @@ def main(argv=None):
             if not args.platform or not args.enable:
                 raise ValueError("平台参数无效")
             value = set_platform_enabled(args.host, args.platform, args.enable == "true")
-        print(json.dumps(value, ensure_ascii=False))
+        print(json.dumps(value, ensure_ascii=True))
         return 0
     except (ValueError, OSError, TypeError) as error:
-        print(json.dumps({"error": str(error) or "连接平台操作未完成"}, ensure_ascii=False))
+        print(json.dumps({"error": str(error) or "连接平台操作未完成"}, ensure_ascii=True))
         return 1
 
 

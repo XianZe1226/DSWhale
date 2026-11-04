@@ -16,6 +16,48 @@ def bootstrap():
     return module
 
 
+def _assert_private_files(*paths):
+    """Inspect the actual platform policy, including archives from prepare()."""
+    import os
+    import subprocess
+
+    if os.name != "nt":
+        for path in paths:
+            assert path.stat().st_mode & 0o777 == 0o600
+        return
+    script = (
+        '$ErrorActionPreference = "Stop"; '
+        "$current = [System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value; "
+        "foreach ($path in ($env:DSWHALE_TEST_PRIVATE_FILES | ConvertFrom-Json)) { "
+        "$acl = Get-Acl -LiteralPath $path; "
+        "if (-not $acl.AreAccessRulesProtected) { throw 'Unprotected DACL' }; "
+        "if ($acl.GetOwner([System.Security.Principal.SecurityIdentifier]).Value -ne $current) "
+        "{ throw 'Unexpected owner' }; "
+        "$rules = @($acl.GetAccessRules($true, $true, [System.Security.Principal.SecurityIdentifier])); "
+        "if (@($rules | Where-Object { $_.IdentityReference.Value -ne $current }).Count -ne 0) "
+        "{ throw 'Unexpected access rule' } }"
+    )
+    subprocess.run(
+        [
+            str(
+                Path(os.environ.get("SystemRoot", r"C:\Windows"))
+                / "System32/WindowsPowerShell/v1.0/powershell.exe"
+            ),
+            "-NoProfile",
+            "-NonInteractive",
+            "-Command",
+            script,
+        ],
+        env={
+            **{key: value for key, value in os.environ.items() if key.upper() != "PSMODULEPATH"},
+            "DSWHALE_TEST_PRIVATE_FILES": json.dumps([str(path) for path in paths]),
+        },
+        capture_output=True,
+        check=True,
+        timeout=30,
+    )
+
+
 def test_explicit_runtime_is_outside_source_and_legacy_default_stays_local(tmp_path, monkeypatch):
     module = bootstrap()
     assert hasattr(module, "runtime_directory")
@@ -769,6 +811,7 @@ def test_repeat_prepare_migration_uses_one_real_host_lock(tmp_path, monkeypatch)
                 env=migration_env,
                 capture_output=True,
                 text=True,
+                encoding="utf-8",
                 timeout=120,
             )
             if completed.returncode != 0:
@@ -884,6 +927,7 @@ def test_upgrade_first_sdk_read_preserves_supported_values_and_migration_receipt
             env=child_environment(kwargs),
             capture_output=True,
             text=True,
+            encoding="utf-8",
             timeout=180,
         )
         if completed.returncode != 0:
@@ -987,7 +1031,7 @@ def test_upgrade_first_sdk_read_preserves_supported_values_and_migration_receipt
     archived = json.loads(archive_file.read_text(encoding="utf-8"))
     assert archived["fields"]["legacy_unknown_field"] == fish["legacy_unknown_field"]
     assert archived["fields"]["legacy_empty_dict"] == {}
-    assert archive_file.stat().st_mode & 0o777 == 0o600
+    _assert_private_files(archive_file, receipts)
     assert json.loads(receipt.read_text())["version"] == "0.3.0a10"
 
     # Second upgrade pass is idempotent: no new archive and stable values.

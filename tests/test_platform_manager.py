@@ -103,6 +103,7 @@ def test_pending_activity_missing_database_is_explicit_fresh_install(tmp_path):
 
 def test_pending_activity_read_failures_are_unknown_not_empty(tmp_path):
     import sqlite3
+    from contextlib import closing
 
     from dswhale.platform_manager import pending_activity
 
@@ -115,13 +116,14 @@ def test_pending_activity_read_failures_are_unknown_not_empty(tmp_path):
         pending_activity(host)
     # Valid sqlite file without the activities table.
     state.write_bytes(b"")
-    with sqlite3.connect(state) as db:
+    with closing(sqlite3.connect(state)) as db:
         db.execute("CREATE TABLE other(value TEXT)")
+        db.commit()
     with pytest.raises(ValueError, match="无法确认"):
         pending_activity(host)
     # Real write lock while reading.
     state.unlink()
-    with sqlite3.connect(state) as db:
+    with closing(sqlite3.connect(state)) as db:
         db.execute("CREATE TABLE activities(status TEXT)")
         db.execute("INSERT INTO activities VALUES('reserved')")
         db.commit()
@@ -145,6 +147,7 @@ def test_pending_activity_cli_propagates_unknown_as_failure(tmp_path):
     state.parent.mkdir(parents=True)
     state.write_bytes(b"not a sqlite database")
     env = dict(os.environ)
+    env["PYTHONIOENCODING"] = "cp1252"
     env["PYTHONPATH"] = os.pathsep.join(
         [str(Path(__file__).parents[1]), env.get("PYTHONPATH", "")]
     ).strip(os.pathsep)
@@ -157,4 +160,48 @@ def test_pending_activity_cli_propagates_unknown_as_failure(tmp_path):
         timeout=60,
     )
     assert completed.returncode != 0
-    assert "无法确认" in completed.stdout
+    assert completed.stdout, "CLI errors must remain valid JSON on non-UTF-8 Windows consoles"
+    assert "无法确认" in json.loads(completed.stdout)["error"]
+
+
+@pytest.mark.parametrize("kind", ["present", "missing-table", "corrupt"])
+def test_pending_activity_closes_connections_on_success_and_failure(tmp_path, monkeypatch, kind):
+    import sqlite3
+    from contextlib import closing
+
+    import dswhale.platform_manager as manager
+
+    host, _ = host_files(tmp_path)
+    state = _pending_state(host)
+    state.parent.mkdir(parents=True)
+    if kind == "corrupt":
+        state.write_bytes(b"not a SQLite database")
+    else:
+        with closing(sqlite3.connect(state)) as db:
+            db.execute(
+                "CREATE TABLE activities(status TEXT)"
+                if kind == "present"
+                else "CREATE TABLE other(value TEXT)"
+            )
+            db.commit()
+    original = sqlite3.connect
+    connections = []
+
+    def connect(*args, **kwargs):
+        db = original(*args, **kwargs)
+        connections.append(db)
+        return db
+
+    monkeypatch.setattr(manager.sqlite3, "connect", connect)
+    if kind == "present":
+        assert manager.pending_activity(host)["pending"] is False
+    else:
+        with pytest.raises(ValueError, match="无法确认"):
+            manager.pending_activity(host)
+    try:
+        assert len(connections) == 1
+        with pytest.raises(sqlite3.ProgrammingError, match="closed"):
+            connections[0].execute("SELECT 1")
+    finally:
+        for db in connections:
+            db.close()
