@@ -288,16 +288,40 @@ test('GUI environment detects trusted platform tool directories with an empty PA
 
 test('duplicate version probes for one tool are coalesced inside an inspect pass', async () => {
   const fsSync = require('node:fs');
-  const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'dswhale-version-memo-'));
-  const counter = path.join(directory, 'count');
-  const script = path.join(directory, 'fake-python');
-  fsSync.writeFileSync(script, `#!/bin/sh\necho x >> "${counter}"\necho "Python 3.12.15"\n`);
-  fsSync.chmodSync(script, 0o755);
-  const manager = Object.create(runtime.RuntimeManager.prototype);
+  const vm = require('node:vm');
+  const { EventEmitter } = require('node:events');
+  const file = path.resolve(__dirname, '../lib/runtime.cjs');
+  const nativeRequire = require('node:module').createRequire(file);
+  const loaded = { exports: {} };
+  let calls = 0;
+  // Only process creation is replaced. Run the actual version parser, bounded
+  // stdout reader and memoization on every OS, without a POSIX shell fixture.
+  const spawn = (command, args) => {
+    assert.equal(command, 'synthetic-python');
+    assert.deepEqual(Array.from(args), ['--version']);
+    calls++;
+    const child = new EventEmitter();
+    child.stdout = new EventEmitter();
+    child.stderr = new EventEmitter();
+    queueMicrotask(() => {
+      child.stdout.emit('data', Buffer.from('Python 3.12.15\n'));
+      child.emit('close', 0);
+    });
+    return child;
+  };
+  vm.runInNewContext(fsSync.readFileSync(file, 'utf8'), {
+    module: loaded, require: name => name === 'node:child_process' ? { spawn } : nativeRequire(name),
+    process, Buffer, setTimeout, clearTimeout,
+  });
+  const manager = Object.create(loaded.exports.RuntimeManager.prototype);
   manager._versionMemo = new Map();
-  const first = await manager._version(script, 'python', process.env);
-  const second = await manager._version(script, 'python', process.env);
+  const [first, second] = await Promise.all([
+    manager._version('synthetic-python', 'python', {}),
+    manager._version('synthetic-python', 'python', {}),
+  ]);
+  assert.equal(first.version, 'Python 3.12.15');
+  assert.equal(first.ok, true);
   assert.deepEqual(first, second);
-  assert.equal(fsSync.readFileSync(counter, 'utf8').trim().split('\n').length, 1);
-  await fs.rm(directory, { recursive: true, force: true });
+  assert.deepEqual(await manager._version('synthetic-python', 'python', {}), first);
+  assert.equal(calls, 1);
 });
