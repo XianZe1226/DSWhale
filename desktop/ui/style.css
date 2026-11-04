@@ -79,3 +79,44 @@ select,textarea{font:inherit;color:inherit}select:focus-visible,textarea:focus-v
 .app-update-progress{padding:18px 20px;margin:20px 0;border:1px solid #dce7f6;border-radius:12px;background:#f7faff}.update-progress-heading{display:flex;align-items:center;gap:10px;color:#334b70;font-size:13px}.update-progress-heading>strong{flex:1;font-weight:550}.update-progress-heading>span:last-child{font-variant-numeric:tabular-nums}.app-update-progress progress{display:block;width:100%;height:8px;margin:15px 0 10px;accent-color:#2563c8;border:0;border-radius:8px;overflow:hidden}.app-update-progress p{font-size:12px;color:#64758d;line-height:1.7}.update-options{margin-top:22px;border-top:1px solid #edf0f5;padding-top:16px}.update-options summary{cursor:pointer;font-size:12px;color:#63758e}.update-options>label{font-size:12px;display:block;margin:14px 0 8px}.update-options>select{padding:7px 10px;border:1px solid #dae2ec;border-radius:7px;background:#fff;font-size:12px}.update-options>p{font-size:12px;color:#758397;line-height:1.8;margin-top:12px}.app-update-card>.card-actions>.button.primary{min-width:96px;min-height:40px;background:#2563c8;color:#fff;border-color:#2563c8}
 
 .connection-mode-picker{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px;margin-bottom:18px}.connection-mode-picker button{text-align:left;padding:14px 16px;border:1px solid #e0e6ef;border-radius:12px;background:#fff;color:#475b75;cursor:pointer}.connection-mode-picker strong{display:block;font-size:14px;font-weight:600}.connection-mode-picker span{display:block;font-size:12px;line-height:1.5;margin-top:5px;color:#6b7c92}.connection-mode-picker button.selected{border-color:#91b4ed;background:#f0f5ff;color:#234f94}.connection-mode-picker button:disabled{cursor:default;opacity:1}.connection-mode-picker button:focus-visible{outline:3px solid #94b9f4;outline-offset:3px}
+
+/* Connection management cards: two bounded columns with compact facts and a
+   bottom-aligned action instead of the browser's default definition-list flow. */
+.connection-channel-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:16px;margin:18px 0}
+.connection-channel-card{display:flex;flex-direction:column;gap:14px;min-width:0;padding:20px}
+.connection-channel-heading{display:flex;align-items:flex-start;justify-content:space-between;gap:12px}
+.connection-channel-heading h3{font-size:16px;letter-spacing:-.2px}
+.connection-channel-heading p{font-size:11px;line-height:1.6;color:#8794a9;margin-top:4px}
+.connection-channel-heading .badge{flex-shrink:0;margin-top:1px}
+.connection-channel-facts{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:9px;margin:0;padding:0}
+.connection-channel-facts>div{display:flex;flex-direction:column;gap:3px;min-width:0;padding:9px 11px;background:#f7f9fc;border:1px solid #edf1f6;border-radius:8px}
+.connection-channel-facts dt{font-size:10px;line-height:1.3;color:#96a3b5;font-weight:550;letter-spacing:.2px}
+.connection-channel-facts dd{margin:0;font-size:12px;line-height:1.45;color:#3f5068;font-weight:600;overflow-wrap:anywhere}
+.connection-channel-card>.option-help{font-size:11px;line-height:1.6;color:#b17832;background:#fff8eb;border:1px solid #f4e3c4;border-radius:8px;padding:8px 10px;margin:0}
+.connection-channel-card>.button{align-self:flex-start;margin-top:auto;min-width:96px}
+.connection-confirm{display:flex;flex-direction:column;gap:10px;padding:20px;margin-top:16px}
+.connection-confirm h3{font-size:15px}
+.connection-confirm p{font-size:12px;line-height:1.7;color:#57687e}
+.connection-confirm ul{margin:0;padding-left:18px;display:flex;flex-direction:column;gap:3px;font-size:11px;line-height:1.6;color:#7c8ba1}
+.connection-confirm label{font-size:11px;font-weight:600;color:#5b6b82}
+.connection-confirm input{max-width:220px;min-height:36px;padding:8px 10px;border:1px solid #dfe6f0;border-radius:8px;background:#fff}
+.connection-confirm .card-actions{margin-top:2px}
+@media(max-width:900px){.connection-channel-grid{grid-template-columns:1fr}}
+
+/* Selection tabs: keep the channel name and its small state pill on one row. */
+.connection-mode-picker strong{display:flex;align-items:center;justify-content:space-between;gap:10px}
+.connection-mode-picker strong em{flex-shrink:0;font-style:normal;font-size:10px;font-weight:550;line-height:1.1;color:#7d8ca3;background:#f3f6fb;border:1px solid #e7edf6;border-radius:999px;padding:4px 8px;white-space:nowrap}
+.connection-mode-picker button.selected strong em{color:#2f67b5;background:#e5efff;border-color:#cfdef8}
+
+/* Recent settings changes: compact, scannable rows instead of a raw list. */
+.settings-history{padding:20px 24px}
+.settings-history ul{list-style:none;margin:12px 0 0;padding:0;display:flex;flex-direction:column}
+.settings-history li{display:flex;align-items:center;justify-content:space-between;gap:14px;padding:12px 0;border-top:1px solid var(--line)}
+.settings-history li:first-child{border-top:0;padding-top:2px}
+.settings-history li>div{min-width:0}
+.settings-history li strong{display:block;font-size:11px;line-height:1.5;color:#5d6d84;font-weight:600}
+.settings-history li p{margin-top:3px;font-size:11px;line-height:1.55;color:#8a98ab}
+.settings-history .card-actions{flex-shrink:0}
+.settings-history .reliability-note{margin:0}
+.settings-history .reliability-empty{padding:6px 0 2px}
+@media(max-width:900px){.settings-history li{flex-direction:column;align-items:flex-start;gap:8px}.settings-history .card-actions{width:100%}}

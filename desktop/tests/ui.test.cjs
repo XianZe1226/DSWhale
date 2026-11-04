@@ -884,6 +884,7 @@ test('connect page shows both channel cards and requires typed confirmation befo
   assert.match(app.html(), /data-action="connection-change"/);
   await app.clickConnection('official', '0');
   assert.match(app.html(), /connection-confirm-typed/);
+  assert.match(app.html(), /确认停用 QQ 官方机器人/);
   assert.match(app.html(), /请输入「官方」/);
   assert.equal(app.calls.some(([action]) => action === 'connection-confirm'), false);
   app.setInput('connection-confirm-typed', '官方');
@@ -1111,4 +1112,335 @@ test('connection cards use live official health without another navigation', asy
   assert.match(app.html(), /QQ 官方机器人已连接/);
   app.pushState({ workspace: { official: { protocolConnected: false } } });
   assert.match(officialCard(), /离线/);
+});
+
+
+test('connection management cards have dedicated layout styles', () => {
+  const fs = require('node:fs');
+  const path = require('node:path');
+  const css = fs.readFileSync(path.join(__dirname, '../ui/style.css'), 'utf8');
+  assert.match(css, /\.connection-channel-grid\{[^}]*display:grid/);
+  assert.match(css, /\.connection-channel-facts\{[^}]*display:grid/);
+  assert.match(css, /\.connection-channel-card\{[^}]*display:flex/);
+  assert.match(css, /\.connection-channel-facts dd\{[^}]*overflow-wrap:anywhere/);
+  assert.match(css, /\.connection-confirm\{/);
+  assert.match(css, /@media\(max-width:900px\)\{\.connection-channel-grid\{grid-template-columns:1fr\}\}/);
+  assert.match(css, /\.connection-mode-picker strong\{[^}]*display:flex/);
+  assert.match(css, /\.connection-mode-picker strong em\{/);
+  assert.match(css, /\.settings-history\{[^}]*padding/);
+  assert.match(css, /\.settings-history li\{[^}]*border-top/);
+});
+
+test('disabled connection cards show a disabled fact instead of stale live health', async () => {
+  const connections = { channels: [
+    { channel: 'napcat', label: '普通 QQ 小号', platformEnabled: true, platformId: 'qq', bound: true, health: 'offline', protocolConnected: false, targetIssue: '', platformCandidates: [] },
+    { channel: 'official', label: 'QQ 官方机器人', platformEnabled: false, platformId: '', bound: false, health: 'offline', protocolConnected: false, targetIssue: '', platformCandidates: [] },
+  ] };
+  const settings = { ownerQQ: '123456', platformId: 'qq', onebotPort: 6199, dashboardPort: 6185, onebotToken: 'token', qqConnectionMode: 'napcat', officialConfigured: true, officialOwnerUMO: 'official-test:FriendMessage:OPAQUE', napcatConfigured: true };
+  const app = renderApp({
+    screen: 'connect',
+    workspace: workspaceStatus({ napcat: { running: true, loginState: 'online', protocolConnected: true }, official: { protocolConnected: true } }),
+    invoke: async action => {
+      if (action === 'inspect') return { installed: true, running: true, platform: { id: 'win32-x64', supported: true }, setup: { ownerConfigured: true } };
+      if (action === 'connections-status') return { connections };
+      if (action === 'settings-history') return { format: 1, records: [], migrationReceipt: null };
+      return settings;
+    },
+  });
+  await app.settle();
+  const officialCard = () => app.html().match(/<section class="card connection-channel-card"[^>]*aria-labelledby="connection-official-title"[\s\S]*?<\/section>/)?.[0] || '';
+  assert.match(officialCard(), /消息连接/);
+  assert.match(officialCard(), /未启用/);
+  assert.doesNotMatch(officialCard(), /消息连接[\s\S]*已连接/);
+  const model = load();
+  const data = connectionData({
+    state: { running: true },
+    settings: { qqConnectionMode: 'napcat', officialConfigured: true, officialOwnerUMO: 'official-test:FriendMessage:OPAQUE' },
+  });
+  data.connections = connections;
+  assert.equal(model.connectionViewModel({ ...data, connectionTab: 'official' }).stage, 'official-disabled');
+});
+
+function officialSnapshotData(platforms, { bound = false, boundId = '', configured = false } = {}) {
+  const qqConnections = require('../lib/qq-connections.cjs');
+  const data = connectionData({
+    state: { running: true },
+    settings: {
+      qqConnectionMode: 'official',
+      officialConfigured: configured,
+      officialOwnerUMO: bound ? 'bound-bot:FriendMessage:OPAQUE' : '',
+    },
+  });
+  data.connections = qqConnections.snapshot({
+    platforms,
+    bindings: { official: bound },
+    boundPlatformIds: { official: boundId },
+    health: { official: { state: 'connected', protocolConnected: true } },
+  });
+  data.workspace.official = { protocolConnected: true };
+  data.connectionTab = 'official';
+  return data;
+}
+
+test('official state uses the resolved target and per-instance credentials, not the enabled flag', () => {
+  const model = load();
+  const snapshotView = (...args) => model.connectionViewModel(officialSnapshotData(...args));
+
+  const disabled = snapshotView(
+    [{ id: 'bot', type: 'qq_official', enable: false, configured: true }],
+    { bound: true, boundId: 'bot', configured: false },
+  );
+  assert.equal(disabled.stage, 'official-disabled');
+
+  const enabledUnbound = snapshotView(
+    [{ id: 'bot', type: 'qq_official', enable: true, configured: true }],
+    { configured: true },
+  );
+  assert.equal(enabledUnbound.stage, 'official-owner');
+
+  const ambiguous = snapshotView(
+    [
+      { id: 'bot-a', type: 'qq_official', enable: true, configured: true },
+      { id: 'bot-b', type: 'qq_official', enable: true, configured: true },
+    ],
+    { configured: true },
+  );
+  assert.equal(ambiguous.stage, 'official-owner');
+  assert.match(ambiguous.title, /绑定/);
+
+  const missingBound = snapshotView(
+    [{ id: 'new-bot', type: 'qq_official', enable: true, configured: true }],
+    { bound: true, boundId: 'removed-bot', configured: true },
+  );
+  assert.equal(missingBound.stage, 'official-owner');
+  assert.match(missingBound.title, /重新绑定/);
+
+  const none = snapshotView([], { configured: false });
+  assert.equal(none.stage, 'official-setup');
+});
+
+test('official target problems never render as an explicitly disabled connection', async () => {
+  const model = load();
+  const data = officialSnapshotData(
+    [
+      { id: 'bot-a', type: 'qq_official', enable: true, configured: true },
+      { id: 'bot-b', type: 'qq_official', enable: true, configured: true },
+    ],
+    { configured: true },
+  );
+  data.connections.channels.find(item => item.channel === 'official').bound = false;
+  assert.notEqual(model.connectionViewModel(data).stage, 'official-disabled');
+
+  const app = renderApp({
+    screen: 'connect',
+    workspace: workspaceStatus({ official: { protocolConnected: true } }),
+    invoke: async action => {
+      if (action === 'inspect') return { installed: true, running: true, platform: { id: 'win32-x64', supported: true }, setup: { ownerConfigured: true } };
+      if (action === 'connections-status') return { connections: data.connections };
+      if (action === 'settings-history') return { format: 1, records: [], migrationReceipt: null };
+      return data.settings;
+    },
+  });
+  await app.settle();
+  const officialCard = app.html().match(/<section class="card connection-channel-card"[^>]*aria-labelledby="connection-official-title"[\s\S]*?<\/section>/)?.[0] || '';
+  assert.match(officialCard, /待确认/);
+  assert.doesNotMatch(officialCard, /已停用/);
+  assert.match(officialCard, /存在多个同类型平台/);
+});
+
+test('a resolved official target uses only its own credentials, never a sibling platform', () => {
+  const model = load();
+  const data = officialSnapshotData(
+    [
+      { id: 'official-a', type: 'qq_official', enable: true, configured: false },
+      { id: 'official-b', type: 'qq_official', enable: false, configured: true },
+    ],
+    { bound: true, boundId: 'official-a', configured: false },
+  );
+  assert.equal(data.connections.channels.find(item => item.channel === 'official').platformId, 'official-a');
+  assert.equal(model.connectionViewModel(data).stage, 'official-setup');
+  assert.equal(model.connectionViewModel(data).action, 'open-panel');
+  data.workspace.official = { protocolConnected: false };
+  assert.equal(model.connectionViewModel(data).stage, 'official-setup');
+  data.workspace.official = { protocolConnected: true };
+  assert.equal(model.connectionViewModel(data).stage, 'official-setup');
+
+  const stoppedTarget = officialSnapshotData(
+    [
+      { id: 'official-a', type: 'qq_official', enable: false, configured: false },
+      { id: 'official-b', type: 'qq_official', enable: true, configured: true },
+    ],
+    { bound: true, boundId: 'official-a', configured: false },
+  );
+  assert.equal(model.connectionViewModel(stoppedTarget).stage, 'official-setup');
+  assert.notEqual(model.connectionViewModel(stoppedTarget).stage, 'official-disabled');
+});
+
+test('unresolved targets with no enabled configured candidate guide configuration before binding', () => {
+  const model = load();
+  const ambiguous = officialSnapshotData(
+    [
+      { id: 'official-a', type: 'qq_official', enable: false, configured: true },
+      { id: 'official-b', type: 'qq_official', enable: false, configured: true },
+    ],
+    { configured: false },
+  );
+  const ambiguousView = model.connectionViewModel(ambiguous);
+  assert.equal(ambiguousView.stage, 'official-target');
+  assert.equal(ambiguousView.action, 'open-panel');
+  assert.doesNotMatch(JSON.stringify(ambiguousView), /保存私聊绑定|save-settings/);
+
+  const missingBound = officialSnapshotData(
+    [{ id: 'replacement-bot', type: 'qq_official', enable: false, configured: true }],
+    { bound: true, boundId: 'removed-bot', configured: false },
+  );
+  const missingView = model.connectionViewModel(missingBound);
+  assert.equal(missingView.stage, 'official-target');
+  assert.equal(missingView.action, 'open-panel');
+  assert.doesNotMatch(JSON.stringify(missingView), /保存私聊绑定|save-settings/);
+
+  const enabledAmbiguous = officialSnapshotData(
+    [
+      { id: 'official-a', type: 'qq_official', enable: true, configured: true },
+      { id: 'official-b', type: 'qq_official', enable: false, configured: true },
+    ],
+    { configured: true },
+  );
+  assert.equal(model.connectionViewModel(enabledAmbiguous).stage, 'official-owner');
+  assert.equal(model.connectionViewModel(enabledAmbiguous).action, 'save-settings');
+
+  const enabledReplacement = officialSnapshotData(
+    [{ id: 'replacement-bot', type: 'qq_official', enable: true, configured: true }],
+    { bound: true, boundId: 'removed-bot', configured: true },
+  );
+  assert.equal(model.connectionViewModel(enabledReplacement).stage, 'official-owner');
+  assert.match(model.connectionViewModel(enabledReplacement).title, /重新绑定/);
+});
+
+test('all-disabled target guidance hides the binding form and missing-bound timeline says rebind', async () => {
+  const model = load();
+  const data = officialSnapshotData(
+    [
+      { id: 'official-a', type: 'qq_official', enable: false, configured: true },
+      { id: 'official-b', type: 'qq_official', enable: false, configured: true },
+    ],
+    { configured: false },
+  );
+  data.settings.qqConnectionMode = 'official';
+  const app = renderApp({
+    screen: 'connect',
+    workspace: workspaceStatus({ official: { protocolConnected: true } }),
+    invoke: async action => {
+      if (action === 'inspect') return { installed: true, running: true, platform: { id: 'win32-x64', supported: true }, setup: { ownerConfigured: true } };
+      if (action === 'connections-status') return { connections: data.connections };
+      if (action === 'settings-history') return { format: 1, records: [], migrationReceipt: null };
+      return data.settings;
+    },
+  });
+  await app.settle();
+  assert.match(app.html(), /先启用官方机器人实例/);
+  assert.match(app.html(), /data-action="open-panel"/);
+  assert.doesNotMatch(app.html(), /id="officialOwnerUMO"/);
+
+  const missing = officialSnapshotData(
+    [{ id: 'replacement-bot', type: 'qq_official', enable: true, configured: true }],
+    { bound: true, boundId: 'removed-bot', configured: true },
+  );
+  assert.equal(model.connectionViewModel(missing).stage, 'official-owner');
+  missing.settings.qqConnectionMode = 'official';
+  const missingApp = renderApp({
+    screen: 'connect',
+    workspace: workspaceStatus({ official: { protocolConnected: false } }),
+    invoke: async action => {
+      if (action === 'inspect') return { installed: true, running: true, platform: { id: 'win32-x64', supported: true }, setup: { ownerConfigured: true } };
+      if (action === 'connections-status') return { connections: missing.connections };
+      if (action === 'settings-history') return { format: 1, records: [], migrationReceipt: null };
+      return missing.settings;
+    },
+  });
+  await missingApp.settle();
+  assert.match(missingApp.html(), /绑定失效，等待重新绑定/);
+});
+
+test('a resolved unconfigured target keeps setup and never claims a live gateway', async () => {
+  const data = officialSnapshotData(
+    [
+      { id: 'official-a', type: 'qq_official', enable: true, configured: false },
+      { id: 'official-b', type: 'qq_official', enable: false, configured: true },
+    ],
+    { bound: true, boundId: 'official-a', configured: false },
+  );
+  data.settings.qqConnectionMode = 'official';
+  const app = renderApp({
+    screen: 'connect',
+    workspace: workspaceStatus({ official: { protocolConnected: true } }),
+    invoke: async action => {
+      if (action === 'inspect') return { installed: true, running: true, platform: { id: 'win32-x64', supported: true }, setup: { ownerConfigured: true } };
+      if (action === 'connections-status') return { connections: data.connections };
+      if (action === 'settings-history') return { format: 1, records: [], migrationReceipt: null };
+      return data.settings;
+    },
+  });
+  await app.settle();
+  assert.match(app.html(), /创建或连接 QQ 官方机器人/);
+  assert.match(app.html(), /等待完成配置/);
+  assert.doesNotMatch(app.html(), /网关已连接/);
+  const officialCard = app.html().match(/<section class="card connection-channel-card"[^>]*aria-labelledby="connection-official-title"[\s\S]*?<\/section>/)?.[0] || '';
+  assert.match(officialCard, /待配置/);
+  assert.match(officialCard, /未配置/);
+  assert.doesNotMatch(officialCard, /消息连接[\s\S]*已连接/);
+});
+
+test('blocked binding guidance does not advertise a future owner binding step', async () => {
+  const data = officialSnapshotData(
+    [
+      { id: 'official-a', type: 'qq_official', enable: false, configured: true },
+      { id: 'official-b', type: 'qq_official', enable: false, configured: true },
+    ],
+    { configured: false },
+  );
+  data.settings.qqConnectionMode = 'official';
+  const app = renderApp({
+    screen: 'connect',
+    workspace: workspaceStatus({ official: { protocolConnected: true } }),
+    invoke: async action => {
+      if (action === 'inspect') return { installed: true, running: true, platform: { id: 'win32-x64', supported: true }, setup: { ownerConfigured: true } };
+      if (action === 'connections-status') return { connections: data.connections };
+      if (action === 'settings-history') return { format: 1, records: [], migrationReceipt: null };
+      return data.settings;
+    },
+  });
+  await app.settle();
+  assert.match(app.html(), /先启用官方机器人实例/);
+  assert.match(app.html(), /待实例启用后绑定/);
+  assert.doesNotMatch(app.html(), /等待复制会话 ID/);
+});
+
+test('an unconfigured small account points at OneBot parameters, not official credentials', async () => {
+  const qqConnections = require('../lib/qq-connections.cjs');
+  const connections = qqConnections.snapshot({
+    platforms: [
+      { id: 'small-account', type: 'aiocqhttp', enable: true, configured: false },
+      { id: 'official-a', type: 'qq_official', enable: true, configured: true },
+    ],
+    bindings: { napcat: true, official: true },
+    boundPlatformIds: { napcat: 'small-account', official: 'official-a' },
+    health: { napcat: { state: 'offline', protocolConnected: false }, official: { state: 'connected', protocolConnected: true } },
+  });
+  const settings = { ownerQQ: '123456', platformId: 'small-account', onebotPort: 6199, dashboardPort: 6185, onebotToken: '', qqConnectionMode: 'napcat', officialConfigured: true, officialOwnerUMO: 'official-a:FriendMessage:OPAQUE' };
+  const app = renderApp({
+    screen: 'connect',
+    workspace: workspaceStatus({ napcat: { running: true, loginState: 'online', protocolConnected: false } }),
+    invoke: async action => {
+      if (action === 'inspect') return { installed: true, running: true, platform: { id: 'win32-x64', supported: true }, setup: { ownerConfigured: true } };
+      if (action === 'connections-status') return { connections };
+      if (action === 'settings-history') return { format: 1, records: [], migrationReceipt: null };
+      return settings;
+    },
+  });
+  await app.settle();
+  const card = app.html().match(/<section class="card connection-channel-card"[^>]*aria-labelledby="connection-napcat-title"[\s\S]*?<\/section>/)?.[0] || '';
+  assert.match(card, /OneBot/);
+  assert.match(card, /端口|访问令牌/);
+  assert.doesNotMatch(card, /AppID|AppSecret/);
 });

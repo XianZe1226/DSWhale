@@ -80,13 +80,41 @@
     if(official){
       if(state.startup?.stage==='starting-conversation')return view('official-starting','正在启动对话服务','服务准备好后会连接官方网关。','正在启动','working');
       if(!state.running)return view('official-stopped','启动官方机器人','启动对话服务与官方接口，不安装或启动 NapCat，也不修改个人 QQ。','尚未启动','','start','启动');
-      const configured=data.settings?data.settings.officialConfigured:state.setup?.qqConfigured;
-      if(!configured)return {...view('official-setup','创建或连接 QQ 官方机器人','在内置控制台扫码创建，或填写已有机器人的 AppID 与 AppSecret。','待配置','','open-panel','配置官方机器人'),panel:'qq'};
+      const officialEntry=(data.connections?.channels||[]).find(item=>item.channel==='official');
+      const settingsConfigured=data.settings?data.settings.officialConfigured===true:state.setup?.qqConfigured===true;
+      const targetIssue=officialEntry?.targetIssue||'';
+      const targetResolved=Boolean(officialEntry)&&targetIssue==='';
+      const candidates=Array.isArray(officialEntry?.platformCandidates)?officialEntry.platformCandidates:[];
+      const candidatesConfigured=candidates.some(item=>item&&item.configured===true);
+      const candidatesReady=candidates.some(item=>item&&item.enable===true&&item.configured===true);
+      // When the snapshot resolved one instance, its explicit configured flag is
+      // authoritative. Candidate flags are only for unresolved targets (multiple
+      // or deleted-bound instances). An explicit false is never overridden by a
+      // different robot's credentials or by the settings summary flag.
+      let credentialsConfigured=settingsConfigured;
+      if(officialEntry){
+        credentialsConfigured=targetResolved
+          ? officialEntry.configured===true||(officialEntry.configured===undefined&&settingsConfigured)
+          : candidatesConfigured||officialEntry.configured===true||(officialEntry.configured===undefined&&settingsConfigured);
+      }
+      if(!credentialsConfigured)return {...view('official-setup','创建或连接 QQ 官方机器人','在内置控制台扫码创建，或填写已有机器人的 AppID 与 AppSecret。','待配置','','open-panel','配置官方机器人'),panel:'qq'};
       const bound=data.settings?!!data.settings.officialOwnerUMO:state.setup?.ownerConfigured;
+      if(targetIssue==='ambiguous'){
+        if(!bound){
+          if(!candidatesReady)return {...view('official-target','先启用官方机器人实例','检测到多个官方机器人平台，但它们当前都未启用或缺少凭据，无法完成私聊绑定。请先在 AstrBot 平台设置中启用并配置要使用的实例，再回来绑定。','待启用','warn','open-panel','检查官方配置'),panel:'qq'};
+          return view('official-owner','绑定你的官方私聊','检测到多个官方机器人平台，先用个人 QQ 私聊要使用的机器人发送 /fish whoami，复制完整“本会话”到下方。不要填写普通 QQ 号码。','待绑定','warn','save-settings','保存私聊绑定');
+        }
+        return {...view('official-target','无法确定官方机器人实例','存在多个同 ID 的官方机器人平台，暂时无法确认要操作哪一个。请先在 AstrBot 平台设置中保留一个，再重新绑定私聊。','待确认','warn','open-panel','检查官方配置'),panel:'qq'};
+      }
+      if(targetIssue==='missing-bound'){
+        if(!candidatesReady)return {...view('official-target','先恢复官方机器人连接','原来的官方机器人实例已不存在，当前候选实例也尚未启用或缺少凭据。请先在 AstrBot 平台设置中启用并配置实例，再重新绑定私聊。','待启用','warn','open-panel','检查官方配置'),panel:'qq'};
+        return view('official-owner','重新绑定官方私聊','原来的官方机器人实例已不存在。用个人 QQ 私聊当前要使用的机器人发送 /fish whoami，重新复制完整“本会话”到下方。已保存的凭据不需要重填。','待重新绑定','warn','save-settings','保存私聊绑定');
+      }
+      if(officialEntry&&targetIssue==='missing')return {...view('official-setup','创建或连接 QQ 官方机器人','没有找到可用的 QQ 官方机器人平台，请先在 AstrBot 中创建或填写已有机器人。','待配置','','open-panel','配置官方机器人'),panel:'qq'};
+      if(officialEntry&&officialEntry.platformEnabled===false)return {...view('official-disabled','QQ 官方机器人已停用','官方连接当前已停用；可在下方“连接管理”中启用后继续使用。','已停用','','open-panel','打开官方配置'),panel:'qq'};
       if(!bound)return view('official-owner','绑定你的官方私聊','用个人 QQ 私聊机器人发送 /fish whoami，复制完整“本会话”到下方。不要填写普通 QQ 号码。','待绑定','','save-settings','保存私聊绑定');
-      const officialConnection=(data.connections?.channels||[]).find(item=>item.channel==='official');
       const officialHealth=data.workspace?.official;
-      const officialConnected=officialHealth && typeof officialHealth.protocolConnected==='boolean' ? officialHealth.protocolConnected===true : (officialConnection?.protocolConnected===true || officialConnection?.health==='connected');
+      const officialConnected=officialHealth && typeof officialHealth.protocolConnected==='boolean' ? officialHealth.protocolConnected===true : (officialEntry?.protocolConnected===true || officialEntry?.health==='connected');
       if(officialConnected){
         if(state.setup?.modelConfigured===false)return view('model','配置聊天模型','官方接口已连接，接下来选择聊天模型。','QQ 已连接','good','route-intelligence','配置模型');
         return view('ready','QQ 官方机器人已连接','已确认官方网关连接。请用自己的 QQ 给机器人发一条消息，检查模型回复。','QQ 已连接','good');
