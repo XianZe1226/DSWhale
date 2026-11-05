@@ -89,3 +89,49 @@ jobs:
           path: ${{ runner.temp }}/a12-installer-upgrade-marker-*.json
           if-no-files-found: warn
           retention-days: 7
+  fresh-repeat-marker:
+    name: Fresh and repeat marker (${{ matrix.os }})
+    if: github.repository == 'XianZe1226/DSWhale' && github.ref == 'refs/heads/codex/a12-acceptance' && github.event_name == 'push'
+    needs: preflight
+    strategy:
+      fail-fast: false
+      max-parallel: 3
+      matrix:
+        os: [windows-2022, ubuntu-22.04, ubuntu-24.04]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    steps:
+      - name: Checkout acceptance harness
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+      - name: Checkout fixed a12 binary source (read-only inventory)
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: 6997f37102efe07cfdfd3d4b1a60b584a2b56158
+          path: binary
+          persist-credentials: false
+      - name: Set up Node
+        uses: actions/setup-node@39370e3970a6d050c480ffad4ff0ed4d3fdee5af
+        with:
+          node-version: '22.23.4'
+      - name: Install locked acceptance tooling
+        run: npm ci --ignore-scripts --no-audit --no-fund --prefix acceptance
+      - name: Refresh apt metadata (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update -qq
+      - name: Verify fresh and repeated a12 installation with marker
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          BINARY_ROOT: ${{ github.workspace }}/binary
+          HARNESS_COMMIT: ${{ github.sha }}
+          ACCEPTANCE_JOB_KEY: fresh-repeat-marker-${{ matrix.os }}
+        run: node acceptance/install-check.mjs --case=fresh-repeat-marker
+      - name: Upload sanitized fresh/repeat result
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: a12-fresh-repeat-marker-${{ matrix.os }}
+          path: ${{ runner.temp }}/a12-fresh-repeat-marker-*.json
+          if-no-files-found: warn
+          retention-days: 7

@@ -67,8 +67,9 @@ test('rejects wrong process platform/arch', () => {
   expectRejected(base, {platform: 'linux', arch: 'arm64'});
 });
 test('rejects unknown case names and keeps the allowlist exact', () => {
-  assert.deepEqual([...CASES], ['installer-upgrade-marker']);
+  assert.deepEqual([...CASES], ['installer-upgrade-marker', 'fresh-repeat-marker']);
   assert.equal(allowedCase('installer-upgrade-marker'), 'installer-upgrade-marker');
+  assert.equal(allowedCase('fresh-repeat-marker'), 'fresh-repeat-marker');
   assert.throws(() => allowedCase('cross-small'), /Unknown acceptance case/);
 });
 test('uses a whitelist, not an inherited environment, for installer/tool children', () => {

@@ -8,7 +8,7 @@ export const EXPECTED = Object.freeze({
   event: 'push',
   binaryCommit: '6997f37102efe07cfdfd3d4b1a60b584a2b56158',
 });
-export const CASES = Object.freeze(['installer-upgrade-marker']);
+export const CASES = Object.freeze(['installer-upgrade-marker', 'fresh-repeat-marker']);
 const pathFor = platform => platform === 'win32' ? path.win32 : path;
 const isAbsolute = (value, platform) => { const p = pathFor(platform); return typeof value === 'string' && value.length > 0 && p.isAbsolute(value); };
 function value(env, key, platform) {
