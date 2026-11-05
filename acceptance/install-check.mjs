@@ -110,12 +110,14 @@ async function main() {
       linuxInstall(a12);
       if (linuxVersion() !== '0.3.0~alpha.12') throw new Error(`unexpected a12 dpkg version ${linuxVersion()}`);
       if (await fsp.readFile(marker, 'utf8') !== 'SYNTHETIC-DEVICE-DATA-NOT-AN-ACCOUNT') throw new Error('profile marker changed');
+      if (!fs.existsSync('/opt/DSWhale/dswhale')) throw new Error('installed Linux executable missing');
       result.checks = {oldVersion: '0.3.0~alpha.11', newVersion: linuxVersion(), executable: '/opt/DSWhale/dswhale', dataMarker: 'preserved'};
     } else {
       linuxInstall(a12);
       await fsp.mkdir(profile, {recursive: true}); await fsp.writeFile(marker, 'SYNTHETIC-DEVICE-DATA-NOT-AN-ACCOUNT');
       linuxInstall(a12);
       if (await fsp.readFile(marker, 'utf8') !== 'SYNTHETIC-DEVICE-DATA-NOT-AN-ACCOUNT') throw new Error('profile marker changed after repeat install');
+      if (!fs.existsSync('/opt/DSWhale/dswhale')) throw new Error('installed Linux executable missing');
       result.checks = {newVersion: linuxVersion(), executable: '/opt/DSWhale/dswhale', dataMarker: 'preserved'};
     }
   } else throw new Error(`unsupported platform ${platform}`);
@@ -123,4 +125,8 @@ async function main() {
   console.log(JSON.stringify(result, null, 2));
   await fsp.writeFile(path.join(process.env.RUNNER_TEMP || os.tmpdir(), `a12-${mode}-${platform}.json`), JSON.stringify(result, null, 2));
 }
-main().catch(error => { result.passed = false; result.errors.push(String(error.message || error)); console.error(JSON.stringify(result, null, 2)); process.exitCode = 1; });
+main().catch(error => {
+  result.passed = false; result.errors.push(String(error.message || error));
+  try { fs.writeFileSync(path.join(process.env.RUNNER_TEMP || os.tmpdir(), `a12-${mode}-${platform}.json`), JSON.stringify(result, null, 2)); } catch {}
+  console.error(JSON.stringify(result, null, 2)); process.exitCode = 1;
+});
