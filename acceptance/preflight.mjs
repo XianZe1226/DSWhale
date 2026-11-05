@@ -136,7 +136,7 @@ async function main() {
 main().catch(error => {
   result.passed = false;
   result.errors.push(String(error.message || error));
-  await fsp.writeFile(path.join(process.env.RUNNER_TEMP || os.tmpdir(), 'a12-preflight-result.json'), JSON.stringify(result, null, 2)).catch(() => {});
+  try { fs.writeFileSync(path.join(process.env.RUNNER_TEMP || os.tmpdir(), 'a12-preflight-result.json'), JSON.stringify(result, null, 2)); } catch {}
   console.error(JSON.stringify(result, null, 2));
   process.exitCode = 1;
 });
