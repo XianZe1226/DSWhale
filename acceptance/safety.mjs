@@ -1,4 +1,5 @@
 // Side-effect-free runner/context guards and subprocess environment whitelists.
+import fs from 'node:fs';
 import path from 'node:path';
 
 export const EXPECTED = Object.freeze({
@@ -22,6 +23,18 @@ function need(env, key, platform, failures) {
   const found = value(env, key, platform);
   if (typeof found !== 'string' || !found) failures.push(key);
   return found;
+}
+export function assertRealDirectory(candidate, label, platform = process.platform) {
+  const p = pathFor(platform);
+  const resolved = p.resolve(candidate);
+  let real;
+  try { real = fs.realpathSync(candidate); } catch { throw Object.assign(new Error(`${label} must exist`), {code: 'ACCEPTANCE_PATH_REJECTED'}); }
+  const same = platform === 'win32' ? real.toLowerCase() === resolved.toLowerCase() : real === resolved;
+  if (!same) throw Object.assign(new Error(`${label} must not be a symlink`), {code: 'ACCEPTANCE_PATH_REJECTED'});
+  const stat = fs.statSync(resolved);
+  if (!stat.isDirectory()) throw Object.assign(new Error(`${label} must be a directory`), {code: 'ACCEPTANCE_PATH_REJECTED'});
+  if (platform !== 'win32' && typeof process.getuid === 'function' && stat.uid !== process.getuid()) throw Object.assign(new Error(`${label} must belong to the test user`), {code: 'ACCEPTANCE_PATH_REJECTED'});
+  return resolved;
 }
 export function validateRunnerContext(env = process.env, options = {}) {
   const platform = options.platform || process.platform;

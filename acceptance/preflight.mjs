@@ -7,7 +7,7 @@ import os from 'node:os';
 import path from 'node:path';
 import {execFileSync} from 'node:child_process';
 import {createRequire} from 'node:module';
-import {EXPECTED, childEnv, validateRunnerContext} from './safety.mjs';
+import {EXPECTED, assertRealDirectory, childEnv, validateRunnerContext} from './safety.mjs';
 
 let context;
 try { context = validateRunnerContext(process.env); } catch (error) {
@@ -15,6 +15,9 @@ try { context = validateRunnerContext(process.env); } catch (error) {
   process.exit(2);
 }
 if (path.resolve(process.cwd()) !== context.workspace) throw new Error('preflight must run from GITHUB_WORKSPACE');
+assertRealDirectory(context.workspace, 'GITHUB_WORKSPACE', context.platform);
+assertRealDirectory(context.runnerTemp, 'RUNNER_TEMP', context.platform);
+assertRealDirectory(context.binaryRoot, 'BINARY_ROOT', context.platform);
 const root = context.workspace;
 const binaryRoot = context.binaryRoot;
 const childEnvironment = childEnv(context.platform, process.env);

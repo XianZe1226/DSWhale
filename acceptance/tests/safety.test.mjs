@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import path from 'node:path';
 import fs from 'node:fs';
 import {spawnSync} from 'node:child_process';
-import {CASES, allowedCase, childEnv, profilePaths, validateRunnerContext} from '../safety.mjs';
+import {CASES, allowedCase, assertRealDirectory, childEnv, profilePaths, validateRunnerContext} from '../safety.mjs';
 
 const workspace = '/home/runner/work/DSWhale/DSWhale';
 const base = {
@@ -105,6 +105,14 @@ test('standard profile paths are absolute and fixed to the test user', () => {
   const appData = String.raw`C:\Users\runner\AppData\Roaming`;
   assert.deepEqual(profilePaths('win32', {APPDATA: appData}), {parent: appData, profile: path.win32.join(appData, 'DSWhale')});
   assert.throws(() => profilePaths('linux', {HOME: 'relative'}), /absolute/);
+});
+test('rejects symlinked/root/owned test directories before use', () => {
+  const root = fs.mkdtempSync(path.join(process.cwd(), '.a12-path-test-'));
+  const real = path.join(root, 'real'); fs.mkdirSync(real);
+  const link = path.join(root, 'link'); fs.symlinkSync(real, link);
+  assert.equal(assertRealDirectory(real, 'test dir'), path.resolve(real));
+  assert.throws(() => assertRealDirectory(link, 'link dir'), error => error.code === 'ACCEPTANCE_PATH_REJECTED');
+  fs.rmSync(root, {recursive: true, force: true});
 });
 test('entrypoint rejects a non-CI environment without touching the filesystem', () => {
   const result = spawnSync(process.execPath, ['acceptance/install-check.mjs', '--case=installer-upgrade-marker'], {

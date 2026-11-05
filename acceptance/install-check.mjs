@@ -7,7 +7,7 @@ import os from 'node:os';
 import path from 'node:path';
 import {execFileSync, spawnSync} from 'node:child_process';
 import {createRequire} from 'node:module';
-import {EXPECTED, allowedCase, childEnv, profilePaths, validateRunnerContext} from './safety.mjs';
+import {EXPECTED, allowedCase, assertRealDirectory, childEnv, profilePaths, validateRunnerContext} from './safety.mjs';
 
 const CASE = 'installer-upgrade-marker';
 const MARKER = 'SYNTHETIC-DEVICE-DATA-NOT-AN-ACCOUNT';
@@ -37,14 +37,6 @@ function parseCase(argv) {
   try { return allowedCase(args[0].slice('--case='.length)); }
   catch (error) { error.code = 'ACCEPTANCE_CASE_REJECTED'; throw error; }
 }
-function assertRealDirectory(candidate, label) {
-  const resolved = path.resolve(candidate);
-  if (fs.realpathSync(candidate) !== resolved) throw Object.assign(new Error(`${label} must not be a symlink`), {code: 'ACCEPTANCE_PATH_REJECTED'});
-  const stat = fs.statSync(resolved);
-  if (!stat.isDirectory()) throw Object.assign(new Error(`${label} must be a directory`), {code: 'ACCEPTANCE_PATH_REJECTED'});
-  if (process.platform !== 'win32' && typeof process.getuid === 'function' && stat.uid !== process.getuid()) throw Object.assign(new Error(`${label} must belong to the test user`), {code: 'ACCEPTANCE_PATH_REJECTED'});
-  return resolved;
-}
 function safe(message, context) {
   let text = String(message || '');
   for (const value of [context.workspace, context.runnerTemp, context.binaryRoot]) if (value) text = text.split(value).join('<runner>');
@@ -55,9 +47,9 @@ async function main() {
   const caseName = parseCase(process.argv.slice(2));
   if (caseName !== CASE) throw Object.assign(new Error('internal case mismatch'), {code: 'ACCEPTANCE_CASE_REJECTED'});
   if (path.resolve(process.cwd()) !== context.workspace) throw Object.assign(new Error('install-check must run from GITHUB_WORKSPACE'), {code: 'ACCEPTANCE_PATH_REJECTED'});
-  assertRealDirectory(context.workspace, 'GITHUB_WORKSPACE');
-  assertRealDirectory(context.runnerTemp, 'RUNNER_TEMP');
-  assertRealDirectory(context.binaryRoot, 'BINARY_ROOT');
+  assertRealDirectory(context.workspace, 'GITHUB_WORKSPACE', context.platform);
+  assertRealDirectory(context.runnerTemp, 'RUNNER_TEMP', context.platform);
+  assertRealDirectory(context.binaryRoot, 'BINARY_ROOT', context.platform);
   const head = execFileSync('git', ['-C', context.binaryRoot, 'rev-parse', 'HEAD'], {encoding: 'utf8', env: childEnv(context.platform, process.env)}).trim();
   if (head !== EXPECTED.binaryCommit) throw Object.assign(new Error('BINARY_ROOT is not the fixed a12 binary commit'), {code: 'ACCEPTANCE_BINARY_REJECTED'});
   const lock = JSON.parse(await fsp.readFile(path.join(context.workspace, 'acceptance/a12-binaries.lock.json'), 'utf8'));
@@ -69,7 +61,7 @@ async function main() {
   const env = childEnv(context.platform, process.env);
   const profile = profilePaths(context.platform, process.env);
   if (context.platform === 'linux' && !fs.existsSync(profile.parent)) await fsp.mkdir(profile.parent, {recursive: true});
-  assertRealDirectory(profile.parent, 'standard test-user profile parent');
+  assertRealDirectory(profile.parent, 'standard test-user profile parent', context.platform);
   if (fs.existsSync(profile.profile)) throw Object.assign(new Error('standard test-user DSWhale profile already exists; refusing to merge or delete it'), {code: 'ACCEPTANCE_PROFILE_REJECTED'});
   if (path.dirname(profile.profile) !== path.resolve(profile.parent)) throw Object.assign(new Error('standard test-user profile escaped its parent'), {code: 'ACCEPTANCE_PROFILE_REJECTED'});
   const temp = await fsp.mkdtemp(path.join(context.runnerTemp, 'a12-installer-upgrade-marker-'));
