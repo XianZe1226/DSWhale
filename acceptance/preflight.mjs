@@ -7,24 +7,32 @@ import os from 'node:os';
 import path from 'node:path';
 import {execFileSync} from 'node:child_process';
 import {createRequire} from 'node:module';
+import {EXPECTED, childEnv, validateRunnerContext} from './safety.mjs';
 
-const root = process.cwd();
+let context;
+try { context = validateRunnerContext(process.env); } catch (error) {
+  console.error(JSON.stringify({schemaVersion: 2, passed: false, code: error?.code || 'ACCEPTANCE_REFUSED', fields: error?.fields || []}, null, 2));
+  process.exit(2);
+}
+if (path.resolve(process.cwd()) !== context.workspace) throw new Error('preflight must run from GITHUB_WORKSPACE');
+const root = context.workspace;
+const binaryRoot = context.binaryRoot;
+const childEnvironment = childEnv(context.platform, process.env);
+const head = execFileSync('git', ['-C', binaryRoot, 'rev-parse', 'HEAD'], {encoding: 'utf8', env: childEnvironment}).trim();
+if (head !== EXPECTED.binaryCommit) throw new Error('BINARY_ROOT is not the fixed binary commit');
 const lockPath = path.join(root, 'acceptance/a12-binaries.lock.json');
 const lock = JSON.parse(await fsp.readFile(lockPath, 'utf8'));
 const token = process.env.GITHUB_TOKEN || '';
-const binaryRoot = process.env.BINARY_ROOT || '';
-if (!binaryRoot) throw new Error('BINARY_ROOT is required');
 const require = createRequire(path.join(binaryRoot, 'desktop/lib/'));
 const {verifyManifest} = require('./app-updater.cjs');
 const runId = lock.candidate.runId;
 const repo = lock.repository;
 const api = `https://api.github.com/repos/${repo}`;
-const runTemp = process.env.RUNNER_TEMP || os.tmpdir();
+const runTemp = context.runnerTemp;
 const out = path.join(runTemp, `a12-preflight-${process.pid}`);
 const resultPath = path.join(runTemp, 'a12-preflight-result.json');
-const childEnv = Object.fromEntries(Object.entries(process.env).filter(([key]) => !/(?:^GH_|^GITHUB_|^ACTIONS_|NODE_OPTIONS|ELECTRON_RUN_AS_NODE)/i.test(key)));
 await fsp.mkdir(out, {recursive: true});
-const result = {schemaVersion: 1, repository: repo, runId, artifactIds: {}, checks: {}, files: {}, errors: []};
+const result = {schemaVersion: 2, scope: 'provenance-preflight', harnessCommit: process.env.HARNESS_COMMIT || '', binaryCommit: EXPECTED.binaryCommit, oldBinaryCommit: lock.old.commit, binaryRunId: runId, acceptanceRunId: process.env.GITHUB_RUN_ID || '', acceptanceRunAttempt: process.env.GITHUB_RUN_ATTEMPT || '', jobKey: 'provenance-preflight', repository: repo, ref: EXPECTED.ref, event: EXPECTED.event, artifactIds: {}, checks: {}, files: {}, errors: []};
 function digest(bytes) { return crypto.createHash('sha256').update(bytes).digest('hex'); }
 async function sha256File(file) {
   const hash = crypto.createHash('sha256');
@@ -47,11 +55,11 @@ async function apiJson(url) {
   return response.json();
 }
 function check(condition, message) { if (!condition) throw new Error(message); }
-function zipNames(file) { return execFileSync('unzip', ['-Z1', file], {encoding: 'utf8', env: childEnv}).trim().split('\n').filter(Boolean); }
+function zipNames(file) { return execFileSync('unzip', ['-Z1', file], {encoding: 'utf8', env: childEnvironment}).trim().split('\n').filter(Boolean); }
 function zipRead(file, name) {
   const names = zipNames(file);
   check(names.includes(name), `missing ${name} in ${path.basename(file)}`);
-  return execFileSync('unzip', ['-p', file, name], {maxBuffer: 300 * 1024 * 1024, env: childEnv});
+  return execFileSync('unzip', ['-p', file, name], {maxBuffer: 300 * 1024 * 1024, env: childEnvironment});
 }
 async function main() {
   check(lock.repository === 'XianZe1226/DSWhale', 'repository lock mismatch');
@@ -136,7 +144,7 @@ async function main() {
 main().catch(error => {
   result.passed = false;
   result.errors.push(String(error.message || error));
-  try { fs.writeFileSync(path.join(process.env.RUNNER_TEMP || os.tmpdir(), 'a12-preflight-result.json'), JSON.stringify(result, null, 2)); } catch {}
+  try { if (context) fs.writeFileSync(path.join(context.runnerTemp, 'a12-preflight-result.json'), JSON.stringify(result, null, 2)); } catch {}
   console.error(JSON.stringify(result, null, 2));
   process.exitCode = 1;
 });
