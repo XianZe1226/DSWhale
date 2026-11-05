@@ -33,6 +33,14 @@ jobs:
           GITHUB_TOKEN: ${{ github.token }}
           BINARY_ROOT: ${{ github.workspace }}/binary
         run: node acceptance/preflight.mjs
+      - name: Upload sanitized provenance result
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: a12-preflight-result
+          path: ${{ runner.temp }}/a12-preflight-result.json
+          if-no-files-found: warn
+          retention-days: 7
   cross-version-small:
     name: a11 to a12 small-only (${{ matrix.os }})
     needs: preflight
@@ -69,3 +77,11 @@ jobs:
           BINARY_ROOT: ${{ github.workspace }}/binary
           HARNESS_COMMIT: ${{ github.sha }}
         run: node acceptance/install-check.mjs --case=cross-small
+      - name: Upload sanitized install result
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: a12-install-result-${{ matrix.os }}
+          path: ${{ runner.temp }}/a12-cross-small-*.json
+          if-no-files-found: warn
+          retention-days: 7

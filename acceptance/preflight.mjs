@@ -19,7 +19,9 @@ const {verifyManifest} = require('./app-updater.cjs');
 const runId = lock.candidate.runId;
 const repo = lock.repository;
 const api = `https://api.github.com/repos/${repo}`;
-const out = path.join(process.env.RUNNER_TEMP || os.tmpdir(), `a12-preflight-${process.pid}`);
+const runTemp = process.env.RUNNER_TEMP || os.tmpdir();
+const out = path.join(runTemp, `a12-preflight-${process.pid}`);
+const resultPath = path.join(runTemp, 'a12-preflight-result.json');
 const childEnv = Object.fromEntries(Object.entries(process.env).filter(([key]) => !/(?:^GH_|^GITHUB_|^ACTIONS_|NODE_OPTIONS|ELECTRON_RUN_AS_NODE)/i.test(key)));
 await fsp.mkdir(out, {recursive: true});
 const result = {schemaVersion: 1, repository: repo, runId, artifactIds: {}, checks: {}, files: {}, errors: []};
@@ -128,12 +130,13 @@ async function main() {
     result.files[name] = {bytes: bytes.length, sha256: expected.sha256, artifactId: artifact.id};
   }
   result.passed = true;
-  result.tmp = out;
+  await fsp.writeFile(resultPath, JSON.stringify(result, null, 2));
   console.log(JSON.stringify(result, null, 2));
 }
 main().catch(error => {
   result.passed = false;
   result.errors.push(String(error.message || error));
+  await fsp.writeFile(path.join(process.env.RUNNER_TEMP || os.tmpdir(), 'a12-preflight-result.json'), JSON.stringify(result, null, 2)).catch(() => {});
   console.error(JSON.stringify(result, null, 2));
   process.exitCode = 1;
 });
