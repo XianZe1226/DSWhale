@@ -1,0 +1,10 @@
+{
+  "name": "dswhale-a12-acceptance-harness",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Acceptance-only harness for fixed DSWhale a12 binaries; not part of the product.",
+  "type": "module",
+  "dependencies": {
+    "@electron/asar": "3.4.1"
+  }
+}

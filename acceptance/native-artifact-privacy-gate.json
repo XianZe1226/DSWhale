@@ -1,0 +1,129 @@
+{
+  "status": "NATIVE_ARTIFACT_PRIVACY_GATE_PASSED",
+  "reviewDate": "2026-11-05",
+  "candidate": "6997f37102efe07cfdfd3d4b1a60b584a2b56158",
+  "nativeRun": 41963512296,
+  "canonicalSourceRun": 41963512269,
+  "artifacts": [
+    {
+      "id": 13387030700,
+      "name": "DSWhale-Linux-x86_64",
+      "digest": "sha256:4a6945cd7df2adc37be637309c27168637e3fe506ad79d8056a8879d8ddeaa5b",
+      "head_sha": "6997f37102efe07cfdfd3d4b1a60b584a2b56158",
+      "expected_sha": "6997f37102efe07cfdfd3d4b1a60b584a2b56158"
+    },
+    {
+      "id": 13385904730,
+      "name": "DSWhale-macOS-arm64",
+      "digest": "sha256:d3e113dba39187006e62056c28545966d111192d60470dd98e21f327239c7cc9",
+      "head_sha": "6997f37102efe07cfdfd3d4b1a60b584a2b56158",
+      "expected_sha": "6997f37102efe07cfdfd3d4b1a60b584a2b56158"
+    },
+    {
+      "id": 13385759883,
+      "name": "DSWhale-Windows-x86_64",
+      "digest": "sha256:56b389fda3c1b34a0538b866cf8e534acea542855e5ad6ec718d4f1bf5c261ca",
+      "head_sha": "6997f37102efe07cfdfd3d4b1a60b584a2b56158",
+      "expected_sha": "6997f37102efe07cfdfd3d4b1a60b584a2b56158"
+    },
+    {
+      "id": 13386696722,
+      "name": "dswhale-ubuntu-latest",
+      "digest": "sha256:a7ca639a841114cd6d3c5e259f9d5de591cf312e60bd032a5a2518370be072a8",
+      "head_sha": "6997f37102efe07cfdfd3d4b1a60b584a2b56158",
+      "expected_sha": "6997f37102efe07cfdfd3d4b1a60b584a2b56158"
+    }
+  ],
+  "assets": {
+    "DSWhale-0.3.0-alpha.12-Linux-x86_64.deb": {
+      "bytes": 101237356,
+      "sha256": "8438d9195cd1efded8fe13f23aef5cc3ccd54469fd76e89a95afaa8b336089c9"
+    },
+    "DSWhale-0.3.0-alpha.12-Linux-x86_64.tar.gz": {
+      "bytes": 124086833,
+      "sha256": "3d551e6116f733a638afe49cccb480bca9a757d023de3f46b3bdcf1fe51a3d52"
+    },
+    "DSWhale-0.3.0-alpha.12-Windows-x86_64-setup.exe": {
+      "bytes": 121956360,
+      "sha256": "62a4c56c1b50b7d86249cab40a88c021b1c81c3a065886cc916794a1d88d0385"
+    },
+    "DSWhale-0.3.0-alpha.12-macOS-arm64.dmg": {
+      "bytes": 121472765,
+      "sha256": "638cab3854cbb3a3d27f99aed3c05586b970617e6ef0dfe2dfd1a0be54777cb2"
+    },
+    "DSWhale-0.3.0a12-source.zip": {
+      "bytes": 1220730,
+      "sha256": "392c9e4a546d9084275b20bc1f31817aaa5dbe4a6aeda3b489cb99b239331d6f"
+    },
+    "astrbot_plugin_dswhale-0.3.0a12.zip": {
+      "bytes": 493625,
+      "sha256": "00c01af813d46478dac7b4bcf009bd48d10c6f1f1707453b0756f714631b0912"
+    },
+    "dswhale-0.3.0a12-py3-none-any.whl": {
+      "bytes": 512055,
+      "sha256": "a42ce151f8c35713964185ccc4b4277590cf50d37e1b85e446da93c65b8df1e4"
+    },
+    "dswhale-0.3.0a12.tar.gz": {
+      "bytes": 1039412,
+      "sha256": "543ce5aff8a03c1eeed0c35053164db08fdfb163da4a4657db6a92733c40fcc8"
+    }
+  },
+  "customSourceMatchesCandidate": true,
+  "appFilesPerNative": 28,
+  "backendFilesPerNative": 171,
+  "canonicalBridgeFiles": 124,
+  "appAsarSha256": "a4d5c90cfe769a71287b74b851cd616029eff28406d13e7cd7691d6b89945c01",
+  "fullPayloadScan": {
+    "windows": {
+      "files": 247,
+      "bytesScanned": 375981850,
+      "internalSymlinks": 0
+    },
+    "macOS": {
+      "files": 442,
+      "bytesScanned": 271947093,
+      "internalSymlinks": 14
+    },
+    "linuxTar": {
+      "files": 246,
+      "bytesScanned": 288550205,
+      "internalSymlinks": 0
+    },
+    "linuxDeb": {
+      "files": 249,
+      "bytesScanned": 288623467,
+      "internalSymlinks": 0
+    }
+  },
+  "privateGeneratedFilesFound": false,
+  "unresolvedPrivateMarkerFindings": 0,
+  "vendorCoincidenceFilesResolvedAgainstChecksumVerifiedOfficialElectron": 8,
+  "wrapperFilesScanned": 16,
+  "frozenEncryptedReferenceOnly": true,
+  "privatePersonaPositiveControl": true,
+  "liveRuntimeRead": false,
+  "appLaunched": false,
+  "nativeInstallersExecuted": false,
+  "installationAcceptanceClaimed": false,
+  "merged": false,
+  "tagged": false,
+  "released": false,
+  "scopeLimitations": [
+    "Only these exact asset bytes and candidate SHA are covered",
+    "Source archives scoped to canonical Ubuntu artifact 13386696722",
+    "Not an install/upgrade/SDK/WebUI/real-account acceptance",
+    "macOS ad-hoc signature is not Developer ID or notarization",
+    "New harness source and any rebuilt installer require their own review"
+  ],
+  "evidence": [
+    "artifacts.json",
+    "native-privacy-result.json",
+    "wrapper-privacy-result.json",
+    "vendor/false-positive-proof.json",
+    "vendor/provenance.json",
+    "package-audit-a12.json",
+    "asar-hashes.json",
+    "bridge-inventory-result.json",
+    "notice-inventory.json"
+  ]
+}

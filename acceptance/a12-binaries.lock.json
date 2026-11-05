@@ -1,0 +1,123 @@
+{
+  "schemaVersion": 1,
+  "repository": "XianZe1226/DSWhale",
+  "old": {
+    "tag": "v0.3.0a11",
+    "commit": "030960c55c8fe341ccbe7ec1d0df713fee803043",
+    "releaseId": 433568377,
+    "tagRefVerified": true,
+    "annotatedTagChain": [
+      "7c190845cb2496f6fad5e43fe63603365ec1dcc9"
+    ],
+    "signedManifestVerified": true,
+    "assets": [
+      {
+        "browser_download_url": "https://github.com/XianZe1226/DSWhale/releases/download/v0.3.0a11/DSWhale-0.3.0-alpha.11-Linux-x86_64.deb",
+        "digest": "sha256:68b76517010882e48e46f21bc0951210df6a1967eddbebb2070a3b9f937aaeb5",
+        "id": 708434973,
+        "name": "DSWhale-0.3.0-alpha.11-Linux-x86_64.deb",
+        "size": 101235572,
+        "url": "https://api.github.com/repos/XianZe1226/DSWhale/releases/assets/708434973",
+        "sha256": "68b76517010882e48e46f21bc0951210df6a1967eddbebb2070a3b9f937aaeb5",
+        "coveredByEd25519Manifest": true
+      },
+      {
+        "browser_download_url": "https://github.com/XianZe1226/DSWhale/releases/download/v0.3.0a11/DSWhale-0.3.0-alpha.11-Linux-x86_64.tar.gz",
+        "digest": "sha256:c912194f8fa588e4033222c4e6c30c40acdb37236a49420ddb6f65ef22fbc02e",
+        "id": 708434971,
+        "name": "DSWhale-0.3.0-alpha.11-Linux-x86_64.tar.gz",
+        "size": 124084530,
+        "url": "https://api.github.com/repos/XianZe1226/DSWhale/releases/assets/708434971",
+        "sha256": "c912194f8fa588e4033222c4e6c30c40acdb37236a49420ddb6f65ef22fbc02e",
+        "coveredByEd25519Manifest": false
+      },
+      {
+        "browser_download_url": "https://github.com/XianZe1226/DSWhale/releases/download/v0.3.0a11/DSWhale-0.3.0-alpha.11-macOS-arm64.dmg",
+        "digest": "sha256:964e0c46c224e42f98d64c76f164a0284c3a667fe54a3b6087cedd15a5e084bb",
+        "id": 708434959,
+        "name": "DSWhale-0.3.0-alpha.11-macOS-arm64.dmg",
+        "size": 121479126,
+        "url": "https://api.github.com/repos/XianZe1226/DSWhale/releases/assets/708434959",
+        "sha256": "964e0c46c224e42f98d64c76f164a0284c3a667fe54a3b6087cedd15a5e084bb",
+        "coveredByEd25519Manifest": true
+      },
+      {
+        "browser_download_url": "https://github.com/XianZe1226/DSWhale/releases/download/v0.3.0a11/DSWhale-0.3.0-alpha.11-Windows-x86_64-setup.exe",
+        "digest": "sha256:710539f139c9672b29f0e04c2ab0b03756f0186ef72d4383482d78ca86409e00",
+        "id": 708434963,
+        "name": "DSWhale-0.3.0-alpha.11-Windows-x86_64-setup.exe",
+        "size": 121954579,
+        "url": "https://api.github.com/repos/XianZe1226/DSWhale/releases/assets/708434963",
+        "sha256": "710539f139c9672b29f0e04c2ab0b03756f0186ef72d4383482d78ca86409e00",
+        "coveredByEd25519Manifest": true
+      },
+      {
+        "browser_download_url": "https://github.com/XianZe1226/DSWhale/releases/download/v0.3.0a11/release-manifest.json",
+        "digest": "sha256:482a09f02e39f87b9cfa39669a7d439bf892eab0da725b40d5c9c596b01d626f",
+        "id": 708435222,
+        "name": "release-manifest.json",
+        "size": 1318,
+        "url": "https://api.github.com/repos/XianZe1226/DSWhale/releases/assets/708435222",
+        "sha256": "482a09f02e39f87b9cfa39669a7d439bf892eab0da725b40d5c9c596b01d626f",
+        "coveredByEd25519Manifest": false
+      },
+      {
+        "browser_download_url": "https://github.com/XianZe1226/DSWhale/releases/download/v0.3.0a11/release-manifest.sig",
+        "digest": "sha256:8dcc10819f2dace6991b98e1df17b3d70d3101eb59ee1685c65d565f29b7df52",
+        "id": 708435261,
+        "name": "release-manifest.sig",
+        "size": 64,
+        "url": "https://api.github.com/repos/XianZe1226/DSWhale/releases/assets/708435261",
+        "sha256": "8dcc10819f2dace6991b98e1df17b3d70d3101eb59ee1685c65d565f29b7df52",
+        "coveredByEd25519Manifest": false
+      }
+    ]
+  },
+  "candidate": {
+    "branch": "codex/a12-candidate",
+    "binaryCommit": "6997f37102efe07cfdfd3d4b1a60b584a2b56158",
+    "runId": 41963512296,
+    "artifacts": [
+      {
+        "id": 13387030700,
+        "name": "DSWhale-Linux-x86_64",
+        "digest": "sha256:4a6945cd7df2adc37be637309c27168637e3fe506ad79d8056a8879d8ddeaa5b",
+        "head_sha": "6997f37102efe07cfdfd3d4b1a60b584a2b56158",
+        "expected_sha": "6997f37102efe07cfdfd3d4b1a60b584a2b56158"
+      },
+      {
+        "id": 13385904730,
+        "name": "DSWhale-macOS-arm64",
+        "digest": "sha256:d3e113dba39187006e62056c28545966d111192d60470dd98e21f327239c7cc9",
+        "head_sha": "6997f37102efe07cfdfd3d4b1a60b584a2b56158",
+        "expected_sha": "6997f37102efe07cfdfd3d4b1a60b584a2b56158"
+      },
+      {
+        "id": 13385759883,
+        "name": "DSWhale-Windows-x86_64",
+        "digest": "sha256:56b389fda3c1b34a0538b866cf8e534acea542855e5ad6ec718d4f1bf5c261ca",
+        "head_sha": "6997f37102efe07cfdfd3d4b1a60b584a2b56158",
+        "expected_sha": "6997f37102efe07cfdfd3d4b1a60b584a2b56158"
+      }
+    ],
+    "assets": {
+      "DSWhale-0.3.0-alpha.12-Linux-x86_64.deb": {
+        "bytes": 101237356,
+        "sha256": "8438d9195cd1efded8fe13f23aef5cc3ccd54469fd76e89a95afaa8b336089c9"
+      },
+      "DSWhale-0.3.0-alpha.12-Linux-x86_64.tar.gz": {
+        "bytes": 124086833,
+        "sha256": "3d551e6116f733a638afe49cccb480bca9a757d023de3f46b3bdcf1fe51a3d52"
+      },
+      "DSWhale-0.3.0-alpha.12-Windows-x86_64-setup.exe": {
+        "bytes": 121956360,
+        "sha256": "62a4c56c1b50b7d86249cab40a88c021b1c81c3a065886cc916794a1d88d0385"
+      },
+      "DSWhale-0.3.0-alpha.12-macOS-arm64.dmg": {
+        "bytes": 121472765,
+        "sha256": "638cab3854cbb3a3d27f99aed3c05586b970617e6ef0dfe2dfd1a0be54777cb2"
+      }
+    }
+  },
+  "scope": "Read-only provenance lock, not a workflow or an acceptance pass; no local paths or private data"
+}
