@@ -131,8 +131,8 @@ async function main() {
     const child = spawnSync(exe, args, {...windowsSpawnOptions, cwd, env, stdio: 'inherit', windowsHide: true});
     if (child.status !== 0) throw new Error(`installer failed with status ${child.status}`);
   }
-  function linuxInstall(file) {
-    const child = spawnSync('sudo', ['apt-get', 'install', '-y', '--no-install-recommends', file], {env: {...env, DEBIAN_FRONTEND: 'noninteractive'}, stdio: 'inherit'});
+  function linuxInstall(file, {reinstall = false} = {}) {
+    const child = spawnSync('sudo', ['apt-get', 'install', '-y', '--no-install-recommends', ...(reinstall ? ['--reinstall'] : []), file], {env: {...env, DEBIAN_FRONTEND: 'noninteractive'}, stdio: 'inherit'});
     if (child.status !== 0) throw new Error(`apt install failed with status ${child.status}`);
   }
   function linuxVersion() { return execFileSync('dpkg-query', ['-W', '-f=${Version}', 'dswhale-desktop'], {encoding: 'utf8', env}).trim(); }
@@ -190,7 +190,7 @@ async function main() {
       if (firstVersion !== '0.3.0~alpha.12') throw new Error(`unexpected first a12 dpkg version ${firstVersion}`);
       await fsp.mkdir(profile.profile, {recursive: true});
       await fsp.writeFile(marker, MARKER);
-      linuxInstall(a12);
+      linuxInstall(a12, {reinstall: true});
       if (linuxVersion() !== '0.3.0~alpha.12') throw new Error(`unexpected repeat a12 dpkg version ${linuxVersion()}`);
       if (await fsp.readFile(marker, 'utf8') !== MARKER) throw new Error('synthetic marker changed after repeat install');
       if (!fs.existsSync('/opt/DSWhale/dswhale')) throw new Error('installed Linux executable missing');
