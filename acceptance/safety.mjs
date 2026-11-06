@@ -83,7 +83,8 @@ export function allowedCase(name) {
 }
 const COMMON = ['PATH', 'LANG', 'LC_ALL', 'TZ', 'TMPDIR'];
 const LINUX = [...COMMON, 'HOME', 'USER', 'LOGNAME', 'SHELL'];
-const WINDOWS = ['SystemRoot', 'WINDIR', 'PATH', 'PATHEXT', 'TEMP', 'TMP', 'USERPROFILE', 'APPDATA', 'LOCALAPPDATA', 'HOMEDRIVE', 'HOMEPATH', 'COMSPEC', 'NUMBER_OF_PROCESSORS', 'PROCESSOR_ARCHITECTURE', 'PROCESSOR_IDENTIFIER', 'OS', 'LANG', 'LC_ALL', 'TZ'];
+export const WINDOWS_BASE_KEYS = ['SystemDrive', 'ProgramData', 'ALLUSERSPROFILE', 'ProgramFiles', 'ProgramFiles(x86)', 'ProgramW6432', 'CommonProgramFiles', 'CommonProgramFiles(x86)', 'CommonProgramW6432', 'PUBLIC', 'USERNAME', 'USERDOMAIN'];
+const WINDOWS = [...WINDOWS_BASE_KEYS, 'SystemRoot', 'WINDIR', 'PATH', 'PATHEXT', 'TEMP', 'TMP', 'USERPROFILE', 'APPDATA', 'LOCALAPPDATA', 'HOMEDRIVE', 'HOMEPATH', 'COMSPEC', 'NUMBER_OF_PROCESSORS', 'PROCESSOR_ARCHITECTURE', 'PROCESSOR_IDENTIFIER', 'OS', 'LANG', 'LC_ALL', 'TZ'];
 export function childEnv(platform, env = process.env, extras = {}) {
   const keys = platform === 'win32' ? WINDOWS : LINUX;
   const out = {};

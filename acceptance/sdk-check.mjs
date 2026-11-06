@@ -7,7 +7,7 @@ import os from 'node:os';
 import path from 'node:path';
 import {execFileSync, spawnSync, spawn} from 'node:child_process';
 import {createRequire} from 'node:module';
-import {EXPECTED, assertRealDirectory, childEnv, validateRunnerContext} from './safety.mjs';
+import {EXPECTED, WINDOWS_BASE_KEYS, assertRealDirectory, childEnv, validateRunnerContext} from './safety.mjs';
 
 const SCENARIOS = ['small-only', 'official-only', 'dual-enabled', 'fresh-unconfigured'];
 const MARKER = 'SYNTHETIC-DEVICE-DATA-NOT-AN-ACCOUNT';
@@ -132,15 +132,19 @@ async function main() {
   async function windowsAclIoProbe() {
     if (context.platform !== 'win32') return [];
     const observations = [];
-    for (const [index, mode] of ['closed-eof', 'nul', 'closed-eof'].entries()) {
+    const minimal = Object.fromEntries(Object.entries(env).filter(([key]) => !WINDOWS_BASE_KEYS.some(base => base.toLowerCase() === key.toLowerCase())));
+    const cases = [{environment: 'minimal', values: minimal}, {environment: 'windows-base', values: env}, {environment: 'minimal', values: minimal}, {environment: 'windows-base', values: env}];
+    for (const [index, specification] of cases.entries()) {
+      const mode = 'closed-eof';
       const started = Date.now();
-      const child = spawnSync(venvPython(runtime, context.platform), [path.join(context.workspace, 'acceptance/fixtures/profile_fixture.py'), '--host', host, '--root', temp, '--baseline', path.join(temp, 'baseline.json'), '--scenario', scenario, '--action', 'acl-probe', '--out', path.join(temp, `acl-probe-${index}.json`)], {cwd: temp, env: {...env, ASTRBOT_ROOT: host, PYTHONPATH: path.join(host, 'data', 'plugins'), PYTHONNOUSERSITE: '1'}, ...fixtureIoOptions(mode), timeout: 60000});
+      const child = spawnSync(venvPython(runtime, context.platform), [path.join(context.workspace, 'acceptance/fixtures/profile_fixture.py'), '--host', host, '--root', temp, '--baseline', path.join(temp, 'baseline.json'), '--scenario', scenario, '--action', 'acl-probe', '--out', path.join(temp, `acl-probe-${index}.json`)], {cwd: temp, env: {...specification.values, ASTRBOT_ROOT: host, PYTHONPATH: path.join(host, 'data', 'plugins'), PYTHONNOUSERSITE: '1'}, ...fixtureIoOptions(mode), timeout: 60000});
       let diagnostic = {}, valid = false;
       try { const d = lastJson(child.status === 0 ? child.stdout : child.stderr); valid = child.status === 0 && d.kind === 'DSWhaleSyntheticAclProbe' && d.networkGuard?.allowedWindowsAclProcesses >= 1 && d.networkGuard?.probeBlocked === true; diagnostic = valid ? {aclElapsedMs: d.elapsedMs, allowedAclProcesses: d.networkGuard.allowedWindowsAclProcesses} : {errorClass: d.errorClass, causes: d.causes}; } catch {}
-      const observation = {mode, passed: valid, elapsedMs: Date.now() - started, ...diagnostic};
+      const observation = {mode, environment: specification.environment, passed: valid, elapsedMs: Date.now() - started, ...diagnostic};
       observations.push(observation); console.log(JSON.stringify({stage: 'windows-acl-io-probe', ...observation}));
     }
-    if (!observations[0].passed || !observations[2].passed) throw new Error('closed-EOF Windows ACL diagnostic failed');
+    result.checks.windowsAclIo = observations;
+    if (!observations[1].passed || !observations[3].passed) throw new Error('Windows base-environment ACL diagnostic failed');
     return observations;
   }
   async function installA11(a11) { if (context.platform === 'win32') runInstaller(a11, ['/S', '/currentuser', `/D=${target}`], temp, env, windowsSpawnOptions); else linuxInstall(a11, env); }

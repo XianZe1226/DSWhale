@@ -128,3 +128,12 @@ test('entrypoint rejects a non-CI environment without touching the filesystem', 
   assert.ok(parsed.fields.includes('GITHUB_ACTIONS'));
   assert.equal(fs.existsSync('/tmp/a12-guard-test'), false);
 });
+
+test('Windows base directory and session context survives without unrelated secrets', () => {
+  const env = {systemdrive: 'C:', PROGRAMDATA: 'C:\\ProgramData', ALLUSERSPROFILE: 'C:\\ProgramData', ProgramFiles: 'C:\\Program Files', 'ProgramFiles(x86)': 'C:\\Program Files (x86)', ProgramW6432: 'C:\\Program Files', CommonProgramFiles: 'C:\\Program Files\\Common Files', USERNAME: 'synthetic-runner', USERDOMAIN: 'SYNTHETIC', GITHUB_TOKEN: 'FAKE_SECRET', USERNAME_EXTRA_SECRET: 'FAKE_SECRET', PSModulePath: 'UNTRUSTED_MODULE_PATH'};
+  const child = childEnv('win32', env);
+  for (const key of ['SystemDrive', 'ProgramData', 'ALLUSERSPROFILE', 'ProgramFiles', 'ProgramFiles(x86)', 'ProgramW6432', 'CommonProgramFiles', 'USERNAME', 'USERDOMAIN']) {
+    assert.equal(child[key], Object.entries(env).find(([name]) => name.toLowerCase() === key.toLowerCase())[1]);
+  }
+  for (const key of ['GITHUB_TOKEN', 'USERNAME_EXTRA_SECRET', 'PSModulePath']) assert.equal(Object.hasOwn(child, key), false);
+});
