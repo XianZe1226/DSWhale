@@ -26,6 +26,7 @@ function linuxInstall(file, env) { const child = spawnSync('sudo', ['apt-get', '
 function linuxVersion(env) { return execFileSync('dpkg-query', ['-W', '-f=${Version}', 'dswhale-desktop'], {encoding: 'utf8', env}).trim(); }
 function venvPython(runtime, platform) { return platform === 'win32' ? path.join(runtime, 'venv', 'Scripts', 'python.exe') : path.join(runtime, 'venv', 'bin', 'python'); }
 function nodeExe() { return process.execPath; }
+function runtimeArchivePath(name, platform) { return (platform === 'win32' ? path.win32 : path.posix).join('desktop', 'lib', name); }
 function lastJson(text) {
   const lines = String(text).trim().split(/\r?\n/).filter(Boolean);
   for (let i = lines.length - 1; i >= 0; i--) {
@@ -97,7 +98,7 @@ async function main() {
   async function prepareRuntime(appRoot) {
     console.log(JSON.stringify({stage: 'runtime-prepare', state: 'started'}));
     const lib = path.join(temp, `runtime-lib-${Math.random().toString(36).slice(2)}`); await fsp.mkdir(lib);
-    for (const name of ['runtime.cjs', 'network.cjs', 'tool-assets.json']) await fsp.writeFile(path.join(lib, name), asar.extractFile(path.join(appRoot, 'resources/app.asar'), `desktop/lib/${name}`));
+    for (const name of ['runtime.cjs', 'network.cjs', 'tool-assets.json']) await fsp.writeFile(path.join(lib, name), asar.extractFile(path.join(appRoot, 'resources/app.asar'), runtimeArchivePath(name, context.platform)));
     const script = path.join(lib, 'prepare.cjs');
     await fsp.writeFile(script, `const {RuntimeManager}=require('./runtime.cjs');let m;let timer;(async()=>{m=new RuntimeManager({source:process.argv[2],runtime:process.argv[3],onProgress:p=>console.log(JSON.stringify({stage:'runtime',phase:p.phase,step:p.step,progress:p.progress}))});timer=setTimeout(()=>m.cancel(),20*60*1000);process.once('SIGTERM',()=>m.cancel().finally(()=>process.exit(1)));const r=await m.install();console.log(JSON.stringify(r));})().catch(e=>{console.error(JSON.stringify({code:'RUNTIME_PREPARE_FAILED',name:e.name}));process.exitCode=1}).finally(()=>clearTimeout(timer));`);
     const output = await runRuntimeProcess(nodeExe(), [script, path.join(appRoot, 'resources/backend'), runtime], {cwd: lib, env});

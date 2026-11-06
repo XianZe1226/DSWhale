@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import vm from 'node:vm';
+import path from 'node:path';
 import {spawn, spawnSync} from 'node:child_process';
 
 const source = fs.readFileSync(new URL('../sdk-check.mjs', import.meta.url), 'utf8');
@@ -59,4 +60,16 @@ test('runtime process forwards safe progress and retains the final result', asyn
   assert.equal(forwarded[0].phase, 'installing');
   assert.equal(forwarded[0].progress, 0.5);
   assert.equal(JSON.stringify(forwarded).includes('SYNTHETIC_DO_NOT_LOG'), false);
+});
+
+// ASAR v3 splits member names on the host path separator. Forward slashes fail on Windows.
+test('packaged runtime members use the native ASAR path separator', () => {
+  const begin = source.indexOf('function runtimeArchivePath(');
+  const finish = source.indexOf('\nfunction ', begin + 1);
+  assert.ok(begin > 0 && finish > begin, 'runtime archive path helper is required');
+  const member = new vm.Script('(' + source.slice(begin, finish) + ')').runInNewContext({path});
+  for (const file of ['runtime.cjs', 'network.cjs', 'tool-assets.json']) {
+    assert.deepEqual(member(file, 'win32').split(path.win32.sep), ['desktop', 'lib', file]);
+    assert.deepEqual(member(file, 'linux').split(path.posix.sep), ['desktop', 'lib', file]);
+  }
 });
