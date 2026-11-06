@@ -1,6 +1,11 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {minimizeEnvironment} from '../windows-startup-env.mjs';
+import {minimizeEnvironment, startupExtras} from '../windows-startup-env.mjs';
+
+test('startup diagnostic only forwards explicitly allowed OS context', () => {
+  const result = startupExtras({SystemRoot: 'base'}, {systemroot: 'other', USERDOMAIN_ROAMINGPROFILE: 'os-value', DATABASE_URL: 'private', CONNECTION_STRING: 'private', DSN: 'private', UNKNOWN_STANDARD_LOOKING: 'private', GITHUB_TOKEN: 'private'});
+  assert.deepEqual(result, {USERDOMAIN_ROAMINGPROFILE: 'os-value'});
+});
 
 test('environment diagnostic isolates missing context without exporting values', async () => {
   const result = await minimizeEnvironment({BASE: 'x'}, {A: 'PRIVATE_A', B: 'PRIVATE_B', C: 'PRIVATE_C', D: 'PRIVATE_D'}, env => env.B === 'PRIVATE_B', 16);

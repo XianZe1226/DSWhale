@@ -28,13 +28,23 @@ export async function minimizeEnvironment(base, extras, check, limit = 16) {
   return {baseline, expanded, calls, requiredKeys: current, isolated: repeated === true};
 }
 
-export async function diagnoseWindowsStartup(base, parent, root) {
-  const blocked = /TOKEN|SECRET|PASSWORD|CREDENTIAL|AUTH|COOKIE|KEY|HOOK|PROFIL|STARTUP|NODE|PYTHON|PSMODULEPATH|COR_|COMPLUS|^LD_|^DYLD_|DSWHALE|ASTRBOT/i;
+const STARTUP_CONTEXT_KEYS = new Set([
+  'PROCESSOR_LEVEL', 'PROCESSOR_REVISION', 'PROCESSOR_ARCHITEW6432',
+  'USERDNSDOMAIN', 'USERDOMAIN_ROAMINGPROFILE', 'LOGONSERVER',
+  'SESSIONNAME', 'CLIENTNAME', 'COMPUTERNAME', 'PSExecutionPolicyPreference',
+  'DOTNET_ROOT', 'DOTNET_ROOT_X64', 'DOTNET_MULTILEVEL_LOOKUP',
+  'DOTNET_CLI_TELEMETRY_OPTOUT', 'POWERSHELL_TELEMETRY_OPTOUT',
+].map(key => key.toUpperCase()));
+export function startupExtras(base, parent) {
   const baseNames = new Set(Object.keys(base).map(k => k.toUpperCase()));
   const extras = {};
   for (const [key, value] of Object.entries(parent)) {
-    if (!blocked.test(key) && !baseNames.has(key.toUpperCase()) && value !== undefined) extras[key] = value;
+    if (STARTUP_CONTEXT_KEYS.has(key.toUpperCase()) && !baseNames.has(key.toUpperCase()) && value !== undefined) extras[key] = value;
   }
+  return extras;
+}
+export async function diagnoseWindowsStartup(base, parent, root) {
+  const extras = startupExtras(base, parent);
   const exe = path.win32.join(base.SystemRoot, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
   const script = "Write-Output 'DSWHALE_STARTUP_OK'; exit 0";
   const args = ['-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(script, 'utf16le').toString('base64')];
