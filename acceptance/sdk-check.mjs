@@ -7,6 +7,7 @@ import os from 'node:os';
 import path from 'node:path';
 import {execFileSync, spawnSync, spawn} from 'node:child_process';
 import {createRequire} from 'node:module';
+import {diagnoseWindowsStartup} from './windows-startup-env.mjs';
 import {EXPECTED, assertRealDirectory, childEnv, validateRunnerContext} from './safety.mjs';
 
 const SCENARIOS = ['small-only', 'official-only', 'dual-enabled', 'fresh-unconfigured'];
@@ -189,6 +190,8 @@ async function main() {
       observations.push(observation); console.log(JSON.stringify({stage: 'windows-acl-diagnostic', ...observation}));
     }
     result.checks.windowsAclIo = observations;
+    result.checks.windowsStartupEnvironment = await diagnoseWindowsStartup(env, process.env, temp);
+    console.log(JSON.stringify({stage: 'windows-startup-environment', ...result.checks.windowsStartupEnvironment}));
     if (!observations[0].passed || !observations[7].passed) throw new Error('Windows file-EOF/hidden audited ACL diagnostic failed');
     return observations;
   }
