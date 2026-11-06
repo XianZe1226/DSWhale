@@ -1,6 +1,13 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {minimizeEnvironment, startupExtras} from '../windows-startup-env.mjs';
+import {childEnv} from '../safety.mjs';
+
+test('Windows child retains OS module-analysis cache context but excludes module search overrides', () => {
+  const result = childEnv('win32', {PSModuleAnalysisCachePath: 'synthetic-cache', PSModulePath: 'untrusted-modules', GITHUB_TOKEN: 'private'});
+  assert.deepEqual(result, {PSModuleAnalysisCachePath: 'synthetic-cache'});
+  assert.deepEqual(startupExtras({}, {PSModuleAnalysisCachePath: 'synthetic-cache'}), {PSModuleAnalysisCachePath: 'synthetic-cache'});
+});
 
 test('startup diagnostic only forwards explicitly allowed OS context', () => {
   const result = startupExtras({SystemRoot: 'base'}, {systemroot: 'other', USERDOMAIN_ROAMINGPROFILE: 'os-value', DATABASE_URL: 'private', CONNECTION_STRING: 'private', DSN: 'private', UNKNOWN_STANDARD_LOOKING: 'private', GITHUB_TOKEN: 'private'});

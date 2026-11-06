@@ -34,6 +34,7 @@ const STARTUP_CONTEXT_KEYS = new Set([
   'SESSIONNAME', 'CLIENTNAME', 'COMPUTERNAME', 'PSExecutionPolicyPreference',
   'DOTNET_ROOT', 'DOTNET_ROOT_X64', 'DOTNET_MULTILEVEL_LOOKUP',
   'DOTNET_CLI_TELEMETRY_OPTOUT', 'POWERSHELL_TELEMETRY_OPTOUT',
+  'PSModuleAnalysisCachePath',
 ].map(key => key.toUpperCase()));
 export function startupExtras(base, parent) {
   const baseNames = new Set(Object.keys(base).map(k => k.toUpperCase()));
@@ -44,6 +45,8 @@ export function startupExtras(base, parent) {
   return extras;
 }
 export async function diagnoseWindowsStartup(base, parent, root) {
+  // Hold out exactly the cache context in this diagnostic, never the normal SDK.
+  base = Object.fromEntries(Object.entries(base).filter(([key]) => key.toUpperCase() !== 'PSMODULEANALYSISCACHEPATH'));
   const extras = startupExtras(base, parent);
   const exe = path.win32.join(base.SystemRoot, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
   const script = "Write-Output 'DSWHALE_STARTUP_OK'; exit 0";
