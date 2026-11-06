@@ -135,3 +135,50 @@ jobs:
           path: ${{ runner.temp }}/a12-fresh-repeat-marker-*.json
           if-no-files-found: warn
           retention-days: 7
+  sdk-four-profiles:
+    name: SDK four profiles ${{ matrix.scenario }} (${{ matrix.os }})
+    if: github.repository == 'XianZe1226/DSWhale' && github.ref == 'refs/heads/codex/a12-acceptance' && github.event_name == 'push'
+    needs: preflight
+    strategy:
+      fail-fast: false
+      max-parallel: 3
+      matrix:
+        os: [windows-2022, ubuntu-22.04, ubuntu-24.04]
+        scenario: [small-only, official-only, dual-enabled, fresh-unconfigured]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    steps:
+      - name: Checkout acceptance harness
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+      - name: Checkout fixed a12 binary source (read-only inventory)
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: 6997f37102efe07cfdfd3d4b1a60b584a2b56158
+          path: binary
+          persist-credentials: false
+      - name: Set up Node
+        uses: actions/setup-node@39370e3970a6d050c480ffad4ff0ed4d3fdee5af
+        with:
+          node-version: '22.23.4'
+      - name: Install locked acceptance tooling
+        run: npm ci --ignore-scripts --no-audit --no-fund --prefix acceptance
+      - name: Refresh apt metadata (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update -qq
+      - name: Run actual four-profile SDK fixture and upgrade
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          BINARY_ROOT: ${{ github.workspace }}/binary
+          HARNESS_COMMIT: ${{ github.sha }}
+          ACCEPTANCE_JOB_KEY: a12-sdk-${{ matrix.scenario }}-${{ matrix.os }}
+        run: node acceptance/sdk-check.mjs --scenario=${{ matrix.scenario }}
+      - name: Upload sanitized SDK result
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: a12-sdk-${{ matrix.scenario }}-${{ matrix.os }}
+          path: ${{ runner.temp }}/a12-sdk-${{ matrix.scenario }}-*.json
+          if-no-files-found: warn
+          retention-days: 7
