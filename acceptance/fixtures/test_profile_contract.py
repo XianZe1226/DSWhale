@@ -1,10 +1,12 @@
 import json
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
 
 from profile_contract import (
     MARKER,
+    allowed_windows_acl_process,
     assert_same,
     authorize_paths,
     ensure_marker,
@@ -16,6 +18,42 @@ from profile_contract import (
 
 
 class ContractTests(unittest.TestCase):
+    def test_windows_acl_exception_requires_exact_command_and_owned_data(self):
+        with tempfile.TemporaryDirectory(dir=Path.cwd()) as directory:
+            root = Path(directory).resolve()
+            data = root / "data"
+            data.mkdir()
+            target = data / "synthetic.json"
+            target.write_text("{}")
+            exe = str(root / "powershell.exe")
+            script = "SYNTHETIC_FIXED_ACL_SCRIPT"
+            command = [exe, "-NoProfile", "-NonInteractive", "-Command", script]
+            env = {"DSWHALE_PRIVATE_PATH": str(target)}
+
+            def allowed(args):
+                return allowed_windows_acl_process(args, data, exe, script)
+
+            self.assertTrue(allowed((None, command, None, env)))
+            self.assertTrue(allowed((exe, subprocess.list2cmdline(command), None, env)))
+            for bad in [
+                ("other.exe", command, None, env),
+                (None, command + ["extra"], None, env),
+                (None, command[:-1] + ["OTHER_SCRIPT"], None, env),
+                (None, subprocess.list2cmdline(command) + " ; other.exe", None, env),
+                (None, command, None, {"DSWHALE_PRIVATE_PATH": str(root)}),
+                (None, command, str(root), env),
+                (None, command, None, {}),
+                (None, command, None, dict(env, PsModulePath="SYNTHETIC_MODULES")),
+                (None, command, None, dict(env, dswhale_private_path=str(root))),
+            ]:
+                with self.subTest(args=bad[:2]):
+                    self.assertFalse(allowed(bad))
+            outside = root / "outside.json"
+            outside.write_text("{}")
+            target.unlink()
+            target.symlink_to(outside)
+            self.assertFalse(allowed((None, command, None, env)))
+
     def test_data_and_plugin_directory_links_are_rejected(self):
         with tempfile.TemporaryDirectory(dir=Path.cwd()) as outer:
             outer = Path(outer).resolve()

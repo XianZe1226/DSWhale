@@ -3,6 +3,7 @@
 import hashlib
 import json
 import os
+import subprocess
 import sys
 from pathlib import Path
 
@@ -221,11 +222,57 @@ def validate_scenario(snapshot, scenario):
         raise ValueError("selected model reference changed")
 
 
-def deny_fixture_network():
-    """Deny Python network/child-process audit events; not an OS sandbox claim."""
-    state = {"mode": "python-audit-no-network-or-child-processes", "blocked": 0}
+def allowed_windows_acl_process(args, data_root, executable, script):
+    """Allow only the pinned product ACL command targeting existing synthetic data."""
+    try:
+        actual_exe, command, cwd, env = args
+        expected = [executable, "-NoProfile", "-NonInteractive", "-Command", script]
+        if not isinstance(env, dict) or any(not isinstance(key, str) for key in env):
+            return False
+        names = [key.upper() for key in env]
+        if len(names) != len(set(names)) or "PSMODULEPATH" in names:
+            return False
+        if actual_exe is not None and os.path.normcase(actual_exe) != os.path.normcase(executable):
+            return False
+        if command != expected and command != subprocess.list2cmdline(expected):
+            return False
+        root = Path(data_root)
+        if root.is_symlink() or root.absolute() != root.resolve(strict=True):
+            return False
+        target = Path(env["DSWHALE_PRIVATE_PATH"])
+        if not target.is_absolute() or not target.is_relative_to(root):
+            return False
+        for candidate in [target, *target.parents]:
+            if candidate.is_symlink() or candidate.absolute() != candidate.resolve(strict=True):
+                return False
+            if candidate == root:
+                break
+        if cwd is not None and not Path(cwd).resolve(strict=True).is_relative_to(root):
+            return False
+        return True
+    except (OSError, ValueError, TypeError, KeyError):
+        return False
+
+
+def deny_fixture_network(*, data_root=None):
+    """Deny Python networking/children except the exact owned-data Windows ACL command."""
+    state = {
+        "mode": "python-audit-no-network-with-owned-windows-acl-only",
+        "blocked": 0,
+        "allowedWindowsAclProcesses": 0,
+    }
 
     def audit(event, args):
+        if event == "subprocess.Popen" and os.name == "nt" and data_root is not None:
+            # Imported lazily under the active guard from the fixed installed backend.
+            from dswhale.private_files import _windows_acl_script
+
+            executable = str(
+                Path(os.environ["SystemRoot"]) / "System32/WindowsPowerShell/v1.0/powershell.exe"
+            )
+            if allowed_windows_acl_process(args, data_root, executable, _windows_acl_script()):
+                state["allowedWindowsAclProcesses"] += 1
+                return
         if event in {
             "socket.connect",
             "socket.getaddrinfo",
@@ -236,7 +283,9 @@ def deny_fixture_network():
             "os.exec",
         }:
             state["blocked"] += 1
-            raise PermissionError("synthetic SDK storage fixture forbids network/child processes")
+            raise PermissionError(
+                "synthetic SDK storage fixture forbids network/unapproved children"
+            )
 
     sys.addaudithook(audit)
     try:

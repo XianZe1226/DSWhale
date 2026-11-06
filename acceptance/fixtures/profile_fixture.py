@@ -360,7 +360,7 @@ async def main():
         ensure_marker(host / "data", seed=False)
     os.environ["ASTRBOT_ROOT"] = str(host)
     os.chdir(host)
-    network = deny_fixture_network()
+    network = deny_fixture_network(data_root=host / "data")
     if seed:
         ensure_marker(host / "data", seed=True)
         await build_config(host, args.scenario)
