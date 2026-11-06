@@ -169,19 +169,22 @@ async function main() {
       {mode: 'file-eof', hidden: true, audit: true, synchronous: true, interpreter: 'hosted-system', location: 'native-temp'},
       {mode: 'file-eof', hidden: true, audit: true, synchronous: true, policyContext: true},
       {mode: 'file-eof', hidden: true, audit: true, noConsoleOverride: true},
+      {mode: 'file-eof', hidden: true, audit: true, captureOverride: true},
+      ...['acl-start-command', 'acl-start-encoded', 'acl-trace-command', 'acl-trace-encoded'].map(action => ({mode: 'file-eof', hidden: true, audit: false, traceAction: action})),
     ];
     for (const [index, specification] of cases.entries()) {
       const started = Date.now();
       if (specification.policyContext && !trustedPolicy) { observations.push({...specification, passed: false, skipped: 'trusted inherited policy context unavailable'}); continue; }
       if (specification.interpreter && !systemPython) { observations.push({...specification, passed: false, skipped: 'hosted-system interpreter unavailable'}); continue; }
-      const action = specification.noConsoleOverride ? 'acl-probe-no-window' : specification.idleLoop ? 'acl-probe-idle-loop' : (specification.audit ? 'acl-probe' : 'acl-probe-no-audit') + (specification.synchronous ? '-sync' : '');
+      const action = specification.traceAction || (specification.captureOverride ? 'acl-probe-capture' : specification.noConsoleOverride ? 'acl-probe-no-window' : specification.idleLoop ? 'acl-probe-idle-loop' : (specification.audit ? 'acl-probe' : 'acl-probe-no-audit') + (specification.synchronous ? '-sync' : ''));
       const python = specification.interpreter ? systemPython : venvPython(runtime, context.platform);
       const pythonPath = specification.interpreter ? path.join(target, 'resources', 'backend') : path.join(host, 'data', 'plugins');
       const probeRoot = specification.location ? nativeRoot : temp;
       const probeHost = specification.location ? nativeHost : host;
       const child = spawnSync(python, [path.join(context.workspace, 'acceptance/fixtures/profile_fixture.py'), '--host', probeHost, '--root', probeRoot, '--baseline', path.join(probeRoot, 'baseline.json'), '--scenario', scenario, '--action', action, '--out', path.join(probeRoot, `acl-probe-${index}.json`)], {cwd: probeRoot, env: {...env, ...(specification.policyContext ? {PSExecutionPolicyPreference: trustedPolicy} : {}), ASTRBOT_ROOT: probeHost, PYTHONPATH: pythonPath, PYTHONNOUSERSITE: '1'}, ...fixtureIoOptions(specification.mode, inputFd), windowsHide: specification.hidden, timeout: 60000});
       let diagnostic = {}, valid = false;
-      try { const d = lastJson(child.status === 0 ? child.stdout : child.stderr); valid = child.status === 0 && d.kind === 'DSWhaleSyntheticAclProbe' && d.apiCompleted === true && (specification.audit ? d.networkGuard?.allowedWindowsAclProcesses >= 1 && d.networkGuard?.probeBlocked === true : d.networkGuard?.mode === 'diagnostic-api-only-no-python-audit'); diagnostic = valid ? {aclElapsedMs: d.elapsedMs, stdinType: d.stdinType, eventLoopActive: d.eventLoopActive, pythonVersion: d.pythonVersion, privateApiSha256: d.privateApiSha256, diagnosticNoConsoleOverride: d.diagnosticNoConsoleOverride, allowedAclProcesses: d.networkGuard.allowedWindowsAclProcesses ?? null} : {errorClass: d.errorClass, causes: d.causes, stdinType: d.stdinType, eventLoopActive: d.eventLoopActive, frames: d.frames}; } catch {}
+      try { const d = lastJson(child.status === 0 ? child.stdout : child.stderr); valid = child.status === 0 && d.kind === 'DSWhaleSyntheticAclProbe' && d.apiCompleted === true && (specification.audit ? d.networkGuard?.allowedWindowsAclProcesses >= 1 && d.networkGuard?.probeBlocked === true : d.networkGuard?.mode === 'diagnostic-api-only-no-python-audit'); diagnostic = valid ? {aclElapsedMs: d.elapsedMs, stdinType: d.stdinType, eventLoopActive: d.eventLoopActive, pythonVersion: d.pythonVersion, privateApiSha256: d.privateApiSha256, diagnosticNoConsoleOverride: d.diagnosticNoConsoleOverride, diagnosticOutputCaptureOverride: d.diagnosticOutputCaptureOverride, allowedAclProcesses: d.networkGuard.allowedWindowsAclProcesses ?? null} : {errorClass: d.errorClass, causes: d.causes, stdinType: d.stdinType, eventLoopActive: d.eventLoopActive, frames: d.frames}; } catch {}
+      if (specification.traceAction && child.status === 0) { try { const d = lastJson(child.stdout); if (d.kind === 'DSWhaleSyntheticAclTrace') diagnostic = {trace: {elapsedMs: d.elapsedMs, returncode: d.returncode, errorClass: d.errorClass, markers: d.markers}}; } catch {} }
       const observation = {...specification, nativeTempIsDifferentVolume: specification.location ? path.win32.parse(nativeRoot).root.toLowerCase() !== path.win32.parse(temp).root.toLowerCase() : null, passed: valid, elapsedMs: Date.now() - started, ...diagnostic};
       observations.push(observation); console.log(JSON.stringify({stage: 'windows-acl-diagnostic', ...observation}));
     }

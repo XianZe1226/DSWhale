@@ -3,10 +3,12 @@
 
 import argparse
 import asyncio
+import base64
 import hashlib
 import json
 import os
 import sqlite3
+import subprocess
 import sys
 import time
 import traceback
@@ -26,6 +28,7 @@ from profile_contract import (
     ensure_marker,
     protect,
     require_existing_storage,
+    trace_markers,
     validate_index,
     validate_records,
     validate_scenario,
@@ -361,6 +364,11 @@ def parse_args():
             "acl-probe-no-audit-sync",
             "acl-probe-idle-loop",
             "acl-probe-no-window",
+            "acl-probe-capture",
+            "acl-trace-command",
+            "acl-trace-encoded",
+            "acl-start-command",
+            "acl-start-encoded",
         ),
         required=True,
     )
@@ -380,7 +388,15 @@ def prepare_fixture(args):
     os.chdir(host)
     network = (
         {"mode": "diagnostic-api-only-no-python-audit"}
-        if args.action in ("acl-probe-no-audit", "acl-probe-no-audit-sync")
+        if args.action
+        in (
+            "acl-probe-no-audit",
+            "acl-probe-no-audit-sync",
+            "acl-trace-command",
+            "acl-trace-encoded",
+            "acl-start-command",
+            "acl-start-encoded",
+        )
         else deny_fixture_network(
             data_root=host / "data", backup_root=host / ".desktop-settings-backups"
         )
@@ -406,12 +422,16 @@ def run_acl_probe(args, host, network):
         loop_active = False
     started = time.monotonic()
     original_run = private_files.subprocess.run
-    if args.action == "acl-probe-no-window":
+    if args.action in ("acl-probe-no-window", "acl-probe-capture"):
 
         def no_console(command, **kwargs):
             if command[-1] != private_files._windows_acl_script():
                 raise ValueError("unexpected diagnostic command")
-            kwargs["creationflags"] = private_files.subprocess.CREATE_NO_WINDOW
+            if args.action == "acl-probe-no-window":
+                kwargs["creationflags"] = private_files.subprocess.CREATE_NO_WINDOW
+            else:
+                kwargs["stdout"] = subprocess.PIPE
+                kwargs["stderr"] = subprocess.PIPE
             return original_run(command, **kwargs)
 
         private_files.subprocess.run = no_console
@@ -429,6 +449,7 @@ def run_acl_probe(args, host, network):
         "kind": "DSWhaleSyntheticAclProbe",
         "apiCompleted": True,
         "diagnosticNoConsoleOverride": args.action == "acl-probe-no-window",
+        "diagnosticOutputCaptureOverride": args.action == "acl-probe-capture",
         "stdinType": stdin_type,
         "pythonVersion": list(sys.version_info[:3]),
         "privateApiSha256": hashlib.sha256(Path(private_files.__file__).read_bytes()).hexdigest(),
@@ -440,8 +461,71 @@ def run_acl_probe(args, host, network):
     print(canonical(result), flush=True)
 
 
+def run_acl_trace(args, host, network):
+    if os.name != "nt":
+        raise ValueError("ACL tracing is Windows-only")
+    from dswhale import private_files
+
+    target = host / ".desktop-settings-backups" / ("acl-trace-" + uuid.uuid4().hex)
+    target.mkdir(parents=True)
+    script = private_files._windows_acl_script()
+    for text, phase in [
+        ("$target = Get-Item", "get-item"),
+        ("$identity = [System.Security.Principal.WindowsIdentity]", "identity"),
+        ("$owner = (Get-Acl", "get-acl"),
+        ("if ($owner.Value", "owner-check"),
+        ("$acl.SetOwner($sid)", "set-owner"),
+        ("$acl.AddAccessRule($rule)", "add-rule"),
+        ("[System.IO.Directory]::SetAccessControl($path, $acl)", "apply-directory"),
+        ("[System.IO.File]::SetAccessControl($path, $acl)", "apply-file"),
+    ]:
+        if text not in script:
+            raise ValueError("trace insertion point missing")
+        script = script.replace(text, "Write-Output 'ACLTRACE:" + phase + "'; " + text)
+    script = "Write-Output 'ACLTRACE:begin'; " + script + "; Write-Output 'ACLTRACE:done'"
+    if args.action.startswith("acl-start"):
+        script = "Write-Output 'ACLTRACE:begin'; Write-Output 'ACLTRACE:done'; exit 0"
+    system = Path(os.environ["SystemRoot"]) / "System32/WindowsPowerShell/v1.0/powershell.exe"
+    command = [str(system), "-NoProfile", "-NonInteractive"]
+    if args.action.endswith("encoded"):
+        command += ["-EncodedCommand", base64.b64encode(script.encode("utf-16le")).decode("ascii")]
+    else:
+        command += ["-Command", script]
+    child_env = {k: v for k, v in os.environ.items() if k.upper() != "PSMODULEPATH"}
+    child_env["DSWHALE_PRIVATE_PATH"] = str(target)
+    started = time.monotonic()
+    status, output, error_class = None, b"", None
+    try:
+        child = subprocess.run(
+            command,
+            env=child_env,
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            timeout=20,
+            creationflags=subprocess.CREATE_NO_WINDOW,
+        )
+        status, output = child.returncode, child.stdout
+    except subprocess.TimeoutExpired as error:
+        output, error_class = error.stdout or b"", type(error).__name__
+    markers = trace_markers(output)
+    result = {
+        "kind": "DSWhaleSyntheticAclTrace",
+        "diagnosticOnly": True,
+        "action": args.action,
+        "elapsedMs": round((time.monotonic() - started) * 1000),
+        "returncode": status,
+        "errorClass": error_class,
+        "markers": markers,
+    }
+    write_json(args.out, result)
+    print(canonical(result), flush=True)
+
+
 async def main(args):
     host, network = prepare_fixture(args)
+    if args.action.startswith(("acl-trace", "acl-start")):
+        run_acl_trace(args, host, network)
+        return
     if args.action.startswith("acl-probe"):
         run_acl_probe(args, host, network)
         return

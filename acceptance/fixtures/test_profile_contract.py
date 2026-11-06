@@ -12,12 +12,19 @@ from profile_contract import (
     ensure_marker,
     protect,
     require_existing_storage,
+    trace_markers,
     validate_index,
     validate_records,
 )
 
 
 class ContractTests(unittest.TestCase):
+    def test_trace_exports_declared_phases_only(self):
+        text = "SYNTHETIC_PRIVATE_TEXT ACLTRACE:begin ACLTRACE:unknown-value ACLTRACE:done"
+        for encoding in ("utf-8", "utf-16le"):
+            self.assertEqual(trace_markers(text.encode(encoding)), ["begin", "done"])
+        self.assertEqual(trace_markers(b"SYNTHETIC_PRIVATE_TEXT"), [])
+
     def test_windows_acl_exception_requires_exact_command_and_owned_data(self):
         with tempfile.TemporaryDirectory(dir=Path.cwd()) as directory:
             root = Path(directory).resolve()

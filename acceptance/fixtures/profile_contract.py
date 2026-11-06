@@ -3,6 +3,7 @@
 import hashlib
 import json
 import os
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -303,3 +304,30 @@ def deny_fixture_network(*, data_root=None, backup_root=None):
     if not state.get("probeBlocked"):
         raise RuntimeError("fixture network guard failed its audit-event probe")
     return state
+
+
+def trace_markers(output):
+    """Export only declared constant phases, never arbitrary child output."""
+    allowed = {
+        "begin",
+        "get-item",
+        "identity",
+        "get-acl",
+        "owner-check",
+        "set-owner",
+        "add-rule",
+        "apply-directory",
+        "apply-file",
+        "done",
+    }
+    for encoding in ("utf-8", "utf-16le"):
+        phases = [
+            phase
+            for phase in re.findall(
+                r"ACLTRACE:([a-z-]+)", output[-65536:].decode(encoding, errors="ignore")
+            )
+            if phase in allowed
+        ]
+        if phases:
+            return phases
+    return []
