@@ -1,128 +1,422 @@
 #!/usr/bin/env python3
-"""Synthetic a11/a12 SDK fixture driver for acceptance-only use."""
-import argparse, asyncio, hashlib, json, os, sys
+"""Actual SDK/storage preservation with deterministic test embeddings, no providers/UI."""
+
+import argparse
+import asyncio
+import hashlib
+import json
+import os
+import sqlite3
+import sys
+import traceback
+from importlib.metadata import version
 from pathlib import Path
 
-SCENARIOS = ('small-only', 'official-only', 'dual-enabled', 'fresh-unconfigured')
-MARKER = 'SYNTHETIC-DEVICE-DATA-NOT-AN-ACCOUNT'
+from profile_contract import (
+    MEMORIES,
+    PERSONAS,
+    SCENARIOS,
+    assert_same,
+    authorize_paths,
+    canonical,
+    deny_fixture_network,
+    digest,
+    ensure_marker,
+    protect,
+    require_existing_storage,
+    validate_index,
+    validate_records,
+    validate_scenario,
+)
+
 
 class Embedding:
-    def get_dim(self): return 8
-    async def get_embedding(self, text): return [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8]
-    async def get_embeddings_batch(self, contents, **kwargs): return [await self.get_embedding(c) for c in contents]
+    """Deliberate storage test double, never reported as a real model provider."""
 
-def load(path, default=None):
-    try: return json.loads(Path(path).read_text(encoding='utf-8-sig'))
-    except FileNotFoundError: return {} if default is None else default
+    def get_dim(self):
+        return 8
 
-def atomic_json(path, value):
-    p=Path(path); p.parent.mkdir(parents=True, exist_ok=True)
-    tmp=p.with_name(p.name+'.tmp'); tmp.write_text(json.dumps(value, ensure_ascii=False, indent=2), encoding='utf-8'); tmp.replace(p)
+    async def get_embedding(self, text):
+        return [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8]
 
-def official_c2c(host, scope):
-    directory=Path(host)/'data/plugin_data/astrbot_plugin_dswhale'
-    directory.mkdir(parents=True, exist_ok=True)
-    atomic_json(directory/'official-c2c.json', [hashlib.sha256(scope.encode()).hexdigest()])
+    async def get_embeddings_batch(self, contents, **kwargs):
+        return [await self.get_embedding(c) for c in contents]
 
-def platform(id, type, enable=True, **extra):
-    value={'id':id,'type':type,'enable':enable}; value.update(extra); return value
 
-def source():
-    return {'id':'synthetic-source','provider':'openai','type':'openai_chat_completion','provider_type':'chat_completion','enable':True,'key':[],'api_base':'http://127.0.0.1:9/v1','timeout':2,'proxy':'','custom_headers':{}}
+def load(path):
+    return json.loads(Path(path).read_text(encoding="utf-8-sig"))
 
-def model():
-    return {'id':'synthetic-model','provider_source_id':'synthetic-source','model':'synthetic-chat','enable':True,'modalities':[],'custom_extra_body':{}}
+
+def write_json(path, value, *, exclusive=False):
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("x" if exclusive else "w", encoding="utf-8") as stream:
+        stream.write(canonical(value))
+
 
 async def build_config(host, scenario):
     from astrbot.core.config import AstrBotConfig
-    host=Path(host); cfg=AstrBotConfig()
-    cfg['provider_sources']=[source()]; cfg['provider']=[model()]
-    cfg['provider_settings']={}
-    cfg['agent_runner']={'config':{'model':{'provider_id':'synthetic-model'}}}
-    cfg['platform']=[]
-    if scenario in ('official-only','dual-enabled'):
-        cfg['platform'].append(platform('synthetic-official','qq_official',True,appid='synthetic-appid',secret='synthetic-secret',token='synthetic-token'))
-    cfg.save_config()
+
     from dswhale.desktop_settings import save_settings
-    if scenario in ('small-only','dual-enabled'):
-        save_settings(host, {'ownerQQ':'12345678','platformId':'synthetic-small','onebotPort':6199,'onebotToken':'synthetic-onebot-token-1234567890','qqConnectionMode':'napcat'})
-    if scenario in ('official-only','dual-enabled'):
-        scope='synthetic-official:FriendMessage:OPAQUE'
-        official_c2c(host, scope)
-        save_settings(host, {'officialOwnerUMO':scope,'qqConnectionMode':'official','defaultDelivery':'official'})
-    if scenario=='official-only':
-        cfg2=AstrBotConfig(); platforms=cfg2.setdefault('platform',[])
-        if not any(p.get('id')=='synthetic-small' for p in platforms):
-            platforms.append(platform('synthetic-small','aiocqhttp',False,ws_reverse_host='127.0.0.1',ws_reverse_port=6199,ws_reverse_token='synthetic-onebot-token-1234567890'))
-        cfg2.save_config()
-    if scenario=='dual-enabled':
-        cfg2=AstrBotConfig()
-        for p in cfg2.get('platform',[]):
-            if p.get('id')=='synthetic-small': p['enable']=True
-        cfg2.save_config()
-    if scenario in ('small-only','dual-enabled'):
-        cfg2=AstrBotConfig()
-        for p in cfg2.get('platform',[]):
-            if p.get('id')=='synthetic-small': p['enable']=True
-        cfg2.save_config()
-        if scenario=='small-only':
-            save_settings(host, {'defaultDelivery':'napcat'})
-    if scenario=='fresh-unconfigured':
-        cfg2=AstrBotConfig(); cfg2['platform']=[]; cfg2.save_config()
-    return cfg
 
-async def seed(host, scenario):
+    cfg = AstrBotConfig()
+    cfg["provider_sources"] = [
+        {
+            "id": "synthetic-source",
+            "provider": "openai",
+            "type": "openai_chat_completion",
+            "provider_type": "chat_completion",
+            "enable": True,
+            "key": [],
+            "api_base": "http://127.0.0.1:9/v1",
+            "timeout": 2,
+            "proxy": "",
+            "custom_headers": {},
+        }
+    ]
+    cfg["provider"] = [
+        {
+            "id": "synthetic-model",
+            "provider_source_id": "synthetic-source",
+            "model": "synthetic-chat",
+            "enable": True,
+            "modalities": [],
+            "custom_extra_body": {"acceptance": {"flag": False, "zero": 0, "empty": ""}},
+        }
+    ]
+    cfg["agent_runner"] = {"config": {"model": {"provider_id": "synthetic-model"}}}
+    cfg["platform"] = []
+    if scenario in ("official-only", "dual-enabled"):
+        cfg["platform"].append(
+            {
+                "id": "synthetic-official",
+                "type": "qq_official",
+                "enable": True,
+                "appid": "synthetic-appid",
+                "secret": "synthetic-secret",
+                "token": "synthetic-token",
+            }
+        )
+    cfg.save_config()
+    if scenario in ("small-only", "dual-enabled"):
+        save_settings(
+            host,
+            {
+                "ownerQQ": "12345678",
+                "platformId": "synthetic-small",
+                "onebotPort": 6199,
+                "onebotToken": "synthetic-onebot-token-1234567890",
+                "qqConnectionMode": "napcat",
+            },
+        )
+    if scenario in ("official-only", "dual-enabled"):
+        scope = "synthetic-official:FriendMessage:OPAQUE"
+
+        write_json(
+            Path(host) / "data/plugin_data/astrbot_plugin_dswhale/official-c2c.json",
+            [hashlib.sha256(scope.encode()).hexdigest()],
+        )
+        save_settings(
+            host,
+            {
+                "officialOwnerUMO": scope,
+                "qqConnectionMode": "official",
+                "defaultDelivery": "official",
+            },
+        )
+    if scenario == "official-only":
+        cfg = AstrBotConfig()
+        cfg["platform"].append(
+            {
+                "id": "synthetic-small",
+                "type": "aiocqhttp",
+                "enable": False,
+                "ws_reverse_host": "127.0.0.1",
+                "ws_reverse_port": 6199,
+                "ws_reverse_token": "synthetic-onebot-token-1234567890",
+            }
+        )
+        cfg.save_config()
+    if scenario in ("small-only", "dual-enabled"):
+        cfg = AstrBotConfig()
+        for platform in cfg.get("platform", []):
+            if platform.get("id") == "synthetic-small":
+                platform["enable"] = True
+        cfg.save_config()
+        if scenario == "small-only":
+            save_settings(host, {"defaultDelivery": "napcat"})
+    fish_path = Path(host) / "data/config/astrbot_plugin_dswhale_config.json"
+    fish = load(fish_path) if fish_path.exists() else {}
+    for key, default in {
+        "owner_qq": "",
+        "owner_umo": "",
+        "official_owner_umo": "",
+        "qq_connection_mode": "napcat",
+        "qq_default_delivery": "",
+        "proactive_enabled": False,
+        "qq_signature_enabled": False,
+        "qzone_enabled": False,
+        "bili_enabled": False,
+    }.items():
+        fish.setdefault(key, default)
+    write_json(fish_path, fish)
+    memory = Path(host) / "data/config/astrbot_plugin_livingmemory_config.json"
+    # Storage-only fixture: no dangling or fake claim of a configured provider.
+    write_json(
+        memory,
+        {
+            "provider_settings": {
+                "embedding_provider_id": "",
+                "llm_provider_id": "",
+                "llm_stream_mode": "auto",
+            }
+        },
+    )
+
+
+async def storage(host, seed):
+    import faiss
+    from astrbot.core.config import AstrBotConfig
     from astrbot.core.db.sqlite import SQLiteDatabase
     from astrbot.core.db.vec_db.faiss_impl.vec_db import FaissVecDB
     from astrbot_plugin_livingmemory.core.managers.memory_engine import MemoryEngine
-    host=Path(host); data=host/'data'; cfg=await build_config(host, scenario)
-    db=SQLiteDatabase(str(data/'data_v4.db')); await db.initialize()
-    for pid,prompt in [('synthetic-persona-a','Synthetic persona A for acceptance only.'),('synthetic-persona-b','Synthetic persona B for acceptance only.')]:
-        try: await db.insert_persona(pid,prompt,[])
-        except Exception: pass
-    await db.create_conversation('synthetic-user','synthetic-small',[{'role':'user','content':'synthetic conversation one'}],title='synthetic conversation',persona_id='synthetic-persona-a')
-    await db.create_conversation('synthetic-user','synthetic-official',[{'role':'user','content':'synthetic conversation two'}],title='synthetic official conversation',persona_id='synthetic-persona-b')
-    plugin_dir=data/'plugin_data/astrbot_plugin_livingmemory'; plugin_dir.mkdir(parents=True, exist_ok=True)
-    provider=Embedding()
-    doc=FaissVecDB(str(plugin_dir/'livingmemory.db'),str(plugin_dir/'livingmemory.index'),provider)
-    graph=FaissVecDB(str(plugin_dir/'livingmemory_graph_documents.db'),str(plugin_dir/'livingmemory_graph.index'),provider)
-    await doc.initialize(); await graph.initialize(); engine=MemoryEngine(str(plugin_dir/'livingmemory.db'),doc,graph_vector_db=graph,config={'recent_memory_count':0,'graph_memory_enabled':True}); await engine.initialize()
-    for content,persona in [('synthetic acceptance memory one','synthetic-persona-a'),('synthetic acceptance memory two','synthetic-persona-b')]:
-        await engine.add_memory(content=content,session_id='synthetic-session',persona_id=persona,importance=0.8,metadata={'canonical_summary':content})
-    (data/'config').mkdir(parents=True, exist_ok=True)
-    atomic_json(data/'config/astrbot_plugin_livingmemory_config.json', {'provider_settings':{'embedding_provider_id':'synthetic-embedding','llm_provider_id':'','llm_stream_mode':'auto'}})
-    await readback(host, scenario, seed=True)
 
-async def readback(host, scenario, seed=False):
-    from astrbot.core.db.sqlite import SQLiteDatabase
-    from astrbot.core.db.vec_db.faiss_impl.vec_db import FaissVecDB
-    from astrbot_plugin_livingmemory.core.managers.memory_engine import MemoryEngine
     from dswhale.desktop_settings import read_settings
-    host=Path(host); data=host/'data'; cfg=load(data/'cmd_config.json')
-    db=SQLiteDatabase(str(data/'data_v4.db')); await db.initialize()
-    personas=[p.persona_id for p in await db.get_personas()]
-    conversations=await db.get_conversations(user_id='synthetic-user')
-    plugin_dir=data/'plugin_data/astrbot_plugin_livingmemory'; provider=Embedding()
-    doc=FaissVecDB(str(plugin_dir/'livingmemory.db'),str(plugin_dir/'livingmemory.index'),provider)
-    graph=FaissVecDB(str(plugin_dir/'livingmemory_graph_documents.db'),str(plugin_dir/'livingmemory_graph.index'),provider)
-    await doc.initialize(); await graph.initialize(); engine=MemoryEngine(str(plugin_dir/'livingmemory.db'),doc,graph_vector_db=graph,config={'recent_memory_count':0,'graph_memory_enabled':True}); await engine.initialize()
-    hits=await engine.search_memories(query='synthetic acceptance memory',k=3,session_id='synthetic-session')
-    result={
-      'scenario':scenario,'action':'seed' if seed else 'verify','asr_version':os.environ.get('DSWHALE_FIXTURE_VERSION',''),
-      'platforms':[{'id':p.get('id'),'type':p.get('type'),'enable':p.get('enable'),'hasAppid':bool(p.get('appid')),'hasSecret':bool(p.get('secret')),'hasWsToken':bool(p.get('ws_reverse_token'))} for p in cfg.get('platform',[])],
-      'provider_sources':[{k:p.get(k) for k in ('id','type','enable','api_base')} for p in cfg.get('provider_sources',[])],
-      'provider':[{k:p.get(k) for k in ('id','provider_source_id','model','enable')} for p in cfg.get('provider',[])],
-      'settings':read_settings(host),'personas':personas,'conversations':[{'conversation_id':c.conversation_id,'persona_id':c.persona_id,'user_id':c.user_id,'platform_id':c.platform_id,'title':c.title,'content':c.content} for c in conversations],
-      'memory_hits':[{'content':h.content,'doc_id':h.doc_id,'metadata':h.metadata} for h in hits],
-      'marker':(data/'synthetic-device-marker.txt').read_text(encoding='utf-8') if (data/'synthetic-device-marker.txt').exists() else None,
-    }
-    print(json.dumps(result, ensure_ascii=False, default=str))
+
+    data = host / "data"
+    # Real SDK first read, not merely json.load of the config file.
+    cfg = AstrBotConfig()
+    db = SQLiteDatabase(str(data / "data_v4.db"))
+    await db.initialize()
+    directory = data / "plugin_data/astrbot_plugin_livingmemory"
+    directory.mkdir(parents=True, exist_ok=True)
+    doc = FaissVecDB(
+        str(directory / "livingmemory.db"), str(directory / "livingmemory.index"), Embedding()
+    )
+    graph = FaissVecDB(
+        str(directory / "livingmemory_graph_documents.db"),
+        str(directory / "livingmemory_graph.index"),
+        Embedding(),
+    )
+    engine = None
+    try:
+        await doc.initialize()
+        await graph.initialize()
+        engine = MemoryEngine(
+            str(directory / "livingmemory.db"),
+            doc,
+            graph_vector_db=graph,
+            config={"recent_memory_count": 0, "graph_memory_enabled": False},
+        )
+        await engine.initialize()
+        if seed:
+            for persona in PERSONAS:
+                await db.insert_persona(**persona)
+            for cid, pid, platform, body in [
+                (
+                    "synthetic-conversation-a",
+                    "synthetic-persona-a",
+                    "synthetic-small",
+                    "synthetic conversation one",
+                ),
+                (
+                    "synthetic-conversation-b",
+                    "synthetic-persona-b",
+                    "synthetic-official",
+                    "synthetic conversation two",
+                ),
+            ]:
+                await db.create_conversation(
+                    "synthetic-user",
+                    platform,
+                    [{"role": "user", "content": body}],
+                    title=body,
+                    persona_id=pid,
+                    cid=cid,
+                )
+            for body, pid in MEMORIES:
+                await engine.add_memory(
+                    content=body,
+                    session_id="synthetic-session",
+                    persona_id=pid,
+                    importance=0.8,
+                    metadata={"canonical_summary": body},
+                )
+        personas = [{key: getattr(p, key) for key in PERSONAS[0]} for p in await db.get_personas()]
+        conversations = [
+            {
+                key: getattr(c, key)
+                for key in (
+                    "conversation_id",
+                    "persona_id",
+                    "user_id",
+                    "platform_id",
+                    "title",
+                    "content",
+                )
+            }
+            for c in await db.get_conversations(user_id="synthetic-user")
+        ]
+        documents = await doc.document_storage.get_documents({})
+        selected = []
+        for d in documents:
+            metadata = d.get("metadata") or {}
+            if isinstance(metadata, str):
+                metadata = json.loads(metadata)
+            selected.append(
+                {
+                    "id": int(d["id"]),
+                    "doc_id": d["doc_id"],
+                    "text": d["text"],
+                    "metadata": {
+                        k: metadata.get(k)
+                        for k in (
+                            "persona_id",
+                            "session_id",
+                            "status",
+                            "importance",
+                            "canonical_summary",
+                        )
+                    },
+                }
+            )
+        direct = await doc.retrieve("synthetic acceptance memory", k=2)
+        index = doc.embedding_storage.index
+        index_state = {
+            "dimension": int(index.d),
+            "count": int(index.ntotal),
+            "ids": sorted(map(int, faiss.vector_to_array(index.id_map))),
+            "fileSha256": hashlib.sha256(
+                (directory / "livingmemory.index").read_bytes()
+            ).hexdigest(),
+        }
+        validate_index(index_state, selected, [r.data["doc_id"] for r in direct])
+        settings = read_settings(host)
+        settings.pop("configRevision", None)  # Raw-byte revision may change during valid migration.
+        return protect(
+            {
+                "platforms": sorted(cfg.get("platform", []), key=lambda p: p["id"]),
+                "provider_sources": cfg.get("provider_sources", []),
+                "provider": cfg.get("provider", []),
+                "agent_runner": cfg.get("agent_runner"),
+                "settings": settings,
+                "raw_bindings": {
+                    key: load(data / "config/astrbot_plugin_dswhale_config.json")[key]
+                    for key in (
+                        "owner_qq",
+                        "owner_umo",
+                        "official_owner_umo",
+                        "qq_connection_mode",
+                        "qq_default_delivery",
+                        "proactive_enabled",
+                        "qq_signature_enabled",
+                        "qzone_enabled",
+                        "bili_enabled",
+                    )
+                },
+                "memory_config": load(data / "config/astrbot_plugin_livingmemory_config.json"),
+                "personas": sorted(personas, key=lambda p: p["persona_id"]),
+                "conversations": sorted(conversations, key=lambda c: c["conversation_id"]),
+                "documents": sorted(selected, key=lambda d: d["doc_id"]),
+                "index": index_state,
+                "marker": ensure_marker(data, seed=False),
+            }
+        )
+    finally:
+        if engine is not None:
+            await engine.close()
+        else:
+            await graph.close()
+        await doc.close()
+        await db.engine.dispose()
+
+
+def integrity(host):
+    for rel in ["data/data_v4.db", "data/plugin_data/astrbot_plugin_livingmemory/livingmemory.db"]:
+        with sqlite3.connect((host / rel).as_uri() + "?mode=ro", uri=True) as db:
+            if db.execute("PRAGMA integrity_check").fetchone()[0] != "ok":
+                raise ValueError("synthetic SQLite integrity check failed")
+
+
+def refuse_existing_baseline(path):
+    if Path(path).exists():
+        raise ValueError("refusing to overwrite an existing seed baseline")
+
 
 async def main():
-    parser=argparse.ArgumentParser(); parser.add_argument('--host',required=True); parser.add_argument('--scenario',choices=SCENARIOS,required=True); parser.add_argument('--action',choices=('seed','verify'),required=True); parser.add_argument('--out',required=True)
-    a=parser.parse_args(); os.environ['ASTRBOT_ROOT']=str(Path(a.host)); addr=os.path.join(a.host,'data'); (Path(addr)/'synthetic-device-marker.txt').write_text(MARKER,encoding='utf-8')
-    if a.action=='seed': await seed(a.host,a.scenario)
-    else: await readback(a.host,a.scenario)
-    sys.stdout.flush(); os._exit(0)
+    parser = argparse.ArgumentParser()
+    for name in ("host", "root", "baseline", "out"):
+        parser.add_argument("--" + name, required=True)
+    parser.add_argument("--scenario", choices=SCENARIOS, required=True)
+    parser.add_argument("--action", choices=("seed", "verify"), required=True)
+    args = parser.parse_args()
+    root, host = Path(args.root), Path(args.host)
+    authorize_paths(root, host, args.baseline, args.out, args.scenario)
+    seed = args.action == "seed"
+    if seed:
+        refuse_existing_baseline(args.baseline)
+    if not seed:
+        require_existing_storage(host)  # Fail before SDK constructors can recreate a missing file.
+        ensure_marker(host / "data", seed=False)
+    os.environ["ASTRBOT_ROOT"] = str(host)
+    os.chdir(host)
+    network = deny_fixture_network()
+    if seed:
+        ensure_marker(host / "data", seed=True)
+        await build_config(host, args.scenario)
+    snapshot = await storage(host, seed)
+    validate_records(snapshot)
+    validate_scenario(snapshot, args.scenario)
+    integrity(host)
+    if seed:
+        write_json(
+            args.baseline,
+            {"schemaVersion": 1, "scenario": args.scenario, "snapshot": snapshot},
+            exclusive=True,
+        )
+    else:
+        baseline = load(args.baseline)
+        if baseline.get("schemaVersion") != 1 or baseline.get("scenario") != args.scenario:
+            raise ValueError("baseline identity mismatch")
+        assert_same(baseline["snapshot"], snapshot)
+    result = {
+        "schemaVersion": 2,
+        "sdkVersion": version("astrbot"),
+        "backendVersion": version("dswhale"),
+        "kind": "DSWhaleSyntheticStorageReadback",
+        "scenario": args.scenario,
+        "action": args.action,
+        "embeddingMode": "deterministic-storage-test-double",
+        "snapshotSha256": digest(snapshot),
+        "counts": {
+            "personas": len(snapshot["personas"]),
+            "conversations": len(snapshot["conversations"]),
+            "memories": len(snapshot["documents"]),
+            "vectors": snapshot["index"]["count"],
+        },
+        "baselineMatched": not seed,
+        "sqliteIntegrity": "ok",
+        "markerPreserved": True,
+        "networkGuard": network,
+    }
+    write_json(args.out, result)
+    print(canonical(result), flush=True)
 
-asyncio.run(main())
+
+if __name__ == "__main__":
+    try:
+        asyncio.run(main())
+    except Exception as error:
+        frames = traceback.extract_tb(error.__traceback__)[-5:]
+        diagnostic = {
+            "kind": "DSWhaleFixtureFailure",
+            "errorClass": type(error).__name__,
+            "code": getattr(error, "code", "FIXTURE_REJECTED"),
+            "fields": getattr(error, "fields", []),
+            "frames": [
+                {"file": Path(frame.filename).name, "line": frame.lineno, "function": frame.name}
+                for frame in frames
+            ],
+        }
+        print(canonical(diagnostic), file=sys.stderr, flush=True)
+        raise SystemExit(1) from None

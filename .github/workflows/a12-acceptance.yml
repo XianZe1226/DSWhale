@@ -29,6 +29,10 @@ jobs:
         uses: actions/setup-node@39370e3970a6d050c480ffad4ff0ed4d3fdee5af
         with:
           node-version: '22.23.4'
+      - name: Verify acceptance contracts before native work
+        run: |
+          node --test acceptance/tests/*.test.mjs
+          python3 -m unittest discover -s acceptance/fixtures -p 'test_*.py'
       - name: Verify fixed CI/artifact/a11 provenance
         env:
           GITHUB_TOKEN: ${{ github.token }}
@@ -146,7 +150,7 @@ jobs:
         os: [windows-2022, ubuntu-22.04, ubuntu-24.04]
         scenario: [small-only, official-only, dual-enabled, fresh-unconfigured]
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 60
+    timeout-minutes: 90
     steps:
       - name: Checkout acceptance harness
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683

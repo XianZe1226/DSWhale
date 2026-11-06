@@ -5,24 +5,24 @@ import fs from 'node:fs';
 import fsp from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import {execFileSync, spawnSync} from 'node:child_process';
+import {execFileSync, spawnSync, spawn} from 'node:child_process';
 import {createRequire} from 'node:module';
 import {EXPECTED, assertRealDirectory, childEnv, validateRunnerContext} from './safety.mjs';
 
 const SCENARIOS = ['small-only', 'official-only', 'dual-enabled', 'fresh-unconfigured'];
 const MARKER = 'SYNTHETIC-DEVICE-DATA-NOT-AN-ACCOUNT';
 const SCOPE = {
-  scope: 'four-profile-sdk-first-read',
-  covered: ['actual a11 runtime with synthetic four-profile settings, personas, conversations and LivingMemory data', 'actual a12 runtime first read and migration', 'type-sensitive config, persona, conversation and memory readback'],
-  notExecuted: ['provider WebUI login/edit/save/restart', 'memory WebUI login/edit/save/restart', 'GUI cards and visual state', 'Windows 11 DPI', 'real accounts or platforms'],
+  scope: 'four-profile-sdk-storage-first-read',
+  covered: ['actual a11 runtime with synthetic four-profile settings, personas, conversations and LivingMemory data', 'actual a12 runtime first read and migration', 'type-sensitive config, persona, conversation and memory storage readback with deterministic embedding test double'],
+  notExecuted: ['provider WebUI login/edit/save/restart', 'memory WebUI login/edit/save/restart', 'GUI cards and visual state', 'Windows 11 DPI', 'real accounts or platforms', 'provider initialization/model requests and full LivingMemory host startup', 'graph-memory and native-wide egress sandbox'],
 };
-function fail(error) { console.error(JSON.stringify({schemaVersion: 2, passed: false, code: error?.code || 'SDK_CHECK_FAILED', errors: [String(error?.message || error).slice(0, 500)]}, null, 2)); process.exitCode = 1; }
+function fail(error) { console.error(JSON.stringify({schemaVersion: 2, passed: false, code: error?.code || 'SDK_CHECK_FAILED', errorClass: error?.name || 'Error'}, null, 2)); process.exitCode = 1; }
 function arg(name) { const hit = process.argv.find(v => v.startsWith(`--${name}=`)); return hit?.slice(name.length + 3); }
 function expectedArg() { const value = arg('scenario'); if (!SCENARIOS.includes(value)) throw Object.assign(new Error('Unknown SDK scenario'), {code: 'SDK_SCENARIO_REJECTED'}); return value; }
 async function sha256File(file) { const h = crypto.createHash('sha256'); for await (const chunk of fs.createReadStream(file)) h.update(chunk); return h.digest('hex'); }
-function zipExtract(file, dir, platform) { const env = childEnv(platform, process.env); if (platform === 'win32') execFileSync('tar', ['-xf', file, '-C', dir], {env}); else execFileSync('unzip', ['-q', file, '-d', dir], {env}); }
-function runInstaller(exe, args, cwd, env, windowsSpawnOptions) { const child = spawnSync(exe, args, {...windowsSpawnOptions, cwd, env, stdio: 'inherit', windowsHide: true}); if (child.status !== 0) throw new Error(`installer failed with status ${child.status}`); }
-function linuxInstall(file, env) { const child = spawnSync('sudo', ['apt-get', 'install', '-y', '--no-install-recommends', file], {env: {...env, DEBIAN_FRONTEND: 'noninteractive'}, stdio: 'inherit'}); if (child.status !== 0) throw new Error(`apt install failed with status ${child.status}`); }
+function zipExtract(file, dir, platform) { const env = childEnv(platform, process.env); if (platform === 'win32') execFileSync('tar', ['-xf', file, '-C', dir], {env, timeout: 120000}); else execFileSync('unzip', ['-q', file, '-d', dir], {env, timeout: 120000}); }
+function runInstaller(exe, args, cwd, env, windowsSpawnOptions) { const child = spawnSync(exe, args, {...windowsSpawnOptions, cwd, env, stdio: 'inherit', windowsHide: true, timeout: 10 * 60 * 1000}); if (child.status !== 0) throw new Error(`installer failed with status ${child.status}`); }
+function linuxInstall(file, env) { const child = spawnSync('sudo', ['apt-get', 'install', '-y', '--no-install-recommends', file], {env: {...env, DEBIAN_FRONTEND: 'noninteractive'}, stdio: 'inherit', timeout: 10 * 60 * 1000}); if (child.status !== 0) throw new Error(`apt install failed with status ${child.status}`); }
 function linuxVersion(env) { return execFileSync('dpkg-query', ['-W', '-f=${Version}', 'dswhale-desktop'], {encoding: 'utf8', env}).trim(); }
 function venvPython(runtime, platform) { return platform === 'win32' ? path.join(runtime, 'venv', 'Scripts', 'python.exe') : path.join(runtime, 'venv', 'bin', 'python'); }
 function nodeExe() { return process.execPath; }
@@ -34,19 +34,40 @@ function lastJson(text) {
   throw new Error('fixture returned no JSON');
 }
 function semanticFixture(value) {
-  const settings = value.settings || {};
-  return {
-    platforms: (value.platforms || []).map(p => ({id: p.id, type: p.type, enable: p.enable, hasAppid: Boolean(p.appid), hasWsToken: Boolean(p.ws_reverse_token)})),
-    provider_sources: (value.provider_sources || []).map(p => ({id: p.id, type: p.type, enable: p.enable, api_base: p.api_base})),
-    provider: (value.provider || []).map(p => ({id: p.id, provider_source_id: p.provider_source_id, model: p.model, enable: p.enable})),
-    settings: {ownerQQ: settings.ownerQQ, qqConnectionMode: settings.qqConnectionMode, officialOwnerUMO: settings.officialOwnerUMO, defaultDelivery: settings.defaultDelivery, platformId: settings.platformId, napcatBound: settings.napcatBound, officialBound: settings.officialBound, napcatConfigured: settings.napcatConfigured, officialConfigured: settings.officialConfigured},
-    personas: [...(value.personas || [])].sort(),
-    conversations: (value.conversations || []).map(c => ({persona_id: c.persona_id, user_id: c.user_id, platform_id: c.platform_id, title: c.title, content: c.content})).sort((a,b) => String(a.title).localeCompare(String(b.title))),
-    memory: (value.memory_hits || []).map(m => ({content: m.content, persona_id: m.metadata?.persona_id, status: m.metadata?.status})).sort((a,b) => String(a.content).localeCompare(String(b.content))),
-    marker: value.marker,
-  };
+  if (value?.schemaVersion !== 2 || value.kind !== 'DSWhaleSyntheticStorageReadback' || !/^[a-f0-9]{64}$/.test(value.snapshotSha256 || '')) throw new Error('invalid SDK fixture receipt');
+  if (['personas', 'conversations', 'memories', 'vectors'].some(k => value.counts?.[k] !== 2)) throw new Error('SDK fixture baseline is empty or incomplete');
+  if (value.sqliteIntegrity !== 'ok' || value.markerPreserved !== true || value.networkGuard?.probeBlocked !== true || value.embeddingMode !== 'deterministic-storage-test-double') throw new Error('SDK fixture integrity/guard evidence is incomplete');
+  return {scenario: value.scenario, snapshotSha256: value.snapshotSha256, counts: value.counts, embeddingMode: value.embeddingMode};
 }
 function equalJson(a, b) { return JSON.stringify(a) === JSON.stringify(b); }
+async function runRuntimeProcess(command, args, options) {
+  return new Promise((resolve, reject) => {
+    const child = spawn(command, args, {cwd: options.cwd, env: options.env, stdio: ['ignore', 'pipe', 'pipe']});
+    let output = '', pending = '', timedOut = false, killTimer;
+    const timer = setTimeout(() => {
+      timedOut = true;
+      child.kill('SIGTERM');
+      killTimer = setTimeout(() => child.kill('SIGKILL'), 10000);
+    }, 30 * 60 * 1000);
+    child.stdout.setEncoding('utf8');
+    child.stdout.on('data', chunk => {
+      const text = chunk.toString(); output = (output + text).slice(-2 * 1024 * 1024); pending += text;
+      let end;
+      while ((end = pending.indexOf('\n')) >= 0) {
+        const line = pending.slice(0, end); pending = pending.slice(end + 1);
+        try { const event = JSON.parse(line); if (event.stage === 'runtime') console.log(JSON.stringify({stage: 'runtime', phase: String(event.phase || '').slice(0, 30), progress: typeof event.progress === 'number' ? event.progress : null})); } catch {}
+      }
+      if (pending.length > 128 * 1024) pending = '';
+    });
+    child.stderr.on('data', () => {}); // Raw child errors never enter public result artifacts.
+    child.once('error', () => { clearTimeout(timer); clearTimeout(killTimer); reject(new Error('runtime process could not start')); });
+    child.once('close', code => {
+      clearTimeout(timer); clearTimeout(killTimer);
+      if (timedOut || code !== 0) reject(new Error('runtime prepare failed or timed out; child output withheld'));
+      else resolve(output);
+    });
+  });
+}
 async function main() {
   const context = validateRunnerContext(process.env);
   const scenario = expectedArg();
@@ -64,32 +85,43 @@ async function main() {
   const token = process.env.GITHUB_TOKEN || '';
   const temp = await fsp.mkdtemp(path.join(context.runnerTemp, `a12-sdk-${scenario}-`));
   const runtime = path.join(temp, 'profile', 'runtime');
+  await fsp.writeFile(path.join(temp, 'synthetic-root.json'), JSON.stringify({kind: 'DSWhaleSyntheticAcceptance', scenario}), {flag: 'wx'});
   const host = path.join(runtime, 'astrbot');
   const target = path.join(temp, 'DSWhale 中文 空格 & path');
   const resultPath = path.join(context.runnerTemp, `a12-sdk-${scenario}-${context.platform}.json`);
   const result = {schemaVersion: 2, ...SCOPE, scenario, harnessCommit: process.env.HARNESS_COMMIT || '', binaryCommit: EXPECTED.binaryCommit, oldBinaryCommit: lock.old.commit, binaryRunId: lock.candidate.runId, acceptanceRunId: process.env.GITHUB_RUN_ID || '', acceptanceRunAttempt: process.env.GITHUB_RUN_ATTEMPT || '', jobKey: process.env.ACCEPTANCE_JOB_KEY || `a12-sdk-${scenario}-${context.platform}-x64`, repository: EXPECTED.repository, ref: EXPECTED.ref, event: EXPECTED.event, platform: context.platform, arch: context.arch, os: os.version?.() || os.release(), checks: {}, passed: false, errors: []};
   const writeResult = () => fsp.writeFile(resultPath, JSON.stringify(result, null, 2));
-  async function download(url, file, headers = {}) { const response = await fetch(url, {headers, redirect: 'follow'}); if (!response.ok) throw new Error(`download failed ${response.status}`); await fsp.writeFile(file, Buffer.from(await response.arrayBuffer())); }
+  async function download(url, file, headers = {}) { console.log(JSON.stringify({stage: 'download', file: path.basename(file), state: 'started'})); const response = await fetch(url, {headers, redirect: 'follow', signal: AbortSignal.timeout(10 * 60 * 1000)}); if (!response.ok) throw new Error(`download failed ${response.status}`); await fsp.writeFile(file, Buffer.from(await response.arrayBuffer())); console.log(JSON.stringify({stage: 'download', file: path.basename(file), state: 'complete'})); }
   async function artifact(platformName) { const item = lock.candidate.artifacts.find(a => a.name === platformName); if (!item) throw new Error(`missing artifact ${platformName}`); const file = path.join(temp, `${platformName}.zip`); await download(`https://api.github.com/repos/${EXPECTED.repository}/actions/artifacts/${item.id}/zip`, file, {Authorization: `Bearer ${token}`}); if (await sha256File(file) !== item.digest.replace(/^sha256:/, '')) throw new Error('artifact hash mismatch'); return file; }
   async function old(name) { const item = lock.old.assets.find(a => a.name === name); if (!item) throw new Error(`missing old ${name}`); const file = path.join(temp, name); await download(item.browser_download_url, file); if (await sha256File(file) !== item.sha256) throw new Error(`old hash mismatch ${name}`); return file; }
   async function prepareRuntime(appRoot) {
+    console.log(JSON.stringify({stage: 'runtime-prepare', state: 'started'}));
     const lib = path.join(temp, `runtime-lib-${Math.random().toString(36).slice(2)}`); await fsp.mkdir(lib);
     for (const name of ['runtime.cjs', 'network.cjs', 'tool-assets.json']) await fsp.writeFile(path.join(lib, name), asar.extractFile(path.join(appRoot, 'resources/app.asar'), `desktop/lib/${name}`));
     const script = path.join(lib, 'prepare.cjs');
-    await fsp.writeFile(script, `const path=require('node:path');const {RuntimeManager}=require('./runtime.cjs');(async()=>{const m=new RuntimeManager({source:process.argv[2],runtime:process.argv[3]});const r=await m.install();console.log(JSON.stringify(r));})().catch(e=>{console.error(e);process.exit(1)});`);
-    const child = spawnSync(nodeExe(), [script, path.join(appRoot, 'resources/backend'), runtime], {cwd: lib, env, stdio: ['ignore', 'pipe', 'pipe'], encoding: 'utf8', timeout: 30 * 60 * 1000});
-    if (child.status !== 0) throw new Error(`runtime prepare failed ${child.status}: ${String(child.stderr || '').slice(-500)}`);
-    const value = lastJson(child.stdout);
+    await fsp.writeFile(script, `const {RuntimeManager}=require('./runtime.cjs');let m;let timer;(async()=>{m=new RuntimeManager({source:process.argv[2],runtime:process.argv[3],onProgress:p=>console.log(JSON.stringify({stage:'runtime',phase:p.phase,step:p.step,progress:p.progress}))});timer=setTimeout(()=>m.cancel(),20*60*1000);process.once('SIGTERM',()=>m.cancel().finally(()=>process.exit(1)));const r=await m.install();console.log(JSON.stringify(r));})().catch(e=>{console.error(JSON.stringify({code:'RUNTIME_PREPARE_FAILED',name:e.name}));process.exitCode=1}).finally(()=>clearTimeout(timer));`);
+    const output = await runRuntimeProcess(nodeExe(), [script, path.join(appRoot, 'resources/backend'), runtime], {cwd: lib, env});
+    const value = lastJson(output);
     if (!value.installed) throw new Error('runtime prepare did not report installed');
+    console.log(JSON.stringify({stage: 'runtime-prepare', state: 'complete'}));
     return value;
   }
   async function fixture(action) {
+    console.log(JSON.stringify({stage: 'fixture', action, state: 'started'}));
     const python = venvPython(runtime, context.platform);
     const plugins = path.join(host, 'data', 'plugins');
     const fixtureEnv = {...env, ASTRBOT_ROOT: host, PYTHONPATH: plugins, PYTHONNOUSERSITE: '1'};
-    const child = spawnSync(python, [path.join(context.workspace, 'acceptance/fixtures/profile_fixture.py'), '--host', host, '--scenario', scenario, '--action', action, '--out', path.join(temp, `${action}.json`)], {cwd: temp, env: fixtureEnv, stdio: ['ignore', 'pipe', 'pipe'], encoding: 'utf8', timeout: 10 * 60 * 1000});
-    if (child.status !== 0) throw new Error(`fixture ${action} failed ${child.status}: ${String(child.stderr || '').slice(-700)}`);
-    return lastJson(child.stdout);
+    const child = spawnSync(python, [path.join(context.workspace, 'acceptance/fixtures/profile_fixture.py'), '--host', host, '--root', temp, '--baseline', path.join(temp, 'baseline.json'), '--scenario', scenario, '--action', action, '--out', path.join(temp, `${action}.json`)], {cwd: temp, env: fixtureEnv, stdio: ['ignore', 'pipe', 'pipe'], encoding: 'utf8', timeout: 10 * 60 * 1000});
+    if (child.status !== 0) {
+      let diagnostic = {};
+      try { const d = lastJson(child.stderr); if (d.kind === 'DSWhaleFixtureFailure') diagnostic = {errorClass: d.errorClass, code: d.code, fields: d.fields, frames: d.frames}; } catch {}
+      throw new Error(`fixture ${action} failed with status ${child.status}: ${JSON.stringify(diagnostic)}`);
+    }
+    const value = lastJson(child.stdout);
+    semanticFixture(value);
+    if (value.sdkVersion !== '4.29.3' || value.backendVersion !== (action === 'seed' ? '0.3.0a11' : '0.3.0a12') || value.scenario !== scenario || value.action !== action || (action === 'verify' && value.baselineMatched !== true)) throw new Error('fixture scenario/action/baseline evidence mismatch');
+    console.log(JSON.stringify({stage: 'fixture', action, state: 'complete'}));
+    return value;
   }
   async function installA11(a11) { if (context.platform === 'win32') runInstaller(a11, ['/S', '/currentuser', `/D=${target}`], temp, env, windowsSpawnOptions); else linuxInstall(a11, env); }
   async function installA12(a12) { if (context.platform === 'win32') runInstaller(a12, [...windowsUpdateArgs(path.join(target, 'DSWhale.exe')).slice(0, -1), '/S', `/D=${target}`], temp, env, windowsSpawnOptions); else linuxInstall(a12, env); }
@@ -118,7 +150,7 @@ async function main() {
     result.passed = true;
     await writeResult(); console.log(JSON.stringify(result, null, 2));
   } catch (error) {
-    result.errors.push(String(error.message || error).slice(0, 800)); await writeResult(); throw error;
+    let message = String(error.message || error); for (const prefix of [context.workspace, context.runnerTemp, context.binaryRoot]) message = message.split(prefix).join('<runner>'); result.errors.push(message.slice(0, 800)); await writeResult(); throw Object.assign(new Error(message), {code: 'SDK_CHECK_FAILED'});
   }
 }
 try { await main(); } catch (error) { fail(error); }
