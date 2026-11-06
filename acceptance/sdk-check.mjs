@@ -27,6 +27,11 @@ function linuxVersion(env) { return execFileSync('dpkg-query', ['-W', '-f=${Vers
 function venvPython(runtime, platform) { return platform === 'win32' ? path.join(runtime, 'venv', 'Scripts', 'python.exe') : path.join(runtime, 'venv', 'bin', 'python'); }
 function nodeExe() { return process.execPath; }
 function runtimeArchivePath(name, platform) { return (platform === 'win32' ? path.win32 : path.posix).join('desktop', 'lib', name); }
+function fixtureIoOptions(mode = 'closed-eof') {
+  if (mode === 'closed-eof') return {stdio: ['pipe', 'pipe', 'pipe'], input: '', encoding: 'utf8'};
+  if (mode === 'nul') return {stdio: ['ignore', 'pipe', 'pipe'], encoding: 'utf8'};
+  throw new Error('unknown fixture input mode');
+}
 function lastJson(text) {
   const lines = String(text).trim().split(/\r?\n/).filter(Boolean);
   for (let i = lines.length - 1; i >= 0; i--) {
@@ -112,7 +117,7 @@ async function main() {
     const python = venvPython(runtime, context.platform);
     const plugins = path.join(host, 'data', 'plugins');
     const fixtureEnv = {...env, ASTRBOT_ROOT: host, PYTHONPATH: plugins, PYTHONNOUSERSITE: '1'};
-    const child = spawnSync(python, [path.join(context.workspace, 'acceptance/fixtures/profile_fixture.py'), '--host', host, '--root', temp, '--baseline', path.join(temp, 'baseline.json'), '--scenario', scenario, '--action', action, '--out', path.join(temp, `${action}.json`)], {cwd: temp, env: fixtureEnv, stdio: ['ignore', 'pipe', 'pipe'], encoding: 'utf8', timeout: 10 * 60 * 1000});
+    const child = spawnSync(python, [path.join(context.workspace, 'acceptance/fixtures/profile_fixture.py'), '--host', host, '--root', temp, '--baseline', path.join(temp, 'baseline.json'), '--scenario', scenario, '--action', action, '--out', path.join(temp, `${action}.json`)], {cwd: temp, env: fixtureEnv, ...fixtureIoOptions(), timeout: 10 * 60 * 1000});
     if (child.status !== 0) {
       let diagnostic = {};
       try { const d = lastJson(child.stderr); if (d.kind === 'DSWhaleFixtureFailure') diagnostic = {errorClass: d.errorClass, code: d.code, fields: d.fields, frames: d.frames, causes: d.causes}; } catch {}
@@ -123,6 +128,20 @@ async function main() {
     if (value.sdkVersion !== '4.29.3' || value.backendVersion !== (action === 'seed' ? '0.3.0a11' : '0.3.0a12') || value.scenario !== scenario || value.action !== action || (action === 'verify' && value.baselineMatched !== true)) throw new Error('fixture scenario/action/baseline evidence mismatch');
     console.log(JSON.stringify({stage: 'fixture', action, state: 'complete'}));
     return value;
+  }
+  async function windowsAclIoProbe() {
+    if (context.platform !== 'win32') return [];
+    const observations = [];
+    for (const [index, mode] of ['closed-eof', 'nul', 'closed-eof'].entries()) {
+      const started = Date.now();
+      const child = spawnSync(venvPython(runtime, context.platform), [path.join(context.workspace, 'acceptance/fixtures/profile_fixture.py'), '--host', host, '--root', temp, '--baseline', path.join(temp, 'baseline.json'), '--scenario', scenario, '--action', 'acl-probe', '--out', path.join(temp, `acl-probe-${index}.json`)], {cwd: temp, env: {...env, ASTRBOT_ROOT: host, PYTHONPATH: path.join(host, 'data', 'plugins'), PYTHONNOUSERSITE: '1'}, ...fixtureIoOptions(mode), timeout: 60000});
+      let diagnostic = {}, valid = false;
+      try { const d = lastJson(child.status === 0 ? child.stdout : child.stderr); valid = child.status === 0 && d.kind === 'DSWhaleSyntheticAclProbe' && d.networkGuard?.allowedWindowsAclProcesses >= 1 && d.networkGuard?.probeBlocked === true; diagnostic = valid ? {aclElapsedMs: d.elapsedMs, allowedAclProcesses: d.networkGuard.allowedWindowsAclProcesses} : {errorClass: d.errorClass, causes: d.causes}; } catch {}
+      const observation = {mode, passed: valid, elapsedMs: Date.now() - started, ...diagnostic};
+      observations.push(observation); console.log(JSON.stringify({stage: 'windows-acl-io-probe', ...observation}));
+    }
+    if (!observations[0].passed || !observations[2].passed) throw new Error('closed-EOF Windows ACL diagnostic failed');
+    return observations;
   }
   async function installA11(a11) { if (context.platform === 'win32') runInstaller(a11, ['/S', '/currentuser', `/D=${target}`], temp, env, windowsSpawnOptions); else linuxInstall(a11, env); }
   async function installA12(a12) { if (context.platform === 'win32') runInstaller(a12, [...windowsUpdateArgs(path.join(target, 'DSWhale.exe')).slice(0, -1), '/S', `/D=${target}`], temp, env, windowsSpawnOptions); else linuxInstall(a12, env); }
@@ -136,6 +155,7 @@ async function main() {
     const prepared11 = await prepareRuntime(appRoot11);
     const v11 = prepared11.components?.find(c => c.id === 'backend')?.version;
     if (v11 !== '0.3.0a11') throw new Error(`unexpected a11 runtime version ${v11}`);
+    const windowsAclIo = await windowsAclIoProbe();
     const before = await fixture('seed');
     await installA12(a12);
     const appRoot12 = context.platform === 'win32' ? target : '/opt/DSWhale';
@@ -147,7 +167,7 @@ async function main() {
     if (!equalJson(beforeSem, afterSem)) throw new Error('type-sensitive fixture readback differs after a12 upgrade');
     if (await fsp.readFile(path.join(host, 'data', 'synthetic-device-marker.txt'), 'utf8') !== MARKER) throw new Error('device marker changed');
     const migration = path.join(host, 'data', 'plugin_data', 'astrbot_plugin_dswhale', 'config-migration-receipt.json');
-    result.checks = {a11Runtime: prepared11.components?.find(c => c.id === 'backend')?.version, a12Runtime: prepared12.components?.find(c => c.id === 'backend')?.version, before: beforeSem, after: afterSem, marker: 'preserved', migrationReceipt: fs.existsSync(migration)};
+    result.checks = {windowsAclIo, a11Runtime: prepared11.components?.find(c => c.id === 'backend')?.version, a12Runtime: prepared12.components?.find(c => c.id === 'backend')?.version, before: beforeSem, after: afterSem, marker: 'preserved', migrationReceipt: fs.existsSync(migration)};
     result.passed = true;
     await writeResult(); console.log(JSON.stringify(result, null, 2));
   } catch (error) {

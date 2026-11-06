@@ -73,3 +73,14 @@ test('packaged runtime members use the native ASAR path separator', () => {
     assert.deepEqual(member(file, 'linux').split(path.posix.sep), ['desktop', 'lib', file]);
   }
 });
+
+test('fixture input is a closed EOF pipe for nested Windows settings commands', () => {
+  const begin = source.indexOf('function fixtureIoOptions(');
+  const finish = source.indexOf('\nfunction ', begin + 1);
+  assert.ok(begin > 0 && finish > begin);
+  const options = new vm.Script('(' + source.slice(begin, finish) + ')').runInNewContext();
+  const child = spawnSync(process.execPath, ['-e', 'process.stdin.resume();process.stdin.on("end",()=>console.log("EOF"))'], {...options(), timeout: 2000});
+  assert.equal(child.status, 0);
+  assert.equal(child.stdout.trim(), 'EOF');
+  assert.throws(() => options('unrecognized'), /input mode/);
+});

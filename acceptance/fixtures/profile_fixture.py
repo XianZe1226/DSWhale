@@ -8,7 +8,9 @@ import json
 import os
 import sqlite3
 import sys
+import time
 import traceback
+import uuid
 from importlib.metadata import version
 from pathlib import Path
 
@@ -348,14 +350,14 @@ async def main():
     for name in ("host", "root", "baseline", "out"):
         parser.add_argument("--" + name, required=True)
     parser.add_argument("--scenario", choices=SCENARIOS, required=True)
-    parser.add_argument("--action", choices=("seed", "verify"), required=True)
+    parser.add_argument("--action", choices=("seed", "verify", "acl-probe"), required=True)
     args = parser.parse_args()
     root, host = Path(args.root), Path(args.host)
     authorize_paths(root, host, args.baseline, args.out, args.scenario)
     seed = args.action == "seed"
     if seed:
         refuse_existing_baseline(args.baseline)
-    if not seed:
+    if args.action == "verify":
         require_existing_storage(host)  # Fail before SDK constructors can recreate a missing file.
         ensure_marker(host / "data", seed=False)
     os.environ["ASTRBOT_ROOT"] = str(host)
@@ -363,6 +365,23 @@ async def main():
     network = deny_fixture_network(
         data_root=host / "data", backup_root=host / ".desktop-settings-backups"
     )
+    if args.action == "acl-probe":
+        if os.name != "nt":
+            raise ValueError("ACL diagnostic is Windows-only")
+        from dswhale.private_files import ensure_private_directory
+
+        started = time.monotonic()
+        ensure_private_directory(
+            host / ".desktop-settings-backups" / ("acl-probe-" + uuid.uuid4().hex)
+        )
+        result = {
+            "kind": "DSWhaleSyntheticAclProbe",
+            "elapsedMs": round((time.monotonic() - started) * 1000),
+            "networkGuard": network,
+        }
+        write_json(args.out, result)
+        print(canonical(result), flush=True)
+        return
     if seed:
         ensure_marker(host / "data", seed=True)
         await build_config(host, args.scenario)
@@ -418,6 +437,9 @@ if __name__ == "__main__":
             causes.append(
                 {
                     "errorClass": type(cause).__name__,
+                    "timeoutSeconds": getattr(cause, "timeout", None)
+                    if isinstance(getattr(cause, "timeout", None), (int, float))
+                    else None,
                     "errno": getattr(cause, "errno", None)
                     if isinstance(getattr(cause, "errno", None), int)
                     else None,
