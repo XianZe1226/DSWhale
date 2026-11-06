@@ -84,3 +84,19 @@ test('fixture input is a closed EOF pipe for nested Windows settings commands', 
   assert.equal(child.stdout.trim(), 'EOF');
   assert.throws(() => options('unrecognized'), /input mode/);
 });
+
+test('regular empty input remains an EOF file in a nested child', () => {
+  const begin = source.indexOf('function fixtureIoOptions(');
+  const finish = source.indexOf('\nfunction ', begin + 1);
+  const options = new vm.Script('(' + source.slice(begin, finish) + ')').runInNewContext();
+  const directory = fs.mkdtempSync(path.join(process.cwd(), '.a12-input-test-'));
+  const file = path.join(directory, 'empty.txt'); fs.writeFileSync(file, '', {flag: 'wx'});
+  const fd = fs.openSync(file, 'r');
+  try {
+    const leaf = 'const fs=require("node:fs");console.log(JSON.stringify({file:fs.fstatSync(0).isFile(),empty:fs.readFileSync(0).length===0}))';
+    const parent = 'const {spawnSync}=require("node:child_process");const r=spawnSync(process.execPath,["-e",process.argv[1]],{stdio:[0,"pipe","pipe"],encoding:"utf8",timeout:2000});process.stdout.write(r.stdout);process.exitCode=r.status;';
+    const child = spawnSync(process.execPath, ['-e', parent, leaf], {...options('file-eof', fd), timeout: 4000});
+    assert.equal(child.status, 0); assert.deepEqual(JSON.parse(child.stdout), {file: true, empty: true});
+    assert.throws(() => options('file-eof'), /input mode/);
+  } finally {fs.closeSync(fd);fs.rmSync(directory, {recursive:true,force:true});}
+});
