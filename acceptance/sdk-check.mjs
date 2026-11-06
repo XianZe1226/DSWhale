@@ -115,7 +115,7 @@ async function main() {
     const child = spawnSync(python, [path.join(context.workspace, 'acceptance/fixtures/profile_fixture.py'), '--host', host, '--root', temp, '--baseline', path.join(temp, 'baseline.json'), '--scenario', scenario, '--action', action, '--out', path.join(temp, `${action}.json`)], {cwd: temp, env: fixtureEnv, stdio: ['ignore', 'pipe', 'pipe'], encoding: 'utf8', timeout: 10 * 60 * 1000});
     if (child.status !== 0) {
       let diagnostic = {};
-      try { const d = lastJson(child.stderr); if (d.kind === 'DSWhaleFixtureFailure') diagnostic = {errorClass: d.errorClass, code: d.code, fields: d.fields, frames: d.frames}; } catch {}
+      try { const d = lastJson(child.stderr); if (d.kind === 'DSWhaleFixtureFailure') diagnostic = {errorClass: d.errorClass, code: d.code, fields: d.fields, frames: d.frames, causes: d.causes}; } catch {}
       throw new Error(`fixture ${action} failed with status ${child.status}: ${JSON.stringify(diagnostic)}`);
     }
     const value = lastJson(child.stdout);

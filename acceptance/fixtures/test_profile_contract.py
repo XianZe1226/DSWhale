@@ -35,6 +35,14 @@ class ContractTests(unittest.TestCase):
 
             self.assertTrue(allowed((None, command, None, env)))
             self.assertTrue(allowed((exe, subprocess.list2cmdline(command), None, env)))
+            backup = root / ".desktop-settings-backups"
+            backup_target = backup / "synthetic-backup"
+            backup_target.mkdir(parents=True)
+            backup_args = (None, command, None, {"DSWHALE_PRIVATE_PATH": str(backup_target)})
+            self.assertFalse(allowed(backup_args))
+            self.assertTrue(
+                allowed_windows_acl_process(backup_args, data, exe, script, backup_root=backup)
+            )
             for bad in [
                 ("other.exe", command, None, env),
                 (None, command + ["extra"], None, env),
@@ -57,7 +65,7 @@ class ContractTests(unittest.TestCase):
     def test_data_and_plugin_directory_links_are_rejected(self):
         with tempfile.TemporaryDirectory(dir=Path.cwd()) as outer:
             outer = Path(outer).resolve()
-            for relative in ("data", "data/plugin_data"):
+            for relative in ("data", "data/plugin_data", ".desktop-settings-backups"):
                 with self.subTest(relative=relative):
                     root = outer / ("a12-sdk-" + relative.replace("/", "-"))
                     host = root / "profile/runtime/astrbot"

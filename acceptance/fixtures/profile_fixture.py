@@ -360,7 +360,9 @@ async def main():
         ensure_marker(host / "data", seed=False)
     os.environ["ASTRBOT_ROOT"] = str(host)
     os.chdir(host)
-    network = deny_fixture_network(data_root=host / "data")
+    network = deny_fixture_network(
+        data_root=host / "data", backup_root=host / ".desktop-settings-backups"
+    )
     if seed:
         ensure_marker(host / "data", seed=True)
         await build_config(host, args.scenario)
@@ -408,8 +410,26 @@ if __name__ == "__main__":
         asyncio.run(main())
     except Exception as error:
         frames = traceback.extract_tb(error.__traceback__)[-5:]
+        causes = []
+        cause = error.__cause__
+        for _ in range(3):
+            if cause is None:
+                break
+            causes.append(
+                {
+                    "errorClass": type(cause).__name__,
+                    "errno": getattr(cause, "errno", None)
+                    if isinstance(getattr(cause, "errno", None), int)
+                    else None,
+                    "returncode": getattr(cause, "returncode", None)
+                    if isinstance(getattr(cause, "returncode", None), int)
+                    else None,
+                }
+            )
+            cause = cause.__cause__
         diagnostic = {
             "kind": "DSWhaleFixtureFailure",
+            "causes": causes,
             "errorClass": type(error).__name__,
             "code": getattr(error, "code", "FIXTURE_REJECTED"),
             "fields": getattr(error, "fields", []),

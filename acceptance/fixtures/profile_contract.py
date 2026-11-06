@@ -95,6 +95,7 @@ def authorize_paths(root, host, baseline, output, scenario):
     protected = [
         host / name
         for name in (
+            ".desktop-settings-backups",
             "data",
             "data/config",
             "data/plugins",
@@ -118,7 +119,11 @@ def authorize_paths(root, host, baseline, output, scenario):
 
     for candidate in protected:
         contained(candidate)
-    for directory in (host / "data/config", host / "data/plugin_data"):
+    for directory in (
+        host / "data/config",
+        host / "data/plugin_data",
+        host / ".desktop-settings-backups",
+    ):
         if directory.exists():
             for candidate in directory.rglob("*"):
                 contained(candidate)
@@ -222,7 +227,7 @@ def validate_scenario(snapshot, scenario):
         raise ValueError("selected model reference changed")
 
 
-def allowed_windows_acl_process(args, data_root, executable, script):
+def allowed_windows_acl_process(args, data_root, executable, script, *, backup_root=None):
     """Allow only the pinned product ACL command targeting existing synthetic data."""
     try:
         actual_exe, command, cwd, env = args
@@ -236,11 +241,12 @@ def allowed_windows_acl_process(args, data_root, executable, script):
             return False
         if command != expected and command != subprocess.list2cmdline(expected):
             return False
-        root = Path(data_root)
-        if root.is_symlink() or root.absolute() != root.resolve(strict=True):
-            return False
         target = Path(env["DSWHALE_PRIVATE_PATH"])
-        if not target.is_absolute() or not target.is_relative_to(root):
+        roots = [Path(data_root)] + ([Path(backup_root)] if backup_root is not None else [])
+        root = next((root for root in roots if target.is_relative_to(root)), None)
+        if root is None or not target.is_absolute():
+            return False
+        if root.is_symlink() or root.absolute() != root.resolve(strict=True):
             return False
         for candidate in [target, *target.parents]:
             if candidate.is_symlink() or candidate.absolute() != candidate.resolve(strict=True):
@@ -254,7 +260,7 @@ def allowed_windows_acl_process(args, data_root, executable, script):
         return False
 
 
-def deny_fixture_network(*, data_root=None):
+def deny_fixture_network(*, data_root=None, backup_root=None):
     """Deny Python networking/children except the exact owned-data Windows ACL command."""
     state = {
         "mode": "python-audit-no-network-with-owned-windows-acl-only",
@@ -270,7 +276,9 @@ def deny_fixture_network(*, data_root=None):
             executable = str(
                 Path(os.environ["SystemRoot"]) / "System32/WindowsPowerShell/v1.0/powershell.exe"
             )
-            if allowed_windows_acl_process(args, data_root, executable, _windows_acl_script()):
+            if allowed_windows_acl_process(
+                args, data_root, executable, _windows_acl_script(), backup_root=backup_root
+            ):
                 state["allowedWindowsAclProcesses"] += 1
                 return
         if event in {
