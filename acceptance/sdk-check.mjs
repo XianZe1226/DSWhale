@@ -145,7 +145,9 @@ async function main() {
     const observations = [];
     let systemPython = null;
     try { systemPython = execFileSync('where', ['python'], {encoding: 'utf8', env, timeout: 10000}).trim().split(/\r?\n/).find(file => path.win32.isAbsolute(file) && fs.existsSync(file)); } catch {}
-    const nativeRoot = await fsp.mkdtemp(path.join(os.tmpdir(), 'a12-sdk-native-'));
+    const inheritedPolicy = Object.entries(process.env).find(([key]) => key.toLowerCase() === 'psexecutionpolicypreference')?.[1];
+    const trustedPolicy = ['Bypass', 'RemoteSigned', 'Restricted', 'AllSigned', 'Unrestricted', 'Default', 'Undefined'].includes(inheritedPolicy) ? inheritedPolicy : null;
+    const nativeRoot = await fsp.realpath(await fsp.mkdtemp(path.join(os.tmpdir(), 'a12-sdk-native-')));
     const nativeHost = path.join(nativeRoot, 'profile', 'runtime', 'astrbot');
     await fsp.mkdir(path.join(nativeHost, 'data'), {recursive: true});
     await fsp.writeFile(path.join(nativeRoot, 'synthetic-root.json'), JSON.stringify({kind: 'DSWhaleSyntheticAcceptance', scenario}), {flag: 'wx'});
@@ -165,18 +167,20 @@ async function main() {
       {mode: 'file-eof', hidden: true, audit: false, synchronous: true, interpreter: 'hosted-system'},
       {mode: 'file-eof', hidden: true, audit: true, synchronous: true, location: 'native-temp'},
       {mode: 'file-eof', hidden: true, audit: true, synchronous: true, interpreter: 'hosted-system', location: 'native-temp'},
+      {mode: 'file-eof', hidden: true, audit: true, synchronous: true, policyContext: true},
     ];
     for (const [index, specification] of cases.entries()) {
       const started = Date.now();
+      if (specification.policyContext && !trustedPolicy) { observations.push({...specification, passed: false, skipped: 'trusted inherited policy context unavailable'}); continue; }
       if (specification.interpreter && !systemPython) { observations.push({...specification, passed: false, skipped: 'hosted-system interpreter unavailable'}); continue; }
       const action = specification.idleLoop ? 'acl-probe-idle-loop' : (specification.audit ? 'acl-probe' : 'acl-probe-no-audit') + (specification.synchronous ? '-sync' : '');
       const python = specification.interpreter ? systemPython : venvPython(runtime, context.platform);
       const pythonPath = specification.interpreter ? path.join(target, 'resources', 'backend') : path.join(host, 'data', 'plugins');
       const probeRoot = specification.location ? nativeRoot : temp;
       const probeHost = specification.location ? nativeHost : host;
-      const child = spawnSync(python, [path.join(context.workspace, 'acceptance/fixtures/profile_fixture.py'), '--host', probeHost, '--root', probeRoot, '--baseline', path.join(probeRoot, 'baseline.json'), '--scenario', scenario, '--action', action, '--out', path.join(probeRoot, `acl-probe-${index}.json`)], {cwd: probeRoot, env: {...env, ASTRBOT_ROOT: probeHost, PYTHONPATH: pythonPath, PYTHONNOUSERSITE: '1'}, ...fixtureIoOptions(specification.mode, inputFd), windowsHide: specification.hidden, timeout: 60000});
+      const child = spawnSync(python, [path.join(context.workspace, 'acceptance/fixtures/profile_fixture.py'), '--host', probeHost, '--root', probeRoot, '--baseline', path.join(probeRoot, 'baseline.json'), '--scenario', scenario, '--action', action, '--out', path.join(probeRoot, `acl-probe-${index}.json`)], {cwd: probeRoot, env: {...env, ...(specification.policyContext ? {PSExecutionPolicyPreference: trustedPolicy} : {}), ASTRBOT_ROOT: probeHost, PYTHONPATH: pythonPath, PYTHONNOUSERSITE: '1'}, ...fixtureIoOptions(specification.mode, inputFd), windowsHide: specification.hidden, timeout: 60000});
       let diagnostic = {}, valid = false;
-      try { const d = lastJson(child.status === 0 ? child.stdout : child.stderr); valid = child.status === 0 && d.kind === 'DSWhaleSyntheticAclProbe' && d.apiCompleted === true && (specification.audit ? d.networkGuard?.allowedWindowsAclProcesses >= 1 && d.networkGuard?.probeBlocked === true : d.networkGuard?.mode === 'diagnostic-api-only-no-python-audit'); diagnostic = valid ? {aclElapsedMs: d.elapsedMs, stdinType: d.stdinType, eventLoopActive: d.eventLoopActive, pythonVersion: d.pythonVersion, privateApiSha256: d.privateApiSha256, allowedAclProcesses: d.networkGuard.allowedWindowsAclProcesses ?? null} : {errorClass: d.errorClass, causes: d.causes, stdinType: d.stdinType, eventLoopActive: d.eventLoopActive}; } catch {}
+      try { const d = lastJson(child.status === 0 ? child.stdout : child.stderr); valid = child.status === 0 && d.kind === 'DSWhaleSyntheticAclProbe' && d.apiCompleted === true && (specification.audit ? d.networkGuard?.allowedWindowsAclProcesses >= 1 && d.networkGuard?.probeBlocked === true : d.networkGuard?.mode === 'diagnostic-api-only-no-python-audit'); diagnostic = valid ? {aclElapsedMs: d.elapsedMs, stdinType: d.stdinType, eventLoopActive: d.eventLoopActive, pythonVersion: d.pythonVersion, privateApiSha256: d.privateApiSha256, allowedAclProcesses: d.networkGuard.allowedWindowsAclProcesses ?? null} : {errorClass: d.errorClass, causes: d.causes, stdinType: d.stdinType, eventLoopActive: d.eventLoopActive, frames: d.frames}; } catch {}
       const observation = {...specification, nativeTempIsDifferentVolume: specification.location ? path.win32.parse(nativeRoot).root.toLowerCase() !== path.win32.parse(temp).root.toLowerCase() : null, passed: valid, elapsedMs: Date.now() - started, ...diagnostic};
       observations.push(observation); console.log(JSON.stringify({stage: 'windows-acl-diagnostic', ...observation}));
     }
