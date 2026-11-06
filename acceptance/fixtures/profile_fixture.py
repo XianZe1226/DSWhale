@@ -360,6 +360,7 @@ def parse_args():
             "acl-probe-sync",
             "acl-probe-no-audit-sync",
             "acl-probe-idle-loop",
+            "acl-probe-no-window",
         ),
         required=True,
     )
@@ -404,6 +405,16 @@ def run_acl_probe(args, host, network):
     except RuntimeError:
         loop_active = False
     started = time.monotonic()
+    original_run = private_files.subprocess.run
+    if args.action == "acl-probe-no-window":
+
+        def no_console(command, **kwargs):
+            if command[-1] != private_files._windows_acl_script():
+                raise ValueError("unexpected diagnostic command")
+            kwargs["creationflags"] = private_files.subprocess.CREATE_NO_WINDOW
+            return original_run(command, **kwargs)
+
+        private_files.subprocess.run = no_console
     try:
         ensure_private_directory(
             host / ".desktop-settings-backups" / ("acl-probe-" + uuid.uuid4().hex)
@@ -412,9 +423,12 @@ def run_acl_probe(args, host, network):
         error.stdinType = stdin_type
         error.eventLoopActive = loop_active
         raise
+    finally:
+        private_files.subprocess.run = original_run
     result = {
         "kind": "DSWhaleSyntheticAclProbe",
         "apiCompleted": True,
+        "diagnosticNoConsoleOverride": args.action == "acl-probe-no-window",
         "stdinType": stdin_type,
         "pythonVersion": list(sys.version_info[:3]),
         "privateApiSha256": hashlib.sha256(Path(private_files.__file__).read_bytes()).hexdigest(),
