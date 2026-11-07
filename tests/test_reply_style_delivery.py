@@ -7,7 +7,7 @@ from types import SimpleNamespace
 import pytest
 from astrbot.api.message_components import Image, Plain
 
-from dswhale.adapter import Companion
+from dswhale.adapter import Companion, DeliveryStopped
 from dswhale.config import Settings
 
 
@@ -39,8 +39,11 @@ class FakeEvent:
         self.extra = {}
         self.sent = []
         self.cleared = False
+        self.closed = False
         self.sleeps = []
         self.unified_msg_origin = "test:friend"
+        self.after_send = None
+        self.send_streaming = None
 
     def get_extra(self, name, default=None):
         return self.extra.get(name, default)
@@ -67,6 +70,9 @@ class FakeEvent:
             raise RuntimeError("synthetic transport failure")
         self.sent.append([part.text for part in chain.chain if isinstance(part, Plain)])
         self.extra["dswhale_transport_succeeded"] = True
+        if self.after_send:
+            callback, self.after_send = self.after_send, None
+            callback()
 
 
 @pytest.fixture(autouse=True)
@@ -346,3 +352,41 @@ def test_mixed_fallback_failure_is_settled_and_reraised():
         asyncio.run(value._style_stream(event, original, stream(), False))
     assert event.extra["dswhale_transport_failed"] is True
     assert event.extra["dswhale_delivered_called"] is True
+
+
+@pytest.mark.parametrize("mode", ["unauthorized", "closed"])
+async def test_guard_silent_drop_between_bubbles_is_partial_and_not_sent(mode):
+    event = FakeEvent()
+    value = companion("natural")
+    value.closed = False
+    value.pending = {}
+    value.store = SimpleNamespace(
+        activity=lambda activity_id: SimpleNamespace(scope="synthetic:owner"),
+        transition=lambda *args, **kwargs: None,
+    )
+    value.binding_by_scope = lambda scope: SimpleNamespace(channel="napcat")
+    value.internal_id = lambda item: ""
+    value.allow_delivery = lambda item: not item.closed
+    if mode == "unauthorized":
+
+        def flip():
+            value.allow_delivery = lambda item: False
+
+    else:
+
+        def flip():
+            value.closed = True
+
+    event.after_send = flip
+    value._guard_transport(event)
+    delivered, error = await value._send_bubbles(event, ["第一段", "第二段"], (0, 0))
+
+    assert event.sent == [["第一段"]]
+    assert delivered == 1
+    assert isinstance(error, DeliveryStopped)
+    assert event.extra["dswhale_reply_partial"] == {
+        "delivered": 1,
+        "error": "DeliveryStopped",
+    }
+    assert event.extra["dswhale_transport_failed"] is True
+    assert event.extra["dswhale_transport_succeeded"] is False

@@ -33,6 +33,10 @@ def now_utc():
     return datetime.now(UTC)
 
 
+class DeliveryStopped(RuntimeError):
+    """A guarded transport skipped a bubble instead of sending it."""
+
+
 class Companion:
     def __init__(self, context, settings: Settings, store: Store):
         self.context = context
@@ -329,18 +333,22 @@ class Companion:
             if index:
                 await asyncio.sleep(random.uniform(*interval))
             try:
-                await event.send(event.plain_result(bubble))
+                acknowledged = await event.send(event.plain_result(bubble))
+                if acknowledged is False:
+                    raise DeliveryStopped("delivery stopped between bubbles")
             except Exception as error:
                 event.set_extra(
                     "dswhale_reply_partial",
                     {"delivered": delivered, "error": type(error).__name__},
                 )
                 event.set_extra("dswhale_transport_failed", True)
+                event.set_extra("dswhale_transport_succeeded", False)
                 logger.warning("DSWhale reply style: partial delivery (%s)", type(error).__name__)
                 return delivered, error
             delivered += 1
         if delivered:
             event.set_extra("dswhale_transport_succeeded", True)
+            event.set_extra("dswhale_transport_failed", False)
             event.set_extra("dswhale_reply_partial", None)
         return delivered, None
 
@@ -392,8 +400,9 @@ class Companion:
         if fallback:
             event.set_extra("dswhale_style_fallback", fallback)
             try:
+                # The host path reports success only through the transport guard;
+                # never claim delivery when a guard may have skipped every chunk.
                 await original(clean_stream(generator), use_fallback)
-                event.set_extra("dswhale_transport_succeeded", True)
             except Exception as error:
                 event.set_extra("dswhale_transport_failed", True)
                 logger.warning(
@@ -438,7 +447,6 @@ class Companion:
             event.set_extra("dswhale_style_fallback", "mixed_chain")
             try:
                 await original(cleaned_replay(), use_fallback)
-                event.set_extra("dswhale_transport_succeeded", True)
             except Exception as error:
                 event.set_extra("dswhale_transport_failed", True)
                 logger.warning(
@@ -533,11 +541,11 @@ class Companion:
 
         async def send(message):
             if self.closed or not self.allow_delivery(event):
-                return
+                return False
             # The pinned OneBot adapter silently skips empty/whitespace-only chains.
             # A successful no-op return is not evidence of platform delivery.
             if not any(not isinstance(part, Plain) or part.text.strip() for part in message.chain):
-                return
+                return False
             try:
                 await original_send(message)
             except BaseException:
@@ -556,6 +564,7 @@ class Companion:
                 event.set_extra(
                     "dswhale_transport_succeeded", bool(binding and binding.channel == "napcat")
                 )
+                return True
 
         # AiocqhttpMessageEvent.send_streaming routes its chunks through send too.
         event.send = send
