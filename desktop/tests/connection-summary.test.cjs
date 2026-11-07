@@ -81,22 +81,55 @@ test('T3-I4: the Electron IPC prefix is removed from the user-facing error', asy
 
 test('T3-I4: dismissing the banner clears the local error but not an in-flight action', async () => {
   let release;
+  let push;
   const gate = new Promise(resolve => { release = resolve; });
+  const fault = '[APP-001] 对话服务已退出，请检查配置后重试';
   const bridge = {
-    invoke: async () => { await gate; return { connections: {} }; },
-    onState() { return () => {}; },
+    invoke: async action => {
+      if (action === 'inspect') return { installed: true, running: true };
+      if (action === 'workspace-status') return { health: null, backups: [], appUpdate: null, napcat: null, preferences: {} };
+      await gate; return { connections: {} };
+    },
+    onState(callback) { push = callback; return () => {}; },
   };
   const controller = createController({ bridge });
+  await controller.init();
   const pending = controller.act('connection-change', { channel: 'napcat', enabled: false });
   await new Promise(resolve => setImmediate(resolve));
   assert.equal(controller.get().pending, 'connection-change');
 
+  // main publishes this through dswhale:state — it is a real fault, not a
+  // renderer-local rejection, and the visible banner can still be dismissed.
+  push({ error: fault });
+  assert.equal(controller.get().state.error, fault);
+  assert.equal(controller.get().error, '');
   controller.dismissError();
+  assert.equal(controller.get().dismissedError, fault);
+  assert.equal(controller.get().error, '');
+  assert.equal(controller.get().state.error, fault, 'dismissing must not clear the real main-process fault');
   assert.equal(controller.get().pending, 'connection-change', 'dismissing a banner must not release the action fence');
 
   release();
   await pending;
   assert.equal(controller.get().pending, '');
+});
+
+test('T3-I4: a new operation re-arms the dismissed-error marker', async () => {
+  let push;
+  const bridge = {
+    invoke: async action => (action === 'connections-status' ? { connections: {} } : {}),
+    onState(callback) { push = callback; return () => {}; },
+  };
+  const controller = createController({ bridge });
+  await controller.init();
+  const fault = '[APP-001] 对话服务已退出，请检查配置后重试';
+  push({ error: fault });
+  controller.dismissError();
+  assert.equal(controller.get().dismissedError, fault);
+
+  await controller.act('workspace-status');
+  assert.equal(controller.get().dismissedError, '', 'a new operation lets a still-present fault be shown again');
+  assert.equal(controller.get().state.error, fault, 'the fault itself is retained');
 });
 
 test('T3-I4: dismissError clears the local error and retry metadata', async () => {

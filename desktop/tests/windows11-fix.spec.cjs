@@ -63,6 +63,7 @@ function renderApp({ screen = 'intelligence', invoke, workspace = workspaceStatu
     calls, html: () => root.innerHTML,
     settle: () => new Promise(resolve => setImmediate(resolve)),
     clickConnection: (channel, enabled) => handlers.click({ target: { closest() { return this; }, dataset: { action: 'connection-change', channel, enabled }, hasAttribute() { return false; } } }),
+    clickAction: action => handlers.click({ target: { closest() { return this; }, dataset: { action }, hasAttribute() { return false; } } }),
     selectMode: mode => handlers.click({ target: { closest() { return this; }, dataset: { action: 'select-qq-mode', mode }, hasAttribute() { return false; } } }),
     pushState: value => stateListener(value),
     buttons: () => buttons,
@@ -213,4 +214,24 @@ test('T3-I4 spec: a dismissed banner does not hide a still-present main-process 
   // The banner must offer a dismiss control for the transient part while the
   // persistent state.error stays actionable.
   assert.match(html, /data-action="dismiss-error"/);
+});
+
+test('T3-I4 spec: clicking the dismiss control hides a state.error banner and a newer fault still shows', async () => {
+  const app = renderApp({ screen: 'connect', invoke: connectInvoke(soleConnectionSnapshot()) });
+  await app.settle();
+  app.pushState({ error: '[APP-001] 对话服务已退出，请检查配置后重试' });
+  await app.settle();
+
+  const dismiss = app.buttons().find(button => button.dataset.action === 'dismiss-error');
+  assert.ok(dismiss, 'the persistent-fault banner offers a dismiss control');
+  assert.equal(dismiss.disabled, false);
+
+  app.clickAction('dismiss-error');
+  await app.settle();
+  assert.doesNotMatch(app.html(), /对话服务已退出/, 'dismissing hides the banner that was on screen');
+  assert.doesNotMatch(app.html(), /class="alert error"/, 'the error alert is removed');
+
+  app.pushState({ error: '[APP-001] 连接组件意外退出，请重新启动' });
+  await app.settle();
+  assert.match(app.html(), /连接组件意外退出/, 'a different fault is not suppressed by the old dismissal');
 });

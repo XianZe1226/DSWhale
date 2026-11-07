@@ -180,7 +180,7 @@
   }
   function createController({ bridge, preview = false } = {}) {
     const available = !!bridge && typeof bridge.invoke === 'function' && typeof bridge.onState === 'function';
-    let data = { mode: available ? 'desktop' : preview ? 'preview' : 'unavailable', pending: '', pendingExtension: '', error: '', retry: null, settings: null, extensions: null, extensionChecks: { memory: false, memes: false }, workspaceLoaded:false, connectionTab: '', connections:null, connectionPreview:null, settingsHistory:null, workspace:{health:null,backups:[],appUpdate:null,napcat:null,preferences:preferencesPayload(),diagnosticFiles:[]}, notice: '', state: { version: '', platform: { label: '正在读取系统信息', supported: true }, phase: 'idle', installed: false, running: false, components: [], setup: {}, panel: '' } };
+    let data = { mode: available ? 'desktop' : preview ? 'preview' : 'unavailable', pending: '', pendingExtension: '', error: '', retry: null, dismissedError: '', settings: null, extensions: null, extensionChecks: { memory: false, memes: false }, workspaceLoaded:false, connectionTab: '', connections:null, connectionPreview:null, settingsHistory:null, workspace:{health:null,backups:[],appUpdate:null,napcat:null,preferences:preferencesPayload(),diagnosticFiles:[]}, notice: '', state: { version: '', platform: { label: '正在读取系统信息', supported: true }, phase: 'idle', installed: false, running: false, components: [], setup: {}, panel: '' } };
     const subscribers = new Set();
     let unsubscribe;
     let activeReads = 0;
@@ -243,6 +243,9 @@
       }
       data.error = '';
       data.notice = '';
+      // A new operation starts a fresh message cycle: a previously dismissed
+      // message (including main's persistent state.error) may be shown again.
+      data.dismissedError = '';
       if (action === 'extension-check') data.extensionChecks[payload.id] = false;
       emit();
       let retryOverride;
@@ -327,7 +330,18 @@
       get: () => data,
       invalidateSettingsHistory() { data.settingsHistory = null; },
       dismissConnectionPreview() { if (data.connectionPreview) { data.connectionPreview = null; emit(); } },
-      dismissError() { if (!data.error) return; data.error = ''; data.retry = null; emit(); },
+      dismissError() {
+        // app.js renders data.error || data.state.error. Dismissing records the
+        // message that was actually visible so the same banner stays hidden even
+        // when it came from main's state.error. The fault itself (state.error),
+        // the action fence (pending) and activeAction are deliberately untouched.
+        const visible = data.error || data.state?.error || '';
+        if (!visible) return;
+        data.dismissedError = visible;
+        data.error = '';
+        data.retry = null;
+        emit();
+      },
       setConnectionTab(tab) { if (!['napcat', 'official'].includes(tab)) throw new Error('连接页签无效。'); if (data.connectionTab === tab) return; data.connectionTab = tab; emit(); },
 
       subscribe(callback) { subscribers.add(callback); return () => subscribers.delete(callback); },

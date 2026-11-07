@@ -308,7 +308,11 @@
     const status = service(data);
     const nav = Object.entries(routeNames).map(([id, label]) => `<button type="button" class="nav-item${route === id ? ' active' : ''}" data-route="${id}"${route === id ? ' aria-current="page"' : ''}>${icon(id)}<span>${label}</span>${id === 'environment' && !data.state.installed ? '<span class="nav-dot" aria-label="待准备"></span>' : ''}${id === 'settings' && (data.workspace.appUpdate?.canDownload||data.workspace.appUpdate?.canInstall) ? '<span class="nav-dot" role="img" aria-label="有应用更新"></span>' : ''}</button>`).join('');
     const preview = data.mode === 'preview' ? '<div class="mode-banner">界面预览 · 示例数据 · 所有设备操作已禁用</div>' : '';
-    const error = data.error || data.state.error;
+    const rawError = data.error || data.state.error;
+    // "关闭提示" records the exact message that was on screen. Hide only that
+    // message; the underlying state.error (a real main-process fault) stays
+    // published and a different/new error is still shown immediately.
+    const error = rawError && rawError !== data.dismissedError ? rawError : '';
     const feedback = error ? `<div class="alert error" role="alert"><span class="alert-symbol">!</span><div><strong>操作未完成</strong><p>${esc(error)}</p></div>${data.retry ? button('重试', 'retry', { off: busy(data) || !desktop(data) }) : ''}${button('关闭提示', 'dismiss-error', { off: false })}</div>` : localMessage||data.notice ? `<div class="alert success" role="status">${icon('check')}<span>${esc(localMessage||data.notice)}</span></div>` : '';
     const views = { overview, environment, connect, intelligence, bilibili, settings };
     const content = data.mode === 'unavailable' ? `<section class="desktop-notice card"><img src="whale.svg" alt="DSWhale"><h1>请在桌面应用中打开</h1><p>运行环境、对话服务和本地设置需要 DSWhale 桌面应用。</p><p class="footnote">当前页面未连接桌面服务，无法读取或修改本机配置。</p></section>` : views[route](data);
