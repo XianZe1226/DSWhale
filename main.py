@@ -14,6 +14,7 @@ if __package__:
     from .dswhale.bili_agent import read_config
     from .dswhale.config import Settings
     from .dswhale.persona import untrusted_block
+    from .dswhale.persona_time_compat import install as install_persona_time_compat
     from .dswhale.qq_identity import is_official_c2c, remember_c2c_scope
     from .dswhale.reply_cleanup import clean_content, clean_history, clean_stream, clean_text
     from .dswhale.store import Store
@@ -22,6 +23,7 @@ else:  # local SDK smoke tests
     from dswhale.bili_agent import read_config
     from dswhale.config import Settings
     from dswhale.persona import untrusted_block
+    from dswhale.persona_time_compat import install as install_persona_time_compat
     from dswhale.qq_identity import is_official_c2c, remember_c2c_scope
     from dswhale.reply_cleanup import clean_content, clean_history, clean_stream, clean_text
     from dswhale.store import Store
@@ -55,6 +57,10 @@ class DSWhale(Star):
         self.companion = Companion(
             context, settings, Store(StarTools.get_data_dir("astrbot_plugin_dswhale") / "state.db")
         )
+        # Display-only: upstream serializes naive UTC persona timestamps without
+        # an offset, which the dashboard renders as local time. Keep the data and
+        # the AstrBot dependency untouched; only add the explicit offset.
+        install_persona_time_compat()
 
     async def initialize(self):
         self.companion.start()

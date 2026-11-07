@@ -127,7 +127,18 @@ function hidePanel() {
   }
   publish({ panel: undefined });
 }
-function resizePanel() { if (panelView && window) { const [width, height] = window.getContentSize(); panelView.setBounds({ x: 256, y: 140, width: Math.max(0, width - 256), height: Math.max(0, height - 140) }); } }
+function resizePanel() {
+  if (panelView && window) {
+    const [width, height] = window.getContentSize();
+    // AstrBot's responsive console switches its navigation drawer to a closed
+    // overlay at <=960 CSS px. The old fixed 256px sidebar offset left the
+    // console 964px wide at the default 1220 DIP window, so any narrower window
+    // hid the console navigation. Below 1220 DIP let the console use the full
+    // content width; at 1220+ the 256px offset still leaves >=964px.
+    const offset = width >= 1220 ? 256 : 0;
+    panelView.setBounds({ x: offset, y: 140, width: Math.max(0, width - offset), height: Math.max(0, height - 140) });
+  }
+}
 async function inspectSnapshot() {
   if (!supervisor.running && !extensions.operation) {
     let pending = false;
@@ -362,16 +373,20 @@ async function startServices() {
   if (!state.installed) throw new UserActionError('请先准备运行环境');
   const recovery = appUpdater ? (await appUpdater.status()).recovery : null;
   if (recovery?.servicesMustRemainStopped) throw new UserActionError('更新或回退尚未完成，请先在应用设置中修复并体检');
-  await extensions.run('status');
-  if (shutdownRequested) throw new UserActionError('应用正在退出');
-  const connectionSettings = await settingsCommand(manager, 'read'); stillOpen();
-  // The legacy mode is published only for compatibility; startup, health and
-  // delivery below are decided per channel/platform, never by this value.
-  publish({ qqConnectionMode: connectionSettings.qqConnectionMode === 'official' ? 'official' : 'napcat' });
+  // Publish a real phase before the readiness probes below: extensions.run("status")
+  // and the settings read can take several seconds, and the renderer must show
+  // what the main process is actually doing during that window.
   const reuseQQ = napcat?.running;
   startupInProgress = true;
   publish({ startup: { stage: supervisor.running ? 'checking-qq' : 'starting-conversation' }, error: undefined });
+  let connectionSettings = null;
   try {
+    await extensions.run('status');
+    if (shutdownRequested) throw new UserActionError('应用正在退出');
+    connectionSettings = await settingsCommand(manager, 'read'); stillOpen();
+    // The legacy mode is published only for compatibility; startup, health and
+    // delivery below are decided per channel/platform, never by this value.
+    publish({ qqConnectionMode: connectionSettings.qqConnectionMode === 'official' ? 'official' : 'napcat' });
     await supervisor.start();
     stillOpen();
     publish({ running: true, startup: { stage: 'checking-qq' } });
@@ -391,8 +406,8 @@ async function startServices() {
     publishQQ(await officialHealthStatus(Boolean(officialTarget?.enable)), false, 'official'); stillOpen();
     return await refresh();
   } catch (error) {
-    if (!reuseQQ && await napcatPlatformEnabled(connectionSettings).catch(() => false)) await napcat?.stop();
-    await supervisor.stop();
+    if (!reuseQQ && connectionSettings && await napcatPlatformEnabled(connectionSettings).catch(() => false)) await napcat?.stop();
+    if (typeof supervisor.stop === 'function') await supervisor.stop();
     publish({ running: false, startup: { stage: 'failed' } });
     throw error;
   } finally { startupInProgress = false; }

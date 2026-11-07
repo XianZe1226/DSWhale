@@ -156,6 +156,28 @@
     if (phases) return view(qq.loginState, ...phases);
     return view('unknown', '暂时无法确认 QQ 状态', 'QQ 组件仍在运行。可以打开管理页查看，无需重新准备环境。', '等待确认', '', 'open-panel', '打开 QQ 管理');
   }
+  function connectionSummary(data) {
+    // The sidebar and the overview describe the whole app, not the tab the user is
+    // inspecting. connectionViewModel intentionally follows connectionTab; this
+    // summary ignores it so opening an unconfigured channel's tab never rewrites
+    // the global badge or hides a live connection.
+    const base = connectionViewModel({ ...data, connectionTab: '' });
+    const state = data.state || {};
+    if (!state.installed || !state.running || base.tone === 'working' || base.tone === 'good') return { ...base, globalChannel: '' };
+    const live = (data.connections?.channels || []).find(entry =>
+      entry.channel === 'napcat' && entry.platformEnabled !== false && (entry.protocolConnected === true || entry.health === 'connected'));
+    if (live) return { ...connectionViewModel({ ...data, connectionTab: 'napcat' }), globalChannel: 'napcat' };
+    return { ...base, globalChannel: '' };
+  }
+  function normalizeError(error) {
+    // Electron prefixes every rejected ipcRenderer.invoke() with the channel name
+    // and the original error class. The user-facing banner must show the action
+    // message, not that transport detail.
+    let message = error instanceof Error ? error.message : String(error ?? '');
+    message = message.replace(/^Error invoking remote method '[^']*':\s*/i, '');
+    message = message.replace(/^(?:Error|UserActionError):\s*/i, '');
+    return message || '操作未完成，请重新检查状态或导出诊断';
+  }
   function createController({ bridge, preview = false } = {}) {
     const available = !!bridge && typeof bridge.invoke === 'function' && typeof bridge.onState === 'function';
     let data = { mode: available ? 'desktop' : preview ? 'preview' : 'unavailable', pending: '', pendingExtension: '', error: '', retry: null, settings: null, extensions: null, extensionChecks: { memory: false, memes: false }, workspaceLoaded:false, connectionTab: '', connections:null, connectionPreview:null, settingsHistory:null, workspace:{health:null,backups:[],appUpdate:null,napcat:null,preferences:preferencesPayload(),diagnosticFiles:[]}, notice: '', state: { version: '', platform: { label: '正在读取系统信息', supported: true }, phase: 'idle', installed: false, running: false, components: [], setup: {}, panel: '' } };
@@ -291,7 +313,7 @@
         data.retry = null;
         return result;
       } catch (error) {
-        data.error = error instanceof Error ? error.message : String(error);
+        data.error = normalizeError(error);
         // Never retain a settings payload containing a local access token in retry metadata.
         data.retry = retryOverride||(['settings-save','backup-restore','backup-delete','app-update-start','app-update-rollback','connection-change','connection-confirm','settings-restore-field'].includes(action) ? null : { action, payload });
         throw error;
@@ -305,6 +327,7 @@
       get: () => data,
       invalidateSettingsHistory() { data.settingsHistory = null; },
       dismissConnectionPreview() { if (data.connectionPreview) { data.connectionPreview = null; emit(); } },
+      dismissError() { if (!data.error) return; data.error = ''; data.retry = null; emit(); },
       setConnectionTab(tab) { if (!['napcat', 'official'].includes(tab)) throw new Error('连接页签无效。'); if (data.connectionTab === tab) return; data.connectionTab = tab; emit(); },
 
       subscribe(callback) { subscribers.add(callback); return () => subscribers.delete(callback); },
@@ -313,5 +336,5 @@
       dispose() { if (typeof unsubscribe === 'function') unsubscribe(); subscribers.clear(); },
     };
   }
-  return { createController, escapeHTML, settingsPayload, settingsPatch, preferencesPayload, connectionViewModel };
+  return { createController, escapeHTML, settingsPayload, settingsPatch, preferencesPayload, connectionViewModel, connectionSummary };
 });
