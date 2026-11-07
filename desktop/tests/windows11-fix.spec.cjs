@@ -64,6 +64,7 @@ function renderApp({ screen = 'intelligence', invoke, workspace = workspaceStatu
     settle: () => new Promise(resolve => setImmediate(resolve)),
     clickConnection: (channel, enabled) => handlers.click({ target: { closest() { return this; }, dataset: { action: 'connection-change', channel, enabled }, hasAttribute() { return false; } } }),
     clickAction: action => handlers.click({ target: { closest() { return this; }, dataset: { action }, hasAttribute() { return false; } } }),
+    clickRoute: route => handlers.click({ target: { closest() { return this; }, dataset: { route }, hasAttribute() { return false; } } }),
     selectMode: mode => handlers.click({ target: { closest() { return this; }, dataset: { action: 'select-qq-mode', mode }, hasAttribute() { return false; } } }),
     pushState: value => stateListener(value),
     buttons: () => buttons,
@@ -78,6 +79,25 @@ function soleConnectionSnapshot() {
     platforms: [
       { id: 'qq', type: 'aiocqhttp', enable: true, configured: true },
       { id: 'official-test', type: 'qq_official', enable: false, configured: true },
+    ],
+    bindings: { napcat: true, official: true },
+    napcat: { running: true, loginState: 'online' },
+    health: { channels: {
+      napcat: { state: 'connected', platformReady: true, protocolConnected: true },
+      official: { state: 'unknown', platformReady: false, protocolConnected: false },
+    } },
+  });
+}
+
+// napcat is live while the official robot has an enabled platform but no
+// credentials. Viewing the official tab therefore shows "待配置", but the
+// workspace-wide summary must keep reporting the live NapCat connection.
+function officialUnconfiguredSnapshot() {
+  return createRequire(path.join(__dirname, '../main.cjs'))('./lib/qq-connections.cjs').snapshot({
+    revision: 'rev-2', running: true, defaultDelivery: 'napcat',
+    platforms: [
+      { id: 'qq', type: 'aiocqhttp', enable: true, configured: true },
+      { id: 'official-test', type: 'qq_official', enable: true, configured: false },
     ],
     bindings: { napcat: true, official: true },
     napcat: { running: true, loginState: 'online' },
@@ -234,4 +254,36 @@ test('T3-I4 spec: clicking the dismiss control hides a state.error banner and a 
   app.pushState({ error: '[APP-001] 连接组件意外退出，请重新启动' });
   await app.settle();
   assert.match(app.html(), /连接组件意外退出/, 'a different fault is not suppressed by the old dismissal');
+});
+
+// ---------------------------------------------------------------------------
+// T3-I2 — the overview hero is a workspace-wide report. Its timeline and
+// primary action must follow the global summary, never the connection tab the
+// user happened to view on the connect screen.
+// ---------------------------------------------------------------------------
+test('T3-I2 spec: the overview timeline and primary action ignore a locally selected official tab', async () => {
+  const connections = officialUnconfiguredSnapshot();
+  const app = renderApp({
+    screen: 'connect',
+    invoke: connectInvoke(connections, { qqConnectionMode: 'official', officialConfigured: false }),
+  });
+  await app.settle();
+  await app.settle();
+
+  app.selectMode('official');
+  await app.settle();
+  // Fixture check: the tab-scoped view really is the unconfigured official setup.
+  const connectHtml = app.html();
+  assert.match(connectHtml, /创建或连接 QQ 官方机器人/, 'fixture: the official tab shows its setup state');
+  assert.match(connectHtml, /配置官方机器人/, 'fixture: the tab-scoped primary action configures the official robot');
+
+  await app.clickRoute('overview');
+  await app.settle();
+
+  const hero = app.html().match(/<section class="hero"[\s\S]*?<\/section>/)?.[0] || '';
+  assert.ok(hero, 'fixture: the overview hero is rendered');
+  assert.match(hero, /已连接/, 'the hero badge reports the global NapCat connection');
+  assert.match(hero, /已建立连接/, 'the timeline reports the global NapCat message connection');
+  assert.doesNotMatch(hero, /创建或连接 QQ 官方机器人|配置官方机器人|官方接口|等待完成配置/, 'neither the timeline nor the primary action may fall back to the official tab state');
+  assert.match(hero, /停止对话服务/, 'the global service control remains available next to the global connection state');
 });

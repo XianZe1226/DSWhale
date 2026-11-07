@@ -77,15 +77,13 @@
     const view = connectionViewModel(data), value = draft || data.settings || {};
     return `<section class="card connection-main" id="qq-connection" aria-labelledby="qq-connection-title"><div class="connection-heading"><span class="connection-symbol ${view.tone === 'good' ? 'complete' : ''}">${icon(view.tone === 'good' ? 'check' : 'connect')}</span>${badge(view.badge,view.tone)}</div><h2 id="qq-connection-title">${esc(view.title)}</h2><p class="connection-description">${esc(view.description)}</p>${['owner','official-owner'].includes(view.stage) ? ownerField(data,value) : ''}<div class="connection-primary-row">${connectionPrimary(data)}${!view.action && view.tone === 'working' ? '<span class="connection-wait"><span class="spinner" aria-hidden="true"></span>状态会自动更新，无需重复操作</span>' : ''}</div>${connectionTimeline(data)}</section>`;
   }
-  function connectionPrimary(data, overview = false) {
-    const view = connectionViewModel(data);
+  function connectionPrimary(data, overview = false, view = connectionViewModel(data)) {
     if (!view.action) return '';
     if (overview && ['save-settings','show-connection-options','show-external-guide','connection-change'].includes(view.action)) return routeButton('前往 QQ 连接','connect');
     return button(view.actionLabel,view.action,{primary:true,id:overview?'overview-connection-primary':'connection-primary',payload:view.panel||'',channel:view.channel||'',enabled:view.enabled,iconName:view.action==='start'?'play':'arrow',off:!desktop(data)||busy(data)});
   }
-  function connectionTimeline(data) {
-    const qq = data.workspace.napcat || {}, view = connectionViewModel(data), stage = data.state.startup?.stage || view.stage;
-    const channel=data.connectionTab||data.settings?.qqConnectionMode||data.state.qqConnectionMode||data.state.setup?.qqConnectionMode||'napcat';
+  function connectionTimeline(data, view = connectionViewModel(data), channel = data.connectionTab||data.settings?.qqConnectionMode||data.state.qqConnectionMode||data.state.setup?.qqConnectionMode||'napcat') {
+    const qq = data.workspace.napcat || {}, stage = data.state.startup?.stage || view.stage;
     if(channel==='official'){
       const bound=data.settings?!!data.settings.officialOwnerUMO:data.state.setup?.ownerConfigured;
       const officialConnection=(data.connections?.channels||[]).find(item=>item.channel==='official');
@@ -177,6 +175,10 @@
   }
   function overview(data) {
     const s = service(data);
+    // The overview describes the whole workspace, not whichever connection tab
+    // the user last visited on the connect page.
+    const summary = connectionSummary(data);
+    const globalChannel = summary.globalChannel || data.settings?.qqConnectionMode || data.state.qqConnectionMode || data.state.setup?.qqConnectionMode || '';
     const setup = data.state.setup;
     const steps = [
       ['01', '准备运行环境', '自动管理所需工具与依赖', data.state.installed, 'environment', 'environment'],
@@ -184,7 +186,7 @@
       ['03', '选择模型与记忆', '连接云端模型，延续每一次对话', setup.modelConfigured, 'intelligence', 'intelligence'],
     ];
     return `<section class="page-heading"><div><p class="eyebrow">你的专属工作空间</p><h1>概览</h1><p class="subtitle">把配置交给这里，把时间留给对话。</p></div>${button('刷新状态', 'inspect', { iconName: 'refresh', off: busy(data) || !desktop(data) })}</section>
-      <section class="hero"><div class="hero-copy">${badge(s.label, s.type)}<h2>${s.title}</h2><p>${s.description}</p>${data.state.installed?connectionTimeline(data):''}<div class="hero-actions">${data.state.installed ? connectionPrimary(data,true)+(data.state.running?serviceButton(data):'') : installButton(data)}${routeButton('查看 QQ 连接', 'connect')}</div></div><div class="whale-art" aria-hidden="true"><div class="orbit orbit-one"></div><div class="orbit orbit-two"></div><div class="whale-glow"></div><img src="whale.svg" alt=""><span class="spark spark-one">✦</span><span class="spark spark-two">✦</span><span class="bubble bubble-one"></span><span class="bubble bubble-two"></span></div></section>
+      <section class="hero"><div class="hero-copy">${badge(s.label, s.type)}<h2>${s.title}</h2><p>${s.description}</p>${data.state.installed?connectionTimeline(data,summary,globalChannel):''}<div class="hero-actions">${data.state.installed ? connectionPrimary(data,true,summary)+(data.state.running?serviceButton(data):'') : installButton(data)}${routeButton('查看 QQ 连接', 'connect')}</div></div><div class="whale-art" aria-hidden="true"><div class="orbit orbit-one"></div><div class="orbit orbit-two"></div><div class="whale-glow"></div><img src="whale.svg" alt=""><span class="spark spark-one">✦</span><span class="spark spark-two">✦</span><span class="bubble bubble-one"></span><span class="bubble bubble-two"></span></div></section>
       <div class="section-heading"><h2>开始使用</h2><span>三个步骤，准备好你的 DSWhale</span></div>
       <div class="setup-grid">${steps.map(([num, title, desc, complete, target, glyph]) => `<button class="setup-card" data-route="${target}" type="button"><span class="card-top"><span class="tile-icon ${complete ? 'complete' : ''}">${icon(complete ? 'check' : glyph)}</span><span class="step-number">${complete ? '已完成' : num}</span></span><h3>${title}</h3><p>${desc}</p><span class="card-link">${complete ? '管理设置' : '前往设置'}${icon('arrow')}</span></button>`).join('')}</div>
       <div class="section-heading compact"><h2>工作空间状态</h2></div><section class="card status-list"><div class="status-row"><span class="row-label">${icon('environment')}运行环境</span><span>${data.state.installed ? '已准备' : '等待准备'}<span class="row-divider">·</span>${esc(data.state.platform.label || '未知系统')}</span></div><div class="status-row"><span class="row-label">${icon('play')}对话服务</span>${badge(s.label, s.type)}</div><div class="status-row"><span class="row-label">${icon('shield')}数据存储</span><span>保存在本机${routeButton('管理', 'settings')}</span></div></section>`;
