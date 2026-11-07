@@ -347,7 +347,11 @@ class Companion:
                 return delivered, error
             delivered += 1
         if delivered:
-            event.set_extra("dswhale_transport_succeeded", True)
+            # A guard may have explicitly recorded an uncertain official send.
+            # Only unwrapped (human) sends default to success; guarded sends keep
+            # the marker the transport actually observed.
+            if not event.get_extra("dswhale_transport_guarded"):
+                event.set_extra("dswhale_transport_succeeded", True)
             event.set_extra("dswhale_transport_failed", False)
             event.set_extra("dswhale_reply_partial", None)
         return delivered, None
@@ -404,6 +408,9 @@ class Companion:
                 # never claim delivery when a guard may have skipped every chunk.
                 await original(clean_stream(generator), use_fallback)
             except Exception as error:
+                event.set_extra(
+                    "dswhale_reply_partial", {"delivered": 0, "error": type(error).__name__}
+                )
                 event.set_extra("dswhale_transport_failed", True)
                 logger.warning(
                     "DSWhale reply style: host fallback failed (%s)", type(error).__name__
@@ -429,7 +436,10 @@ class Companion:
                         text += part.text
                     else:
                         mixed = True
-        except BaseException:
+        except BaseException as error:
+            event.set_extra(
+                "dswhale_reply_partial", {"delivered": 0, "error": type(error).__name__}
+            )
             event.set_extra("dswhale_transport_failed", True)
             self.delivered(event)
             raise
@@ -448,6 +458,9 @@ class Companion:
             try:
                 await original(cleaned_replay(), use_fallback)
             except Exception as error:
+                event.set_extra(
+                    "dswhale_reply_partial", {"delivered": 0, "error": type(error).__name__}
+                )
                 event.set_extra("dswhale_transport_failed", True)
                 logger.warning(
                     "DSWhale reply style: mixed fallback failed (%s)", type(error).__name__
@@ -538,6 +551,7 @@ class Companion:
     def _guard_transport(self, event):
         original_send = event.send
         original_stream = event.send_streaming
+        event.set_extra("dswhale_transport_guarded", True)
 
         async def send(message):
             if self.closed or not self.allow_delivery(event):

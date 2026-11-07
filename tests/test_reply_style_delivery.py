@@ -390,3 +390,148 @@ async def test_guard_silent_drop_between_bubbles_is_partial_and_not_sent(mode):
     }
     assert event.extra["dswhale_transport_failed"] is True
     assert event.extra["dswhale_transport_succeeded"] is False
+
+
+def delivery_companion(channel="official", mode="natural"):
+    value = companion(mode)
+    value.closed = False
+    value.pending = {}
+    transitions = []
+
+    value.store = SimpleNamespace(
+        activity=lambda activity_id: SimpleNamespace(
+            scope="synthetic:owner", status="queued", created=0
+        ),
+        transition=lambda activity_id, status, *args, **kwargs: transitions.append(
+            (activity_id, status)
+        ),
+    )
+    value.binding_by_scope = lambda scope: SimpleNamespace(channel=channel)
+    value.internal_id = lambda event: "synthetic-activity"
+    value.authorized = lambda event: True
+    value.allow_delivery = lambda event: True
+    value.delivered = lambda event: Companion.delivered(value, event)
+    return value, transitions
+
+
+async def test_official_guarded_success_stays_uncertain_without_fake_partial():
+    event = FakeEvent()
+    value, transitions = delivery_companion("official")
+    value._guard_transport(event)
+
+    delivered, error = await value._send_bubbles(event, ["甲", "乙"], (0, 0))
+
+    assert event.sent == [["甲"], ["乙"]]
+    assert delivered == 2
+    assert error is None
+    assert event.extra["dswhale_transport_succeeded"] is False
+    assert event.get_extra("dswhale_reply_partial") is None
+
+    value.delivered(event)
+    assert transitions == [("synthetic-activity", "uncertain")]
+
+
+async def test_napcat_guarded_success_is_recorded_as_sent():
+    event = FakeEvent()
+    value, transitions = delivery_companion("napcat")
+    value._guard_transport(event)
+
+    delivered, error = await value._send_bubbles(event, ["甲", "乙"], (0, 0))
+
+    assert delivered == 2
+    assert error is None
+    assert event.extra["dswhale_transport_succeeded"] is True
+    value.delivered(event)
+    assert transitions == [("synthetic-activity", "sent")]
+
+
+async def test_direct_official_deliver_reply_style_settles_uncertain():
+    event = FakeEvent(chain=[Plain("甲\n乙")])
+    value, transitions = delivery_companion("official")
+    value._guard_transport(event)
+
+    assert await value.deliver_reply_style(event) is True
+
+    assert event.sent == [["甲"], ["乙"]]
+    assert event.cleared is True
+    assert event.extra["dswhale_transport_succeeded"] is False
+    assert event.get_extra("dswhale_reply_partial") is None
+    assert transitions[-1] == ("synthetic-activity", "uncertain")
+
+
+async def test_timeout_mid_reply_is_partial_and_never_resent():
+    event = FakeEvent(chain=[Plain("甲\n乙\n丙")])
+    value = companion("natural")
+    original_send = event.send
+    calls = 0
+
+    async def timeout_on_second(chain):
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            raise TimeoutError("synthetic timeout")
+        return await original_send(chain)
+
+    event.send = timeout_on_second
+
+    assert await value.deliver_reply_style(event) is True
+    assert event.sent == [["甲"]]
+    assert event.extra["dswhale_reply_partial"] == {
+        "delivered": 1,
+        "error": "TimeoutError",
+    }
+    assert event.extra["dswhale_transport_failed"] is True
+    assert event.extra["dswhale_transport_succeeded"] is False
+    assert calls == 2  # no retry of the timed-out or remaining bubbles
+
+
+async def test_stream_timeout_is_partial_and_nothing_is_sent():
+    event = FakeEvent()
+    value = companion("natural")
+    received = []
+
+    async def original(generator, use_fallback):
+        received.extend([chunk async for chunk in generator])
+
+    async def stream():
+        yield SimpleNamespace(type="plain", chain=[Plain("甲")])
+        raise TimeoutError("synthetic stream timeout")
+
+    with pytest.raises(TimeoutError):
+        await value._style_stream(event, original, stream(), False)
+
+    assert event.sent == []
+    assert received == []
+    assert event.extra["dswhale_reply_partial"] == {
+        "delivered": 0,
+        "error": "TimeoutError",
+    }
+    assert event.extra["dswhale_transport_failed"] is True
+    assert event.extra["dswhale_delivered_called"] is True
+
+
+@pytest.mark.parametrize(
+    "mapping",
+    [
+        {"reply_style_max_bubbles": False},
+        {"reply_style_max_bubbles": 0},
+        {"reply_style_max_bubbles": ""},
+        {"reply_style_prompt": 0},
+        {"reply_style_prompt": ""},
+    ],
+)
+def test_old_install_attributes_reject_false_zero_and_empty(mapping):
+    with pytest.raises(ValueError):
+        Settings.from_mapping(mapping)
+
+
+def test_old_install_missing_keys_keep_inherit_defaults_without_side_effects():
+    settings = Settings.from_mapping({})
+
+    assert settings.reply_style_mode == "inherit"
+    assert settings.reply_style_max_bubbles == 3
+    assert settings.reply_style_interval == "0.8,1.5"
+    assert settings.reply_style_punctuation == "keep"
+    assert settings.reply_style_prompt is True
+    assert settings.reply_style_custom_regex == ""
+    assert settings.reply_style_custom_cleanup == ""
