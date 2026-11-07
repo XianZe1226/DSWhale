@@ -68,13 +68,28 @@ def test_normalization_does_not_depend_on_the_process_time_zone(monkeypatch):
 
     if not hasattr(time, "tzset"):
         pytest.skip("time.tzset is unavailable on this platform")
+
+    class TimeZoneIndependentPersonaService:
+        @staticmethod
+        def serialize_persona(persona, empty_lists_for_tools: bool = False) -> dict:
+            return {
+                "persona_id": "persona-tz",
+                "created_at": persona.created_at.isoformat() if persona.created_at else None,
+                "updated_at": persona.updated_at.isoformat() if persona.updated_at else None,
+            }
+
+    # Do not rely on another test having installed the shim: this test must pass
+    # on its own as well as in the full file.
+    assert install(TimeZoneIndependentPersonaService) is True
     original = os.environ.get("TZ")
     results = []
     try:
         for name in ("UTC", "Asia/Shanghai"):
             monkeypatch.setenv("TZ", name)
             time.tzset()
-            results.append(FakePersonaService.serialize_persona(FakePersona())["created_at"])
+            results.append(
+                TimeZoneIndependentPersonaService.serialize_persona(FakePersona())["created_at"]
+            )
     finally:
         if original is None:
             monkeypatch.delenv("TZ", raising=False)

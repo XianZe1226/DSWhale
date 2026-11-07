@@ -11,7 +11,7 @@ const path = require('node:path');
 const vm = require('node:vm');
 const { createRequire } = require('node:module');
 
-function harness({ backendRunning = true, qqRunning = true, backendReadyWait, startFails = false, hostQuery = null, extensionsRun = async () => ({}), contentSize = [1220, 850] } = {}) {
+function harness({ backendRunning = true, qqRunning = true, backendReadyWait, startFails = false, settingsFails = false, hostQuery = null, extensionsRun = async () => ({}), contentSize = [1220, 850] } = {}) {
   const file = path.resolve(__dirname, '../main.cjs'), native = createRequire(file);
   const events = [], snapshots = [], loadedURLs = [], views = [];
   const settingsState = { configRevision: 'abcdef12', defaultDelivery: 'napcat', napcatBound: true, officialBound: false, officialOwnerUMO: '' };
@@ -53,6 +53,7 @@ function harness({ backendRunning = true, qqRunning = true, backendReadyWait, st
   const fakeServices = {
     ...native('./lib/services.cjs'),
     settingsCommand: async (_manager, command, payload) => {
+      if (command === 'read' && settingsFails) throw Error('synthetic settings failure');
       if (command === 'save') {
         events.push('save-settings');
         const patch = payload && payload.patch && typeof payload.patch === 'object' ? payload.patch : payload;
@@ -216,6 +217,75 @@ test('T3-O1 spec: a stop in flight shows the pre-stop state and publishes no pro
   const final = await stop;
   assert.equal(final.running, false);
   assert.equal(final.startup.stage, 'stopped');
+});
+
+// ---------------------------------------------------------------------------
+// R1 — a warm start that fails in a readiness probe must not stop the host or
+// the QQ channel that was already running before the attempt.
+// ---------------------------------------------------------------------------
+test('R1 spec: a warm start whose extension probe fails keeps the existing host and QQ running', async () => {
+  const h = harness({
+    backendRunning: true,
+    qqRunning: true,
+    extensionsRun: async () => { throw Error('synthetic extension probe failure'); },
+    hostQuery: onlinePlatforms(),
+  });
+
+  await assert.rejects(h.perform('start'), /synthetic extension probe failure/);
+
+  assert.equal(h.getState().running, true, 'the pre-existing host is still reported as running');
+  assert.equal(h.supervisor.running, true);
+  assert.equal(h.napcat.running, true, 'the existing QQ login must not be stopped by a readiness failure');
+  assert.deepEqual(h.events, [], 'no component owned by this attempt was stopped');
+  assert.equal(h.getState().startup.stage, 'failed');
+
+  // The action fence is still released normally.
+  await h.perform('inspect');
+});
+
+test('R1 spec: a warm start whose settings read fails keeps the existing host and QQ running', async () => {
+  const h = harness({ backendRunning: true, qqRunning: true, settingsFails: true, hostQuery: onlinePlatforms() });
+
+  await assert.rejects(h.perform('start'), /synthetic settings failure/);
+
+  assert.equal(h.getState().running, true);
+  assert.equal(h.supervisor.running, true);
+  assert.equal(h.napcat.running, true);
+  assert.deepEqual(h.events, []);
+  assert.equal(h.getState().startup.stage, 'failed');
+  await h.perform('inspect');
+});
+
+test('R1 spec: a cold start that fails before launching the host cleans up nothing extra', async () => {
+  const h = harness({
+    backendRunning: false,
+    qqRunning: false,
+    extensionsRun: async () => { throw Error('synthetic extension probe failure'); },
+    hostQuery: onlinePlatforms(),
+  });
+
+  await assert.rejects(h.perform('start'), /synthetic extension probe failure/);
+
+  assert.equal(h.getState().running, false);
+  assert.equal(h.supervisor.running, false);
+  assert.equal(h.napcat.running, false);
+  assert.deepEqual(h.events, [], 'nothing was started, so there is nothing to unwind');
+  assert.equal(h.getState().startup.stage, 'failed');
+  // The failed attempt must not leak the action fence.
+  await h.perform('inspect');
+});
+
+test('R1 spec: a cold start that launched the host still unwinds that owned host', async () => {
+  const h = harness({ backendRunning: false, qqRunning: false, startFails: true, hostQuery: onlinePlatforms() });
+
+  await assert.rejects(h.perform('start'), /synthetic backend failure/);
+
+  assert.equal(h.getState().running, false);
+  assert.equal(h.supervisor.running, false);
+  assert.ok(h.events.includes('start-conversation'));
+  assert.ok(h.events.includes('stop-conversation'), 'the host launched by this attempt is stopped again');
+  assert.equal(h.getState().startup.stage, 'failed');
+  await h.perform('inspect');
 });
 
 // ---------------------------------------------------------------------------

@@ -145,3 +145,152 @@ test('T3-I4: dismissError clears the local error and retry metadata', async () =
   assert.equal(controller.get().error, '');
   assert.equal(controller.get().retry, null);
 });
+
+// ---------------------------------------------------------------------------
+// R2 — the global summary resolves both channels from enabled state and live
+// workspace health. The legacy qqConnectionMode may only break ties.
+// ---------------------------------------------------------------------------
+const liveNapcatChannel = { ...napcatChannel };
+const disabledNapcatChannel = {
+  ...napcatChannel,
+  platformEnabled: false, processRunning: false, loginState: 'stopped',
+  protocolConnected: false, health: 'disabled',
+};
+const liveOfficialChannel = {
+  ...officialChannel,
+  platformEnabled: true, configured: true, protocolConnected: true,
+  health: 'connected', loginState: 'official',
+};
+
+function liveOfficialState() {
+  return {
+    settings: {
+      qqConnectionMode: 'napcat', defaultDelivery: 'official', officialConfigured: true,
+      officialOwnerUMO: 'official-test:FriendMessage:owner', ownerQQ: '123456789',
+    },
+    state: { installed: true, running: true, platform: { id: 'win32-x64' }, setup: { qqConnectionMode: 'napcat', ownerConfigured: true, modelConfigured: true } },
+    workspace: {
+      napcat: { configured: true, externalOnly: false, running: false, loginState: 'stopped', protocolConnected: false },
+      official: { protocolConnected: true },
+    },
+    connections: { channels: [disabledNapcatChannel, liveOfficialChannel] },
+  };
+}
+
+test('R2: a live official channel is the global state even when the legacy mode still says napcat', () => {
+  const base = liveOfficialState();
+  for (const connectionTab of ['', 'official', 'napcat']) {
+    const summary = connectionSummary({ ...base, connectionTab });
+    assert.equal(summary.stage, 'ready', `tab ${connectionTab || '(none)'}: the live official channel is ready`);
+    assert.equal(summary.badge, 'QQ 已连接');
+    assert.equal(summary.globalChannel, 'official');
+    assert.notEqual(summary.action, 'connection-change', 'the global state must not offer to enable the disabled NapCat channel');
+  }
+  // The NapCat tab itself still reports its own disabled channel; that is local.
+  assert.equal(connectionViewModel({ ...base, connectionTab: 'napcat' }).stage, 'connection-disabled');
+});
+
+test('R2: a live napcat channel stays global when the official platform is disabled', () => {
+  const base = liveNapcatState();
+  base.settings.qqConnectionMode = 'official';
+  base.state.setup.qqConnectionMode = 'official';
+  base.connections.channels = [liveNapcatChannel, { ...officialChannel, platformEnabled: false, configured: true }];
+  base.workspace.official = { protocolConnected: false };
+
+  const summary = connectionSummary({ ...base, connectionTab: 'official' });
+  assert.equal(summary.stage, 'ready');
+  assert.equal(summary.badge, '已连接');
+  assert.equal(summary.globalChannel, 'napcat');
+  assert.equal(connectionViewModel({ ...base, connectionTab: 'official' }).stage, 'official-disabled');
+});
+
+test('R2: with both channels enabled, the healthy channel wins over one that still needs configuration', () => {
+  const base = liveOfficialState();
+  base.connections.channels = [
+    { ...napcatChannel, platformEnabled: true, processRunning: false, loginState: 'stopped', protocolConnected: false, health: 'offline' },
+    liveOfficialChannel,
+  ];
+  base.workspace.napcat = { configured: true, externalOnly: false, running: false, loginState: 'stopped', protocolConnected: false };
+
+  const summary = connectionSummary({ ...base, connectionTab: 'napcat' });
+  assert.equal(summary.stage, 'ready');
+  assert.equal(summary.badge, 'QQ 已连接');
+  assert.equal(summary.globalChannel, 'official', 'a healthy official channel must not be replaced by an enabled-but-offline small account');
+});
+
+test('R2: default delivery breaks a tie between two healthy channels, not the legacy mode', () => {
+  const base = liveOfficialState();
+  base.connections.channels = [liveNapcatChannel, liveOfficialChannel];
+  base.workspace.napcat = { configured: true, externalOnly: false, running: true, loginState: 'online', protocolConnected: true };
+
+  assert.equal(connectionSummary({ ...base, connectionTab: 'napcat' }).globalChannel, 'official');
+  base.settings.defaultDelivery = '';
+  assert.equal(connectionSummary({ ...base, connectionTab: 'official' }).globalChannel, 'napcat');
+});
+
+test('R2: stale snapshot flags never report a stopped channel as online', () => {
+  const base = liveOfficialState();
+  // The connection snapshot still says napcat is connected, but the current
+  // workspace says its process/protocol are down.
+  base.connections.channels[0] = { ...napcatChannel, platformEnabled: true, protocolConnected: true, health: 'connected' };
+  base.workspace.napcat = { configured: true, externalOnly: false, running: false, loginState: 'stopped', protocolConnected: false };
+
+  const summary = connectionSummary({ ...base, connectionTab: 'napcat' });
+  assert.equal(summary.stage, 'ready');
+  assert.equal(summary.globalChannel, 'official', 'the live official channel is preferred to a stale napcat snapshot');
+
+  base.workspace.official = { protocolConnected: false };
+  const staleOfficial = connectionSummary({ ...base, connectionTab: 'official' });
+  assert.notEqual(staleOfficial.stage, 'ready', 'a disconnected official channel must not claim readiness');
+  assert.notEqual(staleOfficial.badge, 'QQ 已连接');
+});
+
+// ---------------------------------------------------------------------------
+// R3 — a main-process fault that clears and later recurs with the same text is
+// a new failure and must be visible again (tray starts never call act()).
+// ---------------------------------------------------------------------------
+test('R3: a cleared main-process fault re-arms the same-text dismissal', async () => {
+  let push;
+  const bridge = {
+    invoke: async action => (action === 'connections-status' ? { connections: {} } : {}),
+    onState(callback) { push = callback; return () => {}; },
+  };
+  const controller = createController({ bridge });
+  await controller.init();
+  const fault = '启动未完成，请打开窗口查看体检结果';
+  const visible = () => {
+    const current = controller.get();
+    const raw = current.error || current.state.error;
+    return raw && raw !== current.dismissedError ? raw : '';
+  };
+
+  push({ error: fault });
+  assert.equal(visible(), fault);
+  controller.dismissError();
+  assert.equal(visible(), '');
+
+  // main.cjs startServices publishes error:undefined before a tray retry.
+  push({ error: undefined, startup: { stage: 'starting-conversation' } });
+  assert.equal(controller.get().dismissedError, '', 'an explicit error clear ends the old dismissal');
+
+  push({ error: fault, startup: { stage: 'failed' } });
+  assert.equal(controller.get().state.error, fault);
+  assert.equal(visible(), fault, 'the same text after an actual clear is a new fault');
+});
+
+test('R3: an ordinary snapshot without an error field keeps the dismissal', async () => {
+  let push;
+  const bridge = {
+    invoke: async action => (action === 'connections-status' ? { connections: {} } : {}),
+    onState(callback) { push = callback; return () => {}; },
+  };
+  const controller = createController({ bridge });
+  await controller.init();
+  const fault = '启动未完成，请打开窗口查看体检结果';
+  push({ error: fault });
+  controller.dismissError();
+
+  push({ running: true, startup: { stage: 'checking-qq' } });
+  assert.equal(controller.get().dismissedError, fault, 'an update that does not mention error keeps the dismissal');
+  assert.equal(controller.get().state.error, fault, 'nor does it clear the real fault');
+});

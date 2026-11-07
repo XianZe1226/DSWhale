@@ -108,6 +108,51 @@ function officialUnconfiguredSnapshot() {
   });
 }
 
+// Official-only: the official robot is enabled, configured, bound and live while
+// the small account is explicitly disabled. The legacy qqConnectionMode still
+// says "napcat" because disabling a channel does not rewrite that field.
+function officialOnlySnapshot() {
+  return createRequire(path.join(__dirname, '../main.cjs'))('./lib/qq-connections.cjs').snapshot({
+    revision: 'rev-3', running: true, defaultDelivery: 'official',
+    platforms: [
+      { id: 'qq', type: 'aiocqhttp', enable: false, configured: true },
+      { id: 'official-test', type: 'qq_official', enable: true, configured: true },
+    ],
+    bindings: { napcat: true, official: true },
+    napcat: { running: false, loginState: 'stopped' },
+    health: { channels: {
+      napcat: { state: 'disabled', platformReady: false, protocolConnected: false },
+      official: { state: 'connected', platformReady: true, protocolConnected: true },
+    } },
+  });
+}
+
+// Small-only: napcat is live; the official platform is explicitly disabled.
+function smallOnlySnapshot() {
+  return createRequire(path.join(__dirname, '../main.cjs'))('./lib/qq-connections.cjs').snapshot({
+    revision: 'rev-4', running: true, defaultDelivery: 'napcat',
+    platforms: [
+      { id: 'qq', type: 'aiocqhttp', enable: true, configured: true },
+      { id: 'official-test', type: 'qq_official', enable: false, configured: true },
+    ],
+    bindings: { napcat: true, official: true },
+    napcat: { running: true, loginState: 'online' },
+    health: { channels: {
+      napcat: { state: 'connected', platformReady: true, protocolConnected: true },
+      official: { state: 'disabled', platformReady: false, protocolConnected: false },
+    } },
+  });
+}
+
+const officialOnlyWorkspace = () => workspaceStatus({
+  napcat: { supported: true, configured: true, needsLogin: false, connectionConfigured: true, running: false, externalOnly: false, loginState: 'stopped', protocolConnected: false },
+  official: { protocolConnected: true },
+});
+const smallOnlyWorkspace = () => workspaceStatus({
+  napcat: { supported: true, configured: true, needsLogin: false, connectionConfigured: true, running: true, externalOnly: false, loginState: 'online', protocolConnected: true },
+  official: { protocolConnected: false },
+});
+
 const connectInvoke = (connections, settings = {}) => async (action, payload) => {
   if (action === 'inspect') return { installed: true, running: true, platform: { id: 'win32-x64', supported: true }, setup: { ownerConfigured: true, modelConfigured: true, qqConnectionMode: 'napcat' } };
   if (action === 'connections-status') return { connections };
@@ -286,4 +331,100 @@ test('T3-I2 spec: the overview timeline and primary action ignore a locally sele
   assert.match(hero, /已建立连接/, 'the timeline reports the global NapCat message connection');
   assert.doesNotMatch(hero, /创建或连接 QQ 官方机器人|配置官方机器人|官方接口|等待完成配置/, 'neither the timeline nor the primary action may fall back to the official tab state');
   assert.match(hero, /停止对话服务/, 'the global service control remains available next to the global connection state');
+});
+
+// ---------------------------------------------------------------------------
+// R2 — the global summary resolves the enabled, live channel. A stale legacy
+// mode or a disabled channel must not replace the channel that is actually up.
+// ---------------------------------------------------------------------------
+test('R2 spec: an official-only live connection drives the overview, sidebar and connect hero', async () => {
+  const connections = officialOnlySnapshot();
+  const settings = {
+    qqConnectionMode: 'napcat', officialConfigured: true, defaultDelivery: 'official',
+    officialOwnerUMO: 'official-test:FriendMessage:owner', napcatBound: true, officialBound: true,
+  };
+  // Visit connect first so settings and the connection snapshot are loaded, as
+  // they are in the real navigation flow before the overview is shown.
+  const app = renderApp({ screen: 'connect', invoke: connectInvoke(connections, settings), workspace: officialOnlyWorkspace() });
+  for (let i = 0; i < 8; i += 1) await app.settle();
+  await app.clickRoute('overview');
+  await app.settle();
+
+  const sidebar = () => app.html().match(/<div class="sidebar-service">[\s\S]*?<\/div><\/div>/)?.[0] || '';
+  const sidebarLabel = () => (sidebar().match(/<strong>([^<]*)<\/strong>/) || [])[1] || '';
+  const hero = () => app.html().match(/<section class="hero"[\s\S]*?<\/section>/)?.[0] || '';
+
+  assert.match(sidebarLabel(), /已连接/, 'the sidebar reports the live official connection');
+  assert.match(hero(), /QQ 已连接/, 'the overview hero badge reports the live official connection');
+  assert.match(hero(), /网关已连接/, 'the overview timeline reports the official gateway');
+  assert.match(hero(), /停止对话服务/, 'the global service control remains available');
+  assert.doesNotMatch(hero(), /先启用 QQ 小号连接|data-channel="napcat" data-enabled="1"/, 'no global action asks to enable the disabled small account');
+
+  await app.clickRoute('connect');
+  await app.settle();
+  assert.match(hero(), /QQ 官方机器人已连接/, 'the connect hero uses the same global state');
+  assert.doesNotMatch(hero(), /先启用 QQ 小号连接|data-channel="napcat" data-enabled="1"/, 'the connect hero must not offer the disabled channel');
+
+  const before = sidebarLabel();
+  app.selectMode('napcat');
+  await app.settle();
+  assert.equal(sidebarLabel(), before, 'viewing the disabled tab must not rewrite the sidebar');
+  assert.match(hero(), /QQ 官方机器人已连接/, 'viewing the disabled tab must not rewrite the connect hero');
+});
+
+test('R2 spec: a live small account stays global while the official platform is disabled', async () => {
+  const connections = smallOnlySnapshot();
+  const settings = { qqConnectionMode: 'official', officialConfigured: false, defaultDelivery: 'napcat', napcatBound: true, officialBound: true };
+  const app = renderApp({ screen: 'connect', invoke: connectInvoke(connections, settings), workspace: smallOnlyWorkspace() });
+  for (let i = 0; i < 8; i += 1) await app.settle();
+  await app.clickRoute('overview');
+  await app.settle();
+
+  const sidebar = () => app.html().match(/<div class="sidebar-service">[\s\S]*?<\/div><\/div>/)?.[0] || '';
+  const sidebarLabel = () => (sidebar().match(/<strong>([^<]*)<\/strong>/) || [])[1] || '';
+  const hero = () => app.html().match(/<section class="hero"[\s\S]*?<\/section>/)?.[0] || '';
+
+  assert.match(sidebarLabel(), /已连接/);
+  assert.match(hero(), /已连接/);
+  assert.match(hero(), /已建立连接/);
+  assert.doesNotMatch(hero(), /创建或连接 QQ 官方机器人|配置官方机器人/, 'the overview must not fall back to the disabled official tab');
+
+  await app.clickRoute('connect');
+  await app.settle();
+  assert.doesNotMatch(hero(), /创建或连接 QQ 官方机器人|配置官方机器人/, 'the connect hero keeps the live small account');
+  assert.match(hero(), /QQ 已连接/);
+});
+
+// ---------------------------------------------------------------------------
+// R3 — the main process can clear and republish the same failure text without
+// any renderer act(); that is a new fault and must be visible again.
+// ---------------------------------------------------------------------------
+test('R3 spec: a tray-style fault that clears and recurs with the same text is shown again', async () => {
+  const app = renderApp({ screen: 'connect', invoke: connectInvoke(soleConnectionSnapshot()) });
+  await app.settle();
+  const fault = '启动未完成，请打开窗口查看体检结果';
+
+  app.pushState({ error: fault });
+  await app.settle();
+  assert.match(app.html(), /启动未完成/);
+
+  app.clickAction('dismiss-error');
+  await app.settle();
+  assert.doesNotMatch(app.html(), /启动未完成/, 'the dismissed banner stays hidden');
+
+  // Exact sequence of a tray retry: startServices clears error, then the tray
+  // catch publishes the same failure text for a genuinely new attempt.
+  app.pushState({ error: undefined, startup: { stage: 'starting-conversation' } });
+  await app.settle();
+  app.pushState({ error: fault, startup: { stage: 'failed' } });
+  await app.settle();
+
+  assert.match(app.html(), /启动未完成/, 'the new failure after an actual clear is visible again');
+  assert.match(app.html(), /data-action="dismiss-error"/);
+
+  app.clickAction('dismiss-error');
+  await app.settle();
+  app.pushState({ running: false, startup: { stage: 'checking-qq' } });
+  await app.settle();
+  assert.doesNotMatch(app.html(), /启动未完成/, 'an ordinary snapshot without an error field keeps the dismissal');
 });

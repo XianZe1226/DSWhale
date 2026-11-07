@@ -157,17 +157,46 @@
     return view('unknown', '暂时无法确认 QQ 状态', 'QQ 组件仍在运行。可以打开管理页查看，无需重新准备环境。', '等待确认', '', 'open-panel', '打开 QQ 管理');
   }
   function connectionSummary(data) {
-    // The sidebar and the overview describe the whole app, not the tab the user is
-    // inspecting. connectionViewModel intentionally follows connectionTab; this
-    // summary ignores it so opening an unconfigured channel's tab never rewrites
-    // the global badge or hides a live connection.
+    // The sidebar, overview and connect hero describe the whole app, not the tab
+    // the user is inspecting. connectionViewModel intentionally follows
+    // connectionTab; this summary ignores it and resolves both channels from
+    // their enabled state plus live workspace health. The legacy
+    // qqConnectionMode only breaks ties (default delivery first), never decides
+    // whether an enabled, live channel is reported as the global state.
     const base = connectionViewModel({ ...data, connectionTab: '' });
-    const state = data.state || {};
-    if (!state.installed || !state.running || base.tone === 'working' || base.tone === 'good') return { ...base, globalChannel: '' };
-    const live = (data.connections?.channels || []).find(entry =>
-      entry.channel === 'napcat' && entry.platformEnabled !== false && (entry.protocolConnected === true || entry.health === 'connected'));
-    if (live) return { ...connectionViewModel({ ...data, connectionTab: 'napcat' }), globalChannel: 'napcat' };
-    return { ...base, globalChannel: '' };
+    const state = data.state || {}, settings = data.settings || {};
+    const configuredMode = settings.qqConnectionMode || state.qqConnectionMode || state.setup?.qqConnectionMode || 'napcat';
+    const entries = data.connections?.channels || [];
+    const entryFor = channel => entries.find(entry => entry && entry.channel === channel);
+    const enabled = channel => {
+      const entry = entryFor(channel);
+      if (entry) return entry.platformEnabled !== false;
+      // A loaded snapshot that does not list the channel proves it unavailable;
+      // only before the first snapshot may settings stand in for it.
+      if (entries.length) return false;
+      if (channel === 'official') return settings.officialConfigured === true && Boolean(settings.officialOwnerUMO || state.setup?.ownerConfigured);
+      return true;
+    };
+    // Only live, current workspace evidence can claim a connected channel. A
+    // connection snapshot may be older than the last workspace refresh, so its
+    // protocol flags are intentionally not used here.
+    const live = channel => channel === 'official'
+      ? data.workspace?.official?.protocolConnected === true
+      : data.workspace?.napcat?.protocolConnected === true;
+    const unverified = view => view.tone === 'good'
+      ? { ...view, stage: 'checking', title: '正在确认连接状态', description: '正在读取实时连接状态；确认前不会显示为已连接。', badge: '检查中', tone: 'working', action: 'connections-status', actionLabel: '刷新连接状态', panel: undefined }
+      : view;
+    if (!state.installed || !state.running || base.tone === 'working' || ['environment', 'recovery'].includes(base.stage)) return { ...unverified(base), globalChannel: '' };
+    const candidates = ['napcat', 'official'].map(channel => {
+      const view = connectionViewModel({ ...data, connectionTab: channel });
+      return { channel, enabled: enabled(channel), healthy: enabled(channel) && live(channel) && view.tone === 'good', view };
+    });
+    const preferred = [settings.defaultDelivery, configuredMode].filter(channel => channel === 'napcat' || channel === 'official');
+    const healthy = preferred.map(channel => candidates.find(item => item.channel === channel && item.healthy)).find(Boolean) || candidates.find(item => item.healthy);
+    if (healthy) return { ...healthy.view, globalChannel: healthy.channel };
+    const firstEnabled = preferred.map(channel => candidates.find(item => item.channel === channel && item.enabled)).find(Boolean) || candidates.find(item => item.enabled);
+    if (firstEnabled) return { ...unverified(firstEnabled.view), globalChannel: '' };
+    return { ...unverified(base), globalChannel: '' };
   }
   function normalizeError(error) {
     // Electron prefixes every rejected ipcRenderer.invoke() with the channel name
@@ -195,6 +224,11 @@
       const {workspace,appUpdate,connections,...state}=next;if(workspace)mergeWorkspace(workspace);
       if(Object.hasOwn(next,'appUpdate'))mergeWorkspace({appUpdate});
       if(Object.hasOwn(next,'connections'))data.connections=connections||null;
+      // A dismissal only suppresses the failure that was on screen. When main
+      // explicitly clears error in a later snapshot, the old fault is over; a new
+      // failure with the same text must be shown again. Snapshots that simply do
+      // not mention error are ordinary updates and keep the dismissal.
+      if (Object.hasOwn(next, 'error') && (next.error === undefined || next.error === null || next.error === '')) data.dismissedError = '';
       data.state = { ...data.state, ...state, platform: { ...data.state.platform, ...state.platform }, setup: { ...data.state.setup, ...state.setup } };
     }
     if (!available && preview) {

@@ -377,6 +377,9 @@ async function startServices() {
   // and the settings read can take several seconds, and the renderer must show
   // what the main process is actually doing during that window.
   const reuseQQ = napcat?.running;
+  const hostWasRunning = supervisor.running === true;
+  let startAttempted = false;
+  let napcatStartedHere = false;
   startupInProgress = true;
   publish({ startup: { stage: supervisor.running ? 'checking-qq' : 'starting-conversation' }, error: undefined });
   let connectionSettings = null;
@@ -387,6 +390,7 @@ async function startServices() {
     // The legacy mode is published only for compatibility; startup, health and
     // delivery below are decided per channel/platform, never by this value.
     publish({ qqConnectionMode: connectionSettings.qqConnectionMode === 'official' ? 'official' : 'napcat' });
+    startAttempted = true;
     await supervisor.start();
     stillOpen();
     publish({ running: true, startup: { stage: 'checking-qq' } });
@@ -399,6 +403,7 @@ async function startServices() {
         publish({ startup: { stage: napcat.running ? 'reusing-qq' : 'starting-qq' } });
         if (!napcat.running) await napcat.configure();
         stillOpen();
+        napcatStartedHere = true;
         publishQQ(await napcat.start(), true, 'napcat');
         stillOpen();
       } else publishQQ(configured, true, 'napcat');
@@ -406,9 +411,12 @@ async function startServices() {
     publishQQ(await officialHealthStatus(Boolean(officialTarget?.enable)), false, 'official'); stillOpen();
     return await refresh();
   } catch (error) {
-    if (!reuseQQ && connectionSettings && await napcatPlatformEnabled(connectionSettings).catch(() => false)) await napcat?.stop();
-    if (typeof supervisor.stop === 'function') await supervisor.stop();
-    publish({ running: false, startup: { stage: 'failed' } });
+    if (!reuseQQ && napcatStartedHere && connectionSettings && await napcatPlatformEnabled(connectionSettings).catch(() => false)) await napcat?.stop();
+    // Only unwind what this invocation actually owns. A readiness probe can fail
+    // before supervisor.start(); a warm start must leave the already-running
+    // host (and any existing QQ login) untouched, and must report the real state.
+    if (startAttempted && !hostWasRunning && typeof supervisor.stop === 'function') await supervisor.stop();
+    publish({ running: Boolean(supervisor.running), startup: { stage: 'failed' } });
     throw error;
   } finally { startupInProgress = false; }
 }
