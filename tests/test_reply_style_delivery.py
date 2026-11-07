@@ -459,6 +459,49 @@ async def test_direct_official_deliver_reply_style_settles_uncertain():
     assert transitions[-1] == ("synthetic-activity", "uncertain")
 
 
+async def test_unguarded_official_deliver_reply_style_is_uncertain():
+    event = FakeEvent(chain=[Plain("甲\n乙")])
+    value, transitions = delivery_companion("official")
+
+    assert await value.deliver_reply_style(event) is True
+
+    assert event.get_extra("dswhale_transport_guarded") is None
+    assert event.sent == [["甲"], ["乙"]]
+    assert event.cleared is True
+    assert event.extra["dswhale_transport_succeeded"] is False
+    assert event.get_extra("dswhale_reply_partial") is None
+    assert transitions[-1] == ("synthetic-activity", "uncertain")
+
+
+async def test_unguarded_napcat_deliver_reply_style_is_sent():
+    event = FakeEvent(chain=[Plain("甲\n乙")])
+    value, transitions = delivery_companion("napcat")
+
+    assert await value.deliver_reply_style(event) is True
+
+    assert event.get_extra("dswhale_transport_guarded") is None
+    assert event.sent == [["甲"], ["乙"]]
+    assert event.extra["dswhale_transport_succeeded"] is True
+    assert event.get_extra("dswhale_reply_partial") is None
+    assert transitions[-1] == ("synthetic-activity", "sent")
+
+
+async def test_unguarded_official_streaming_success_is_uncertain():
+    event = FakeEvent()
+    value, transitions = delivery_companion("official")
+
+    async def stream():
+        yield SimpleNamespace(type="plain", chain=[Plain("甲\n乙")])
+
+    await value._style_stream(event, None, stream(), False)
+
+    assert event.get_extra("dswhale_transport_guarded") is None
+    assert event.sent == [["甲"], ["乙"]]
+    assert event.extra["dswhale_transport_succeeded"] is False
+    assert event.get_extra("dswhale_reply_partial") is None
+    assert transitions[-1] == ("synthetic-activity", "uncertain")
+
+
 async def test_timeout_mid_reply_is_partial_and_never_resent():
     event = FakeEvent(chain=[Plain("甲\n乙\n丙")])
     value = companion("natural")
@@ -520,9 +563,35 @@ async def test_stream_timeout_is_partial_and_nothing_is_sent():
         {"reply_style_prompt": ""},
     ],
 )
-def test_old_install_attributes_reject_false_zero_and_empty(mapping):
+def test_reply_style_values_reject_false_zero_and_empty(mapping):
     with pytest.raises(ValueError):
         Settings.from_mapping(mapping)
+
+
+def test_legacy_mapping_keeps_inherit_defaults_without_writes(tmp_path, monkeypatch):
+    mapping = {
+        "owner_qq": "123456789",
+        "persona": "合成测试人格，不是真实用户数据",
+        "proactive_enabled": False,
+        "qq_connection_mode": "napcat",
+        "qq_default_delivery": "napcat",
+        "dashboard_port": 6185,
+    }
+    before = dict(mapping)
+    monkeypatch.chdir(tmp_path)
+
+    settings = Settings.from_mapping(mapping)
+
+    assert settings.reply_style_mode == "inherit"
+    assert settings.reply_style_max_bubbles == 3
+    assert settings.reply_style_interval == "0.8,1.5"
+    assert settings.reply_style_punctuation == "keep"
+    assert settings.reply_style_prompt is True
+    assert settings.reply_style_custom_regex == ""
+    assert settings.reply_style_custom_cleanup == ""
+    assert settings.persona == before["persona"]
+    assert mapping == before
+    assert list(tmp_path.iterdir()) == []
 
 
 def test_old_install_missing_keys_keep_inherit_defaults_without_side_effects():

@@ -289,6 +289,29 @@ class Companion:
                 instructions += "\n" + hint
         request.system_prompt = (request.system_prompt or "") + "\n" + instructions
 
+    def _reply_style_channel(self, event):
+        """Resolve the channel that owns this reply, without trusting a marker.
+
+        Ordinary (unguarded) chat never passes through ``_guard_transport``, so
+        delivery accounting must get the channel from the binding itself. The
+        official API only acknowledges routing; it cannot prove a user received
+        the message, so that channel must stay uncertain on every path.
+        """
+        candidates = (
+            lambda: self.binding_for(event),
+            lambda: self.binding_by_scope(getattr(event, "unified_msg_origin", "")),
+            lambda: getattr(self.settings, "delivery_binding", None),
+        )
+        for resolve in candidates:
+            try:
+                binding = resolve()
+            except Exception:
+                continue
+            channel = getattr(binding, "channel", "")
+            if channel in {"napcat", "official"}:
+                return channel
+        return ""
+
     def reply_style_plan(self, text, event=None):
         """Plan bubbles with the same pure function used by desktop preview."""
         low, high = parse_interval(self.settings.reply_style_interval)
@@ -347,11 +370,21 @@ class Companion:
                 return delivered, error
             delivered += 1
         if delivered:
-            # A guard may have explicitly recorded an uncertain official send.
-            # Only unwrapped (human) sends default to success; guarded sends keep
-            # the marker the transport actually observed.
-            if not event.get_extra("dswhale_transport_guarded"):
-                event.set_extra("dswhale_transport_succeeded", True)
+            # The official API only acknowledges routing, so it can never be a
+            # confirmed delivery — with or without a transport guard. Unknown
+            # channels are conservative too; only a resolved NapCat send is
+            # confirmed by the plugin itself without a guard marker.
+            channel = event.get_extra("dswhale_delivery_channel")
+            guarded = event.get_extra("dswhale_transport_guarded")
+            if channel == "napcat":
+                if not guarded:
+                    event.set_extra("dswhale_transport_succeeded", True)
+            elif channel == "official":
+                event.set_extra("dswhale_transport_succeeded", False)
+            elif not guarded:
+                # No resolvable binding and no guard observation: never claim
+                # a confirmed send.
+                event.set_extra("dswhale_transport_succeeded", False)
             event.set_extra("dswhale_transport_failed", False)
             event.set_extra("dswhale_reply_partial", None)
         return delivered, None
@@ -367,6 +400,7 @@ class Companion:
             return False
         if event.get_extra("_dswhale_stream_owned"):
             return False
+        event.set_extra("dswhale_delivery_channel", self._reply_style_channel(event))
         fallback = await self._style_fallback_reason(event)
         if fallback:
             event.set_extra("dswhale_style_fallback", fallback)
@@ -400,6 +434,7 @@ class Companion:
 
     async def _style_stream(self, event, original, generator, use_fallback=False):
         """Own a streaming reply: collect text, clean once, plan once, send."""
+        event.set_extra("dswhale_delivery_channel", self._reply_style_channel(event))
         fallback = await self._style_fallback_reason(event)
         if fallback:
             event.set_extra("dswhale_style_fallback", fallback)
