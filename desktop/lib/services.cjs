@@ -208,4 +208,23 @@ async function settingsCommand(manager, action, payload) {
   });
 }
 
-module.exports = { ServiceSupervisor, settingsCommand, dashboardURL, portFree, portOpen, preflightPorts, PortConflictError, readQQConnectionHealth, readConnectionHealth };
+async function replyStylePreview(manager, payload) {
+  const environment = await manager.environment();
+  return new Promise((resolve, reject) => {
+    const child = spawn(manager.python, ['-m', 'dswhale.reply_style', 'preview'], { cwd: manager.host, env: environment, windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] });
+    let output = '', tooLarge = false;
+    const timer = setTimeout(() => child.kill(), 15000);
+    child.stdout.on('data', value => { output += value.toString('utf8'); if (output.length > 65536) { tooLarge = true; child.kill(); } });
+    child.stderr.resume();
+    child.on('error', () => { clearTimeout(timer); reject(new Error('请先准备运行环境')); });
+    child.on('close', code => {
+      clearTimeout(timer);
+      try { const value = JSON.parse(output); if (code || tooLarge || value.error) throw new Error(); resolve(value); }
+      catch { reject(new Error('预览未完成，请检查自定义规则后重试')); }
+    });
+    child.stdin.on('error', () => {});
+    child.stdin.end(JSON.stringify(payload));
+  });
+}
+
+module.exports = { ServiceSupervisor, settingsCommand, replyStylePreview, dashboardURL, portFree, portOpen, preflightPorts, PortConflictError, readQQConnectionHealth, readConnectionHealth };

@@ -482,7 +482,7 @@ test('plugin cards read local status, escape version text and wait for an explic
   status.memory.version = '<img src=x>';
   const app = renderApp({ invoke: async action => action === 'inspect' ? { installed: true, running: true } : status });
   await app.settle();
-  assert.deepEqual(app.calls, [['inspect', undefined], ['workspace-status', undefined], ['extensions-status', undefined]]);
+  assert.deepEqual(app.calls, [['inspect', undefined], ['workspace-status', undefined], ['settings-get', undefined], ['extensions-status', undefined]]);
   assert.match(app.html(), /LivingMemory/);
   assert.match(app.html(), /表情包管理器/);
   assert.match(app.html(), /&lt;img src=x&gt;/);

@@ -6,6 +6,9 @@ from datetime import datetime
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from . import qq_routing
+from .reply_style import MODES as REPLY_STYLE_MODES
+from .reply_style import PUNCTUATION as REPLY_STYLE_PUNCTUATION
+from .reply_style import parse_interval, validate_custom
 
 
 @dataclass(frozen=True)
@@ -35,6 +38,13 @@ class Settings:
     media_timeout_seconds: int = 180
     cookies_path: str = ""
     persona: str = ""
+    reply_style_mode: str = "inherit"
+    reply_style_max_bubbles: int = 3
+    reply_style_interval: str = "0.8,1.5"
+    reply_style_punctuation: str = "keep"
+    reply_style_prompt: bool = True
+    reply_style_custom_regex: str = ""
+    reply_style_custom_cleanup: str = ""
     bili_enabled: bool = False
     bili_node_path: str = ""
     bili_allow_dm: bool = False
@@ -112,6 +122,21 @@ class Settings:
             raise ValueError("开启主动聊天前请先配置主人 QQ 和私聊 /sid")
         if self.bili_enabled and not self.owner_scope:
             raise ValueError("开启 B站整合前请先配置主人 QQ 和私聊 /sid")
+        if self.reply_style_mode not in REPLY_STYLE_MODES:
+            raise ValueError("回复方式无效")
+        if isinstance(self.reply_style_max_bubbles, bool) or not (
+            0 <= self.reply_style_max_bubbles
+        ):
+            raise ValueError("目标条数必须是 1–3 的整数")
+        if not 1 <= self.reply_style_max_bubbles <= 3:
+            raise ValueError("目标条数应在 1–3 之间")
+        parse_interval(self.reply_style_interval)
+        if self.reply_style_punctuation not in REPLY_STYLE_PUNCTUATION:
+            raise ValueError("标点处理方式无效")
+        if not isinstance(self.reply_style_prompt, bool):
+            raise ValueError("排版提示开关无效")
+        validate_custom(self.reply_style_custom_regex, "自定义拆分规则")
+        validate_custom(self.reply_style_custom_cleanup, "自定义清理规则")
 
     @staticmethod
     def _minutes(value: str) -> int:

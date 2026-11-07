@@ -7,7 +7,7 @@ const { spawn } = require('node:child_process');
 const crypto = require('node:crypto');
 const { RuntimeManager, SetupError, runBounded } = require('./lib/runtime.cjs');
 const { validateRequest, permittedNavigation, biliURL, consolePopupTarget } = require('./lib/security.cjs');
-const { ServiceSupervisor, settingsCommand, portOpen, readQQConnectionHealth, readConnectionHealth } = require('./lib/services.cjs');
+const { ServiceSupervisor, settingsCommand, replyStylePreview, portOpen, readQQConnectionHealth, readConnectionHealth } = require('./lib/services.cjs');
 const { ExtensionRunner, runExtensionAction } = require('./lib/extensions.cjs');
 const { Operations } = require('./lib/operations.cjs');
 const { Workspace, WORKSPACE_ACTIONS } = require('./lib/workspace.cjs');
@@ -28,8 +28,8 @@ let operations, appUpdater, updateScheduler, napcat, workspace, preferenceStore,
 let window, panelView, panelKey = '', panelGeneration = 0, panelAttached = false, manager, supervisor, extensions, quitting = false, shutdownRequested = false, activeAction, startupInProgress = false, startupOperation, externalConnectionMonitor;
 const activeCommands = new Set();
 const statusCache = new StatusCache({ ttl: 2500 });
-const READ_ONLY_ACTIONS = new Set(['inspect', 'home', 'settings-get', 'workspace-status', 'backup-list', 'extensions-status', 'connections-status', 'settings-history']);
-const CONCURRENT_READ_ACTIONS = new Set(['settings-get', 'workspace-status', 'backup-list', 'connections-status', 'settings-history']);
+const READ_ONLY_ACTIONS = new Set(['inspect', 'home', 'settings-get', 'workspace-status', 'backup-list', 'extensions-status', 'connections-status', 'settings-history', 'reply-style-preview']);
+const CONCURRENT_READ_ACTIONS = new Set(['settings-get', 'workspace-status', 'backup-list', 'connections-status', 'settings-history', 'reply-style-preview']);
 let state = { version: app.getVersion(), platform: { id: '', label: '本机', supported: true, detail: '' }, phase: 'idle', installed: false, running: false, components: [], setup: { ownerConfigured: false, qqConfigured: false, modelConfigured: false, memoryConfigured: false, biliEnabled: false } };
 function publish(patch = {}) { state = { ...state, ...patch }; if (window && !window.isDestroyed()) window.webContents.send('dswhale:state', state); return state; }
 function platformTarget(platforms, type, boundId) {
@@ -463,6 +463,10 @@ async function perform(action, payload) {
   if (action === 'inspect') return activeAction ? state : refresh();
   if (action === 'home') { hidePanel(); return state; }
   if (action === 'settings-get') return cachedRead('settings', () => settingsCommand(manager, 'read'));
+  if (action === 'reply-style-preview') {
+    if (!payload || typeof payload.text !== 'string' || payload.text.length > 8192) throw new UserActionError('预览文本不能超过 8192 个字符');
+    return await replyStylePreview(manager, payload);
+  }
   if (action === 'settings-history') { if (!state.installed) throw new UserActionError('请先准备运行环境'); return cachedRead('settings-history', () => settingsCommand(manager, 'history')); }
   const concurrentRead = CONCURRENT_READ_ACTIONS.has(action);
   if (activeAction) throw new UserActionError('当前操作尚未完成，请稍候');

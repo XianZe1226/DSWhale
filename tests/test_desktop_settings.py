@@ -693,3 +693,41 @@ def test_restore_platform_id_keeps_bound_instance_and_owner_consistent(tmp_path)
     config = json.loads((host / "data/cmd_config.json").read_text(encoding="utf-8"))
     onebot = [item for item in config["platform"] if item.get("type") == "aiocqhttp"]
     assert [item["id"] for item in onebot] == ["old-qq"]
+
+
+def test_reply_style_defaults_migrate_without_writing_and_save_independently(tmp_path):
+    from dswhale.desktop_settings import read_settings, save_settings
+
+    host = host_files(tmp_path)
+    fish_path = host / "data/config/astrbot_plugin_dswhale_config.json"
+    before_bytes = fish_path.read_bytes()
+    before = read_settings(host)
+    assert before["replyStyleMode"] == "inherit"
+    assert before["replyStyleMaxBubbles"] == 3
+    assert before["replyStylePunctuation"] == "keep"
+    assert before["persona"] == "a custom private persona"
+    # Reading an old install reports the defaults but never writes them.
+    assert fish_path.read_bytes() == before_bytes
+    # A desktop save of the loaded defaults is short-circuited by the main
+    # process before save_settings; a real change is written independently.
+    save_settings(
+        host,
+        {
+            "replyStyleMode": "natural",
+            "replyStyleMaxBubbles": 2,
+            "replyStyleInterval": "1,2",
+            "replyStylePunctuation": "sentence_end",
+            "replyStylePrompt": False,
+        },
+    )
+    fish = json.loads(fish_path.read_text(encoding="utf-8"))
+    assert fish["reply_style_mode"] == "natural"
+    assert fish["reply_style_max_bubbles"] == 2
+    assert fish["reply_style_interval"] == "1,2"
+    assert fish["reply_style_punctuation"] == "sentence_end"
+    assert fish["reply_style_prompt"] is False
+    assert fish["persona"] == "a custom private persona"
+    with pytest.raises(ValueError):
+        save_settings(host, {"replyStyleInterval": "2,1"})
+    with pytest.raises(ValueError):
+        save_settings(host, {"replyStyleCustomRegex": "(x)"})

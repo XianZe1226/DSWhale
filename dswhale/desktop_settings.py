@@ -38,6 +38,13 @@ FIELDS = {
     "signatureEnabled",
     "qzoneEnabled",
     "defaultDelivery",
+    "replyStyleMode",
+    "replyStyleMaxBubbles",
+    "replyStyleInterval",
+    "replyStylePunctuation",
+    "replyStylePrompt",
+    "replyStyleCustomRegex",
+    "replyStyleCustomCleanup",
 }
 
 
@@ -95,6 +102,14 @@ def read_settings(host):
         "signatureEnabled": bool(fish.get("qq_signature_enabled", False)),
         "qzoneEnabled": bool(fish.get("qzone_enabled", False)),
         "defaultDelivery": fish.get("qq_default_delivery", ""),
+        "replyStyleMode": fish.get("reply_style_mode", "inherit"),
+        "replyStyleMaxBubbles": fish.get("reply_style_max_bubbles", 3),
+        "replyStyleInterval": fish.get("reply_style_interval", "0.8,1.5"),
+        "replyStylePunctuation": fish.get("reply_style_punctuation", "keep"),
+        "replyStylePrompt": bool(fish.get("reply_style_prompt", True)),
+        "replyStyleCustomRegex": fish.get("reply_style_custom_regex", ""),
+        "replyStyleCustomCleanup": fish.get("reply_style_custom_cleanup", ""),
+        "persona": fish.get("persona", ""),
         "napcatBound": bool(fish.get("owner_qq") and fish.get("owner_umo")),
         "officialBound": bool(fish.get("official_owner_umo")),
         "napcatBoundPlatformId": platform_id if fish.get("owner_umo") else "",
@@ -250,9 +265,18 @@ def _validated_patch(patch):
         if key in {"dashboardPort", "onebotPort"}:
             if isinstance(value, bool) or not isinstance(value, int):
                 raise ValueError("端口需要为 1024–65535 的整数")
-        elif key in {"biliEnabled", "proactiveEnabled", "signatureEnabled", "qzoneEnabled"}:
+        elif key in {
+            "biliEnabled",
+            "proactiveEnabled",
+            "signatureEnabled",
+            "qzoneEnabled",
+            "replyStylePrompt",
+        }:
             if not isinstance(value, bool):
                 raise ValueError("开关值无效")
+        elif key == "replyStyleMaxBubbles":
+            if isinstance(value, bool) or not isinstance(value, int) or not 1 <= value <= 3:
+                raise ValueError("目标条数应为 1–3 的整数")
         elif not isinstance(value, str):
             raise ValueError("配置项类型无效")
     return dict(patch)
@@ -662,6 +686,38 @@ def save_settings(host, patch, expected_revision=None):
                 ("proactiveEnabled", "proactive_enabled"),
                 ("signatureEnabled", "qq_signature_enabled"),
                 ("qzoneEnabled", "qzone_enabled"),
+            ):
+                if key in patch:
+                    fish[fish_key] = value[key]
+            if "replyStyleMode" in patch and value["replyStyleMode"] not in {
+                "inherit",
+                "natural",
+                "single",
+                "custom",
+            }:
+                raise ValueError("回复方式无效")
+            if "replyStylePunctuation" in patch and value["replyStylePunctuation"] not in {
+                "keep",
+                "sentence_end",
+            }:
+                raise ValueError("标点处理方式无效")
+            if "replyStyleInterval" in patch:
+                from .reply_style import parse_interval
+
+                parse_interval(value["replyStyleInterval"])
+            if "replyStyleCustomRegex" in patch or "replyStyleCustomCleanup" in patch:
+                from .reply_style import validate_custom
+
+                validate_custom(value["replyStyleCustomRegex"], "自定义拆分规则")
+                validate_custom(value["replyStyleCustomCleanup"], "自定义清理规则")
+            for key, fish_key in (
+                ("replyStyleMode", "reply_style_mode"),
+                ("replyStyleMaxBubbles", "reply_style_max_bubbles"),
+                ("replyStyleInterval", "reply_style_interval"),
+                ("replyStylePunctuation", "reply_style_punctuation"),
+                ("replyStylePrompt", "reply_style_prompt"),
+                ("replyStyleCustomRegex", "reply_style_custom_regex"),
+                ("replyStyleCustomCleanup", "reply_style_custom_cleanup"),
             ):
                 if key in patch:
                     fish[fish_key] = value[key]

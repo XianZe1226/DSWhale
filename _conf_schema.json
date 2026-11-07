@@ -152,6 +152,58 @@
     "default": "",
     "hint": "保存后重载插件生效。"
   },
+  "reply_style_mode": {
+    "description": "回复方式",
+    "type": "string",
+    "default": "inherit",
+    "options": [
+      "inherit",
+      "natural",
+      "single",
+      "custom"
+    ],
+    "hint": "inherit 沿用 AstrBot 现有分段；natural 收齐完整回复后按语义分成 1–3 条；single 合并为一条；custom 使用自定义规则。保存后重载插件生效。"
+  },
+  "reply_style_max_bubbles": {
+    "description": "自然短句最多几条",
+    "type": "int",
+    "default": 3,
+    "hint": "1–3。超过时把后续内容合并到最后一条，不截断正文。保存后重载插件生效。"
+  },
+  "reply_style_interval": {
+    "description": "多条之间的发送间隔（秒）",
+    "type": "string",
+    "default": "0.8,1.5",
+    "hint": "格式“最小,最大”，各 0.2–5 秒。保存后重载插件生效。"
+  },
+  "reply_style_punctuation": {
+    "description": "句尾标点处理",
+    "type": "string",
+    "default": "keep",
+    "options": [
+      "keep",
+      "sentence_end"
+    ],
+    "hint": "keep 保留原标点；sentence_end 只去掉每条末尾一个句号/英文句点，代码、链接和数字不动。保存后重载插件生效。"
+  },
+  "reply_style_prompt": {
+    "description": "附加自然短句排版提示",
+    "type": "bool",
+    "default": true,
+    "hint": "仅在授权聊天中向模型追加一次排版提示，不写回人格。保存后重载插件生效。"
+  },
+  "reply_style_custom_regex": {
+    "description": "自定义拆分规则（Python 正则）",
+    "type": "string",
+    "default": "",
+    "hint": "仅 custom 模式使用；不能包含捕获组或匹配空字符串。示例：[^\\n]+。保存后重载插件生效。"
+  },
+  "reply_style_custom_cleanup": {
+    "description": "自定义清理规则（Python 正则）",
+    "type": "string",
+    "default": "",
+    "hint": "可选；只在受保护区间之外删除匹配内容。不能包含捕获组或匹配空字符串。保存后重载插件生效。"
+  },
   "persona": {
     "description": "自定义人格（留空使用内置大肥鱼人格）",
     "type": "text",

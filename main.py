@@ -98,9 +98,20 @@ class DSWhale(Star):
     @filter.on_decorating_result(priority=100000)
     async def before_send(self, event: AstrMessageEvent):
         self.companion.allow_delivery(event)
+        # A streaming reply without a DSWhale style still needs the historical
+        # cross-chunk cleanup. Once DSWhale owns the stream, its wrapper has
+        # already cleaned the complete text; touching the chunks again would
+        # split protocol tags across frames and can double-clean content.
+        if event.get_extra("_dswhale_stream_owned"):
+            return
+        if await self.companion.deliver_reply_style(event):
+            return
         result = event.get_result()
         if self.companion.authorized(event) and result:
-            if getattr(result, "async_stream", None) is not None:
+            if (
+                getattr(result, "async_stream", None) is not None
+                and self.companion.settings.reply_style_mode == "inherit"
+            ):
                 result.async_stream = clean_stream(result.async_stream)
             for item in result.chain or []:
                 if isinstance(item, Plain):

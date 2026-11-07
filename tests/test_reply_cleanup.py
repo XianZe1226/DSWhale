@@ -52,8 +52,15 @@ async def test_sdk_hooks_clean_before_memory_and_outgoing_while_preserving_other
     from main import DSWhale
 
     plugin = DSWhale.__new__(DSWhale)
+
+    async def no_style(event):
+        return False
+
     plugin.companion = SimpleNamespace(
-        authorized=lambda event: event.owner, allow_delivery=lambda event: True
+        authorized=lambda event: event.owner,
+        allow_delivery=lambda event: True,
+        deliver_reply_style=no_style,
+        settings=SimpleNamespace(reply_style_mode="inherit"),
     )
     response = SimpleNamespace(completion_text="好<system_reminder>internal</system_reminder>")
     await plugin.clean_response(SimpleNamespace(owner=True), response)
@@ -62,7 +69,13 @@ async def test_sdk_hooks_clean_before_memory_and_outgoing_while_preserving_other
     await plugin.clean_response(SimpleNamespace(owner=False), other)
     assert other.completion_text == "<tool_call>example</tool_call>"
     result = SimpleNamespace(chain=[Plain("收到<tool_call>internal</tool_call>[开心]")])
-    await plugin.before_send(SimpleNamespace(owner=True, get_result=lambda: result))
+    await plugin.before_send(
+        SimpleNamespace(
+            owner=True,
+            get_result=lambda: result,
+            get_extra=lambda name, default=None: default,
+        )
+    )
     assert result.chain[0].text == "收到[开心]"
 
 
@@ -92,10 +105,22 @@ async def test_streaming_hook_cleans_fragmented_protocol_and_preserves_fences_an
 
     result = SimpleNamespace(chain=[], async_stream=stream())
     plugin = DSWhale.__new__(DSWhale)
+
+    async def no_style(event):
+        return False
+
     plugin.companion = SimpleNamespace(
-        authorized=lambda event: True, allow_delivery=lambda event: True
+        authorized=lambda event: True,
+        allow_delivery=lambda event: True,
+        deliver_reply_style=no_style,
+        settings=SimpleNamespace(reply_style_mode="inherit"),
     )
-    await plugin.before_send(SimpleNamespace(get_result=lambda: result))
+    await plugin.before_send(
+        SimpleNamespace(
+            get_result=lambda: result,
+            get_extra=lambda name, default=None: default,
+        )
+    )
     output = [frame async for frame in result.async_stream]
     assert (
         "".join(part.text for frame in output if frame.type != "tool_call" for part in frame.chain)

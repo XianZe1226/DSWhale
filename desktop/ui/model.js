@@ -5,13 +5,14 @@
 })(typeof globalThis === 'object' ? globalThis : this, function () {
   'use strict';
   const workspaceActions = new Set(['workspace-status','health-check','backup-list','backup-restore','backup-delete','diagnostics-export','app-update-check','app-update-start','app-update-download','app-update-install','app-update-rollback','napcat-install','napcat-configure','napcat-wire','napcat-stop','napcat-guide','napcat-login-code','preferences-save']);
-  const concurrentReadActions = new Set(['settings-get','workspace-status','backup-list','connections-status','settings-history']);
+  const concurrentReadActions = new Set(['settings-get','workspace-status','backup-list','connections-status','settings-history','reply-style-preview']);
   const noPayloadActions = new Set(['app-update-start','settings-history','connections-status','workspace-status','health-check','backup-list','diagnostics-export','app-update-download','app-update-install','napcat-install','napcat-configure','napcat-wire','napcat-stop','napcat-guide','napcat-login-code']);
-  const actions = new Set(['inspect', 'install', 'start', 'stop', 'open-panel', 'home', 'settings-get', 'settings-save', 'open-data', 'backup', 'restore', 'initial-login', 'extensions-status', 'extension-check', 'extension-update', 'extension-rollback','connections-status','connection-change','connection-confirm','settings-history','settings-restore-field',...workspaceActions]);
+  const actions = new Set(['inspect', 'install', 'start', 'stop', 'open-panel', 'home', 'settings-get', 'settings-save', 'open-data', 'backup', 'restore', 'initial-login', 'extensions-status', 'extension-check', 'extension-update', 'extension-rollback','connections-status','connection-change','connection-confirm','settings-history','settings-restore-field','reply-style-preview',...workspaceActions]);
   const panels = new Set(['astrbot', 'models', 'memory', 'bilibili', 'qq', 'napcat']);
   const extensionIds = new Set(['memory', 'memes']);
   const extensionActions = new Set(['extension-check', 'extension-update', 'extension-rollback']);
-  const settingsDefaults = value => ({ ...value, dashboardPort:value?.dashboardPort??6185, signatureEnabled: value?.signatureEnabled === true, qzoneEnabled: value?.qzoneEnabled === true });
+  const replyStyleDefaults = value => ({ replyStyleMode: ['inherit','natural','single','custom'].includes(value?.replyStyleMode) ? value.replyStyleMode : 'inherit', replyStyleMaxBubbles: [1,2,3].includes(value?.replyStyleMaxBubbles) ? value.replyStyleMaxBubbles : 3, replyStyleInterval: typeof value?.replyStyleInterval === 'string' ? value.replyStyleInterval : '0.8,1.5', replyStylePunctuation: value?.replyStylePunctuation === 'sentence_end' ? 'sentence_end' : 'keep', replyStylePrompt: value?.replyStylePrompt !== false, replyStyleCustomRegex: typeof value?.replyStyleCustomRegex === 'string' ? value.replyStyleCustomRegex : '', replyStyleCustomCleanup: typeof value?.replyStyleCustomCleanup === 'string' ? value.replyStyleCustomCleanup : '', persona: typeof value?.persona === 'string' ? value.persona : '' });
+  const settingsDefaults = value => ({ ...value, ...replyStyleDefaults(value), dashboardPort:value?.dashboardPort??6185, signatureEnabled: value?.signatureEnabled === true, qzoneEnabled: value?.qzoneEnabled === true });
   const preferencesPayload = value => ({tray:value?.tray===true,startAtLogin:value?.startAtLogin===true,resumeAfterWake:value?.resumeAfterWake===true});
   function extensionsStatus(value) {
     if (!value || [...extensionIds].some(id => !value[id] || typeof value[id].installed !== 'boolean')) throw new Error('未能读取插件状态，请重试。');
@@ -20,8 +21,8 @@
   function escapeHTML(value) {
     return String(value ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
   }
-  const settingsFields = new Set(['qqConnectionMode','officialOwnerUMO','dashboardPort','ownerQQ','platformId','onebotPort','onebotToken','biliEnabled','proactiveEnabled','signatureEnabled','qzoneEnabled','defaultDelivery']);
-  const settingsSwitches = new Set(['biliEnabled','proactiveEnabled','signatureEnabled','qzoneEnabled']);
+  const settingsFields = new Set(['qqConnectionMode','officialOwnerUMO','dashboardPort','ownerQQ','platformId','onebotPort','onebotToken','biliEnabled','proactiveEnabled','signatureEnabled','qzoneEnabled','defaultDelivery','replyStyleMode','replyStyleMaxBubbles','replyStyleInterval','replyStylePunctuation','replyStylePrompt','replyStyleCustomRegex','replyStyleCustomCleanup']);
+  const settingsSwitches = new Set(['biliEnabled','proactiveEnabled','signatureEnabled','qzoneEnabled','replyStylePrompt']);
   function settingsPayload(value) {
     // Only serialize fields the caller actually supplied. Missing fields are not
     // user intent: they must never become false/'' defaults in a save request.
@@ -36,6 +37,28 @@
       } else if (key === 'defaultDelivery') {
         if (!['', 'napcat', 'official'].includes(item)) throw new Error('主动消息默认渠道无效。');
         payload[key] = item;
+      } else if (key === 'replyStyleMode') {
+        if (!['inherit', 'natural', 'single', 'custom'].includes(item)) throw new Error('回复方式无效。');
+        payload[key] = item;
+      } else if (key === 'replyStylePunctuation') {
+        if (!['keep', 'sentence_end'].includes(item)) throw new Error('标点处理方式无效。');
+        payload[key] = item;
+      } else if (key === 'replyStyleMaxBubbles') {
+        const count = Number(item);
+        if (!Number.isInteger(count) || count < 1 || count > 3) throw new Error('目标条数应为 1–3 的整数。');
+        payload[key] = count;
+      } else if (key === 'replyStyleInterval') {
+        const text = String(item ?? '').trim(), parts = text.split(',').map(part => Number(part.trim()));
+        if (parts.length !== 2 || parts.some(part => !Number.isFinite(part) || part < 0.2 || part > 5) || parts[0] > parts[1]) throw new Error('发送间隔应为“最小,最大”，各 0.2–5 秒。');
+        payload[key] = `${parts[0]},${parts[1]}`;
+      } else if (key === 'replyStyleCustomRegex' || key === 'replyStyleCustomCleanup') {
+        const pattern = String(item ?? '');
+        if (pattern.length > 200) throw new Error('自定义规则不能超过 200 个字符。');
+        if (pattern) {
+          if (/(^|[^\\])\([^?]/.test(pattern)) throw new Error('自定义规则不能包含捕获组。');
+          try { if (new RegExp(pattern).test('')) throw new Error('自定义规则不能匹配空字符串。'); } catch (error) { if (error.message === '自定义规则不能匹配空字符串。') throw error; throw new Error('自定义规则语法无效。'); }
+        }
+        payload[key] = pattern;
       } else if (key === 'officialOwnerUMO' || key === 'ownerQQ' || key === 'onebotToken') {
         payload[key] = String(item ?? '').trim();
       } else if (key === 'platformId') {
@@ -54,7 +77,7 @@
   }
   function settingsComparable(value) {
     const normalized = settingsDefaults(value || {});
-    return { ownerQQ: String(normalized.ownerQQ ?? '').trim(), platformId: String(normalized.platformId ?? '').trim(), onebotPort: Number(normalized.onebotPort), dashboardPort: Number(normalized.dashboardPort), onebotToken: String(normalized.onebotToken ?? ''), qqConnectionMode: normalized.qqConnectionMode || 'napcat', officialOwnerUMO: String(normalized.officialOwnerUMO ?? '').trim(), defaultDelivery: normalized.defaultDelivery || '', ...Object.fromEntries([...settingsSwitches].map(key => [key, normalized[key] === true])) };
+    return { ownerQQ: String(normalized.ownerQQ ?? '').trim(), platformId: String(normalized.platformId ?? '').trim(), onebotPort: Number(normalized.onebotPort), dashboardPort: Number(normalized.dashboardPort), onebotToken: String(normalized.onebotToken ?? ''), qqConnectionMode: normalized.qqConnectionMode || 'napcat', officialOwnerUMO: String(normalized.officialOwnerUMO ?? '').trim(), defaultDelivery: normalized.defaultDelivery || '', replyStyleMode: normalized.replyStyleMode, replyStyleMaxBubbles: normalized.replyStyleMaxBubbles, replyStyleInterval: normalized.replyStyleInterval, replyStylePunctuation: normalized.replyStylePunctuation, replyStyleCustomRegex: normalized.replyStyleCustomRegex, replyStyleCustomCleanup: normalized.replyStyleCustomCleanup, ...Object.fromEntries([...settingsSwitches].map(key => [key, normalized[key] === true])) };
   }
   function settingsPatch(value, baseline) {
     const payload = settingsPayload(value);

@@ -4,6 +4,7 @@ import asyncio
 import json
 import logging
 import os
+import random
 import tempfile
 from datetime import UTC, datetime
 from pathlib import Path
@@ -20,6 +21,8 @@ from .media import MediaError, MediaReader
 from .persona import AUTONOMOUS_PROMPT, DEFAULT_PERSONA, untrusted_block
 from .qq_identity import is_official_c2c
 from .qq_transport import owner_connected, owner_event
+from .reply_cleanup import clean_text
+from .reply_style import StyleError, parse_interval, plan, prompt_hint
 from .scheduler import Scheduler
 from .store import Store
 
@@ -184,8 +187,11 @@ class Companion:
     def observe(self, event, now=None):
         if self.internal_id(event):
             self._isolate_synthetic_memory(event)
+            if self.authorized(event):
+                self._style_stream_wrapper(event)
             return
         if self.authorized(event) and not self.internal_id(event):
+            self._style_stream_wrapper(event)
             self.scheduler.human_received(
                 now or now_utc(), scopes=[binding.umo for binding in self.settings.owner_bindings]
             )
@@ -273,7 +279,149 @@ class Companion:
                     ensure_ascii=False,
                 ),
             )
+        if self.settings.reply_style_prompt and self.settings.reply_style_mode != "inherit":
+            hint = prompt_hint(self.settings.reply_style_mode)
+            if hint:
+                instructions += "\n" + hint
         request.system_prompt = (request.system_prompt or "") + "\n" + instructions
+
+    def reply_style_plan(self, text, event=None):
+        """Plan bubbles with the same pure function used by desktop preview."""
+        low, high = parse_interval(self.settings.reply_style_interval)
+        return plan(
+            text,
+            mode=self.settings.reply_style_mode,
+            max_bubbles=self.settings.reply_style_max_bubbles,
+            punctuation=self.settings.reply_style_punctuation,
+            custom_regex=self.settings.reply_style_custom_regex,
+            custom_cleanup=self.settings.reply_style_custom_cleanup,
+            platform=(event.get_platform_name() if event is not None else "aiocqhttp"),
+        ), (low, high)
+
+    async def _send_bubbles(self, event, bubbles, interval):
+        delivered = 0
+        for index, bubble in enumerate(bubbles):
+            if index:
+                await asyncio.sleep(random.uniform(*interval))
+            try:
+                await event.send(event.plain_result(bubble))
+            except Exception as error:
+                event.set_extra(
+                    "dswhale_reply_partial",
+                    {"delivered": delivered, "error": type(error).__name__},
+                )
+                event.set_extra("dswhale_transport_failed", True)
+                logger.warning("DSWhale reply style: partial delivery (%s)", type(error).__name__)
+                return delivered, error
+            delivered += 1
+        if delivered:
+            event.set_extra("dswhale_transport_succeeded", True)
+            event.set_extra("dswhale_reply_partial", None)
+        return delivered, None
+
+    async def deliver_reply_style(self, event):
+        """Take over a non-streaming reply when a DSWhale style is selected.
+
+        Returns True only when DSWhale owns the final send. Streaming replies
+        are handled by ``_style_stream`` installed in ``observe``.
+        """
+        mode = self.settings.reply_style_mode
+        if mode == "inherit" or not self.authorized(event):
+            return False
+        if event.get_extra("_dswhale_stream_owned"):
+            return False
+        result = event.get_result()
+        if result is None or getattr(result, "async_stream", None) is not None:
+            return False
+        if getattr(result, "is_llm_result", True) is False:
+            return False
+        chain = list(getattr(result, "chain", None) or [])
+        if chain and any(not isinstance(part, Plain) for part in chain):
+            # Images, quotes, @ mentions, voice or tool chains keep the host's
+            # structure. The UI reports this as the actual mixed-chain path.
+            event.set_extra("dswhale_style_fallback", "mixed_chain")
+            return False
+        text = "".join(part.text for part in chain if isinstance(part, Plain))
+        try:
+            value, interval = self.reply_style_plan(text, event)
+        except StyleError:
+            # A custom regex can be saved only after validation, but a config
+            # edited by hand must degrade to the user's whole reply, not crash.
+            event.set_extra("dswhale_style_fallback", "invalid_custom_regex")
+            value = plan(text, mode="single", platform=event.get_platform_name())
+            interval = (0.2, 0.2)
+        bubbles = value["bubbles"]
+        event.clear_result()
+        if bubbles:
+            await self._send_bubbles(event, bubbles, interval)
+        self.delivered(event)
+        return True
+
+    async def _style_stream(self, event, original, generator, use_fallback=False):
+        """Own a streaming reply: collect text, clean once, plan once, send."""
+        event.set_extra("_dswhale_stream_owned", True)
+        text = ""
+        captured = []
+        mixed = False
+        try:
+            async for chunk in generator:
+                captured.append(chunk)
+                kind = getattr(chunk, "type", "")
+                if kind in {"reasoning", "agent_stats"}:
+                    continue
+                if kind == "break":
+                    continue
+                for part in getattr(chunk, "chain", None) or []:
+                    if isinstance(part, Plain):
+                        text += part.text
+                    else:
+                        mixed = True
+        except BaseException:
+            event.set_extra("dswhale_transport_failed", True)
+            self.delivered(event)
+            raise
+        if mixed:
+            # Preserve images/quotes/@ and every non-Plain frame by replaying the
+            # captured stream through the host adapter unchanged (single owner).
+            async def replay():
+                for chunk in captured:
+                    yield chunk
+
+            event.set_extra("dswhale_style_fallback", "mixed_chain")
+            await original(replay(), use_fallback)
+            self.delivered(event)
+            return
+        cleaned = clean_text(text)
+        if not cleaned.strip():
+            self.delivered(event)
+            return
+        try:
+            value, interval = self.reply_style_plan(cleaned, event)
+        except StyleError:
+            event.set_extra("dswhale_style_fallback", "invalid_custom_regex")
+            value, interval = (
+                plan(cleaned, mode="single", platform=event.get_platform_name()),
+                (
+                    0.2,
+                    0.2,
+                ),
+            )
+        if value["bubbles"]:
+            await self._send_bubbles(event, value["bubbles"], interval)
+        self.delivered(event)
+
+    def _style_stream_wrapper(self, event):
+        if not self.authorized(event) or self.settings.reply_style_mode == "inherit":
+            return
+        if event.get_extra("_dswhale_stream_wrapped"):
+            return
+        original = event.send_streaming
+        event.set_extra("_dswhale_stream_wrapped", True)
+
+        async def send_streaming(generator, use_fallback=False):
+            await self._style_stream(event, original, generator, use_fallback)
+
+        event.send_streaming = send_streaming
 
     def allow_delivery(self, event, now=None):
         activity_id = self.internal_id(event)
