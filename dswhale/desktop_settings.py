@@ -110,6 +110,8 @@ def read_settings(host):
         "replyStyleCustomRegex": fish.get("reply_style_custom_regex", ""),
         "replyStyleCustomCleanup": fish.get("reply_style_custom_cleanup", ""),
         "persona": fish.get("persona", ""),
+        "hostReplyPrefix": bool((config.get("platform_settings") or {}).get("reply_prefix")),
+        "hostTtsEnabled": bool((config.get("provider_tts_settings") or {}).get("enable")),
         "napcatBound": bool(fish.get("owner_qq") and fish.get("owner_umo")),
         "officialBound": bool(fish.get("official_owner_umo")),
         "napcatBoundPlatformId": platform_id if fish.get("owner_umo") else "",

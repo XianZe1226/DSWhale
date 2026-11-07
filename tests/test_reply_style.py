@@ -69,6 +69,11 @@ def test_natural_max_three_keeps_url_number_and_version():
     assert result["protected"] == ["url"]
 
 
+def test_closing_quote_stays_with_the_sentence_it_closes():
+    value = plan("他说：“你好。”下句", mode="natural")
+    assert value["bubbles"] == ["他说：“你好。”", "下句"]
+
+
 def test_natural_does_not_split_on_decimal_point_or_domain_dot():
     result = plan("版本 1.2.3 已发布。请更新", mode="natural")
     assert result["bubbles"][0] == "版本 1.2.3 已发布。"
@@ -255,3 +260,17 @@ def test_prompt_hint_states_soft_limit_and_single_mode():
     assert "1–3" in prompt_hint("natural")
     assert "一条" in prompt_hint("single")
     assert prompt_hint("inherit") == ""
+
+
+def test_preview_marks_host_fallback_for_reply_prefix():
+    value = preview({"text": "甲。乙。", "mode": "natural", "hostReplyPrefix": True})
+    assert value["path"] == "host"
+    assert value["hostPath"] == "host_fallback_reply_prefix"
+    assert value["bubbles"] == ["甲。乙。"]
+    assert "host_decoration" in value["warnings"]
+
+
+def test_preview_marks_host_fallback_for_tts():
+    value = preview({"text": "甲", "mode": "single", "hostTtsEnabled": True})
+    assert value["path"] == "host"
+    assert value["hostPath"] == "host_fallback_tts"

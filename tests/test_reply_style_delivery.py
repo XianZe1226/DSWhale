@@ -40,6 +40,7 @@ class FakeEvent:
         self.sent = []
         self.cleared = False
         self.sleeps = []
+        self.unified_msg_origin = "test:friend"
 
     def get_extra(self, name, default=None):
         return self.extra.get(name, default)
@@ -172,7 +173,11 @@ async def test_stream_with_non_plain_parts_replays_to_host_once():
     event = FakeEvent()
     value = companion("natural")
     await value._style_stream(event, original, stream(), False)
-    assert replayed == chunks
+    assert [chunk.type for chunk in replayed] == ["plain", "image", "plain"]
+    assert [part.text for chunk in replayed for part in chunk.chain if isinstance(part, Plain)] == [
+        "看",
+        "图",
+    ]
     assert event.sent == []
     assert event.extra["dswhale_style_fallback"] == "mixed_chain"
 
@@ -227,3 +232,117 @@ def test_missing_reply_style_keys_default_to_inherit():
     assert settings.reply_style_interval == "0.8,1.5"
     assert settings.reply_style_prompt is True
     assert json.dumps(base) != ""  # input is not mutated by defaults
+
+
+class FakeHostContext:
+    def __init__(self, prefix="", tts=False):
+        self.prefix = prefix
+        self.tts = tts
+
+    def get_config(self, umo=None):
+        return {
+            "platform_settings": {"reply_prefix": self.prefix},
+            "provider_tts_settings": {"enable": self.tts},
+        }
+
+    async def get_using_tts_provider_async(self, umo):
+        return object() if self.tts else None
+
+
+def test_reply_prefix_hands_the_reply_back_to_the_host():
+    event = FakeEvent(chain=[Plain("你好")])
+    value = companion("natural")
+    value.context = FakeHostContext(prefix="[bot] ")
+    assert asyncio.run(value.deliver_reply_style(event)) is False
+    assert event.extra["dswhale_style_fallback"] == "reply_prefix"
+    assert event.cleared is False
+    assert event.sent == []
+
+
+def test_active_tts_provider_hands_the_reply_back_to_the_host():
+    event = FakeEvent(chain=[Plain("你好")])
+    value = companion("natural")
+    value.context = FakeHostContext(tts=True)
+    assert asyncio.run(value.deliver_reply_style(event)) is False
+    assert event.extra["dswhale_style_fallback"] == "tts"
+
+
+def test_streaming_reply_prefix_falls_back_with_clean_stream():
+    chunks = [
+        SimpleNamespace(type="plain", chain=[Plain("你好</system_")]),
+        SimpleNamespace(type="plain", chain=[Plain("reminder>世界")]),
+    ]
+
+    async def stream():
+        for chunk in chunks:
+            yield chunk
+
+    received = []
+
+    async def original(generator, use_fallback):
+        received.extend([chunk async for chunk in generator])
+
+    event = FakeEvent()
+    value = companion("natural")
+    value.context = FakeHostContext(prefix="[bot] ")
+    asyncio.run(value._style_stream(event, original, stream(), False))
+    assert event.extra["dswhale_style_fallback"] == "reply_prefix"
+    assert "_dswhale_stream_owned" not in event.extra
+    assert (
+        "".join(part.text for chunk in received for part in chunk.chain if isinstance(part, Plain))
+        == "你好世界"
+    )
+    assert event.extra["dswhale_delivered_called"] is True
+
+
+def test_mixed_fallback_cleans_protocol_tags_before_replay():
+    chunks = [
+        SimpleNamespace(type="plain", chain=[Plain("看</system_reminder>")]),
+        SimpleNamespace(type="image", chain=[Image(file="synthetic.png")]),
+        SimpleNamespace(type="plain", chain=[Plain("图")]),
+    ]
+
+    async def stream():
+        for chunk in chunks:
+            yield chunk
+
+    received = []
+
+    async def original(generator, use_fallback):
+        received.extend([chunk async for chunk in generator])
+
+    event = FakeEvent()
+    value = companion("natural")
+    asyncio.run(value._style_stream(event, original, stream(), False))
+    text = "".join(
+        part.text for chunk in received for part in chunk.chain if isinstance(part, Plain)
+    )
+    assert "<system_reminder>" not in text
+    assert "</system_reminder>" not in text
+    assert (
+        "".join(part.text for chunk in received for part in chunk.chain if isinstance(part, Plain))
+        == "看图"
+    )
+
+
+def test_mixed_fallback_failure_is_settled_and_reraised():
+    chunks = [
+        SimpleNamespace(type="plain", chain=[Plain("看")]),
+        SimpleNamespace(type="image", chain=[Image(file="synthetic.png")]),
+    ]
+
+    async def stream():
+        for chunk in chunks:
+            yield chunk
+
+    async def original(generator, use_fallback):
+        async for _chunk in generator:
+            pass
+        raise RuntimeError("synthetic mixed failure")
+
+    event = FakeEvent()
+    value = companion("natural")
+    with pytest.raises(RuntimeError):
+        asyncio.run(value._style_stream(event, original, stream(), False))
+    assert event.extra["dswhale_transport_failed"] is True
+    assert event.extra["dswhale_delivered_called"] is True

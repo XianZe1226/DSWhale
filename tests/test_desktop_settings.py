@@ -68,6 +68,17 @@ def test_save_preserves_models_persona_and_creates_loopback_onebot(tmp_path):
     assert fish["owner_umo"] == "dswhale-qq:FriendMessage:123456789"
     assert read_settings(host)["ownerQQ"] == "123456789"
     assert "api_key" not in str(read_settings(host))
+    value = read_settings(host)
+    assert value["hostReplyPrefix"] is False
+    assert value["hostTtsEnabled"] is False
+
+    config = json.loads((host / "data/cmd_config.json").read_text())
+    config["platform_settings"] = {"reply_prefix": "[bot] "}
+    config["provider_tts_settings"] = {"enable": True}
+    (host / "data/cmd_config.json").write_text(json.dumps(config), encoding="utf-8")
+    value = read_settings(host)
+    assert value["hostReplyPrefix"] is True
+    assert value["hostTtsEnabled"] is True
     assert "test-only-secret" not in str(read_settings(host))
 
 

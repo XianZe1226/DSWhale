@@ -21,7 +21,7 @@ from .media import MediaError, MediaReader
 from .persona import AUTONOMOUS_PROMPT, DEFAULT_PERSONA, untrusted_block
 from .qq_identity import is_official_c2c
 from .qq_transport import owner_connected, owner_event
-from .reply_cleanup import clean_text
+from .reply_cleanup import clean_stream, clean_text
 from .reply_style import StyleError, parse_interval, plan, prompt_hint
 from .scheduler import Scheduler
 from .store import Store
@@ -298,6 +298,31 @@ class Companion:
             platform=(event.get_platform_name() if event is not None else "aiocqhttp"),
         ), (low, high)
 
+    async def _style_fallback_reason(self, event):
+        """Return why DSWhale must leave this reply to the host, if any.
+
+        A configured reply prefix or an enabled session TTS provider changes the
+        final outgoing structure. DSWhale can only own plain bubbles, so it must
+        hand the reply back instead of dropping that decoration.
+        """
+        context = getattr(self, "context", None)
+        if context is None:
+            return ""
+        try:
+            config = context.get_config(getattr(event, "unified_msg_origin", None))
+            platform = config.get("platform_settings", {})
+            if platform.get("reply_prefix"):
+                return "reply_prefix"
+            if config.get("provider_tts_settings", {}).get("enable"):
+                provider = await context.get_using_tts_provider_async(
+                    getattr(event, "unified_msg_origin", "")
+                )
+                if provider is not None:
+                    return "tts"
+        except Exception:  # host config is best-effort; never lose a reply over it
+            logger.debug("DSWhale reply style: host decoration probe failed", exc_info=True)
+        return ""
+
     async def _send_bubbles(self, event, bubbles, interval):
         delivered = 0
         for index, bubble in enumerate(bubbles):
@@ -330,6 +355,10 @@ class Companion:
             return False
         if event.get_extra("_dswhale_stream_owned"):
             return False
+        fallback = await self._style_fallback_reason(event)
+        if fallback:
+            event.set_extra("dswhale_style_fallback", fallback)
+            return False
         result = event.get_result()
         if result is None or getattr(result, "async_stream", None) is not None:
             return False
@@ -359,6 +388,21 @@ class Companion:
 
     async def _style_stream(self, event, original, generator, use_fallback=False):
         """Own a streaming reply: collect text, clean once, plan once, send."""
+        fallback = await self._style_fallback_reason(event)
+        if fallback:
+            event.set_extra("dswhale_style_fallback", fallback)
+            try:
+                await original(clean_stream(generator), use_fallback)
+                event.set_extra("dswhale_transport_succeeded", True)
+            except Exception as error:
+                event.set_extra("dswhale_transport_failed", True)
+                logger.warning(
+                    "DSWhale reply style: host fallback failed (%s)", type(error).__name__
+                )
+                raise
+            finally:
+                self.delivered(event)
+            return
         event.set_extra("_dswhale_stream_owned", True)
         text = ""
         captured = []
@@ -381,15 +425,28 @@ class Companion:
             self.delivered(event)
             raise
         if mixed:
-            # Preserve images/quotes/@ and every non-Plain frame by replaying the
-            # captured stream through the host adapter unchanged (single owner).
+            # Preserve images/quotes/@ and every non-Plain frame, but still clean
+            # protocol tags once across the whole replay (cross-chunk safe).
             async def replay():
                 for chunk in captured:
                     yield chunk
 
+            async def cleaned_replay():
+                async for chunk in clean_stream(replay()):
+                    yield chunk
+
             event.set_extra("dswhale_style_fallback", "mixed_chain")
-            await original(replay(), use_fallback)
-            self.delivered(event)
+            try:
+                await original(cleaned_replay(), use_fallback)
+                event.set_extra("dswhale_transport_succeeded", True)
+            except Exception as error:
+                event.set_extra("dswhale_transport_failed", True)
+                logger.warning(
+                    "DSWhale reply style: mixed fallback failed (%s)", type(error).__name__
+                )
+                raise
+            finally:
+                self.delivered(event)
             return
         cleaned = clean_text(text)
         if not cleaned.strip():

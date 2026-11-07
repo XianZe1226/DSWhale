@@ -133,3 +133,19 @@ test('the persona text is displayed only locally and is not part of a save patch
   const payload = model.settingsPayload(settings());
   assert.equal(Object.hasOwn(payload, 'persona'), false);
 });
+
+test('host decoration preview fields are allowlisted and explained in the card', async () => {
+  const shell = { mainFrame: {} };
+  const event = { sender: shell, senderFrame: shell.mainFrame };
+  assert.doesNotThrow(() => security.validateRequest(event, shell, 'reply-style-preview', { text: '甲', hostReplyPrefix: true, hostTtsEnabled: true }));
+  assert.throws(() => security.validateRequest(event, shell, 'reply-style-preview', { text: '甲', tts: true }), /预览内容无效/);
+  const app = renderApp(async action => {
+    if (action === 'settings-get') return settings({ hostReplyPrefix: true });
+    if (action === 'inspect') return { installed: true, running: true, phase: 'ready', setup: { ownerConfigured: true, qqConfigured: true, modelConfigured: true, memoryConfigured: false, biliEnabled: false } };
+    if (action === 'extensions-status') return { memory: { installed: false, version: '' }, memes: { installed: false, version: '' } };
+    return {};
+  });
+  for (let i = 0; i < 10; i += 1) await app.settle();
+  assert.match(app.html(), /宿主已配置回复前缀/);
+  assert.match(app.html(), /预览会标记实际回退路径/);
+});

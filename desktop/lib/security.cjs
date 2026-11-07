@@ -28,7 +28,7 @@ function validateRequest(event, shell, action, payload) {
   if (action === 'settings-restore-field' && (!payload || Object.keys(payload).sort().join(',') !== 'expectedRevision,field,recordId' || typeof payload.recordId !== 'string' || !/^[0-9]{10,20}-[a-f0-9]{8}$/.test(payload.recordId) || typeof payload.field !== 'string' || payload.field === 'onebotToken' || !/^[A-Za-z][A-Za-z0-9]{1,31}$/.test(payload.field) || typeof payload.expectedRevision !== 'string' || !/^[a-f0-9]{8,64}$/.test(payload.expectedRevision))) throw new Error('设置恢复请求无效');
   if (action === 'connections-status' && payload != null) throw new Error('此操作不接受额外参数');
   if (action === 'reply-style-preview') {
-    const allowed = new Set(['text', 'mode', 'maxBubbles', 'interval', 'punctuation', 'customRegex', 'customCleanup', 'platform']);
+    const allowed = new Set(['text', 'mode', 'maxBubbles', 'interval', 'punctuation', 'customRegex', 'customCleanup', 'platform', 'hostReplyPrefix', 'hostTtsEnabled']);
     if (!payload || typeof payload !== 'object' || Array.isArray(payload) || Object.keys(payload).some(key => !allowed.has(key))) throw new Error('预览内容无效');
     if (typeof payload.text !== 'string' || payload.text.length > 8192) throw new Error('预览文本不能超过 8192 个字符');
     if (payload.mode !== undefined && !['inherit', 'natural', 'single', 'custom'].includes(payload.mode)) throw new Error('回复方式无效');

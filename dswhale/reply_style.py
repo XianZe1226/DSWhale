@@ -22,6 +22,7 @@ MAX_TEXT = 12000
 PREVIEW_TEXT = 8192
 MAX_CUSTOM_PATTERN = 200
 SENTENCE_END = "。！？!?…"
+SENTENCE_CLOSERS = "」』”’\"')）】]}>"
 
 
 class StyleError(ValueError):
@@ -177,6 +178,10 @@ def _split_sentences(text, ranges):
         if text[index] in SENTENCE_END and not _in_ranges(index, ranges):
             end = index + 1
             while end < len(text) and text[end] in SENTENCE_END:
+                end += 1
+            # Keep a closing quote/bracket with the sentence it closes:
+            # 他说：“你好。” must not put the closing quote on the next bubble.
+            while end < len(text) and text[end] in SENTENCE_CLOSERS:
                 end += 1
             blocks.append(text[start:end])
             start = end
@@ -405,6 +410,16 @@ def preview(payload):
     if mode == "custom":
         validate_custom(custom_regex, "自定义拆分规则")
         validate_custom(custom_cleanup, "自定义清理规则")
+    if mode != "inherit" and (payload.get("hostReplyPrefix") or payload.get("hostTtsEnabled")):
+        fallback = "reply_prefix" if payload.get("hostReplyPrefix") else "tts"
+        base = plan(text, mode="single", platform=platform)
+        base.update(
+            path="host",
+            hostPath=f"host_fallback_{fallback}",
+            warnings=[*base["warnings"], "host_decoration"],
+            interval=[0.0, 0.0],
+        )
+        return base
     value = plan(
         text,
         mode=mode,
