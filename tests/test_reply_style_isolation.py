@@ -115,13 +115,48 @@ def test_five_concurrent_calls_are_bounded_by_the_same_deadline():
     async def scenario():
         return await asyncio.gather(*(one() for _ in range(5)))
 
+    wall_started = time.monotonic()
     rows = run(scenario())
+    wall = time.monotonic() - wall_started
     elapsed = [item[1] for item in rows]
     assert len(rows) == 5
     assert max(elapsed) <= 0.75
-    assert sum(value["degraded"] == "custom_timeout" for value, _ in rows) == 4
-    assert sum(value["degraded"] == "custom_unavailable" for value, _ in rows) == 1
+    assert wall <= 0.75
+    # A queued call may either wait out the deadline (unavailable) or acquire a
+    # just-released slot and hit the same deadline as timeout. Both are bounded
+    # failures; do not require an exact 4+1 split under scheduler load.
+    assert all(value["degraded"] in {"custom_timeout", "custom_unavailable"} for value, _ in rows)
+    assert all(value["customExecuted"] is False for value, _ in rows)
     assert all(value["bubbles"] == [text] for value, _ in rows)
+    assert reply_style_isolate.active_workers() == 0
+
+
+def test_all_worker_slots_busy_returns_unavailable_without_spawning():
+    text = "甲\n乙"
+
+    async def scenario():
+        semaphore = reply_style_isolate._semaphore()
+        held = 0
+        try:
+            for _ in range(reply_style_isolate.MAX_CONCURRENCY):
+                await semaphore.acquire()
+                held += 1
+            started = time.monotonic()
+            value = await plan_async(text, mode="custom", custom_regex=r"[^\n]+")
+            return value, time.monotonic() - started
+        finally:
+            # Always release, even if the assertion path changes or the worker
+            # path unexpectedly raises; otherwise later tests would starve.
+            for _ in range(held):
+                semaphore.release()
+
+    value, elapsed = run(scenario())
+    assert value["degraded"] == "custom_unavailable"
+    assert value["customExecuted"] is False
+    assert value["bubbles"] == [text]
+    assert value["count"] == 1
+    assert "custom_unavailable" in value["warnings"]
+    assert elapsed <= 0.75
     assert reply_style_isolate.active_workers() == 0
 
 
