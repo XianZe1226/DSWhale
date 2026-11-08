@@ -742,3 +742,16 @@ def test_reply_style_defaults_migrate_without_writing_and_save_independently(tmp
         save_settings(host, {"replyStyleInterval": "2,1"})
     with pytest.raises(ValueError):
         save_settings(host, {"replyStyleCustomRegex": "(x)"})
+
+
+def test_f7_python_is_authoritative_for_custom_regex(tmp_path):
+    from dswhale.desktop_settings import save_settings
+
+    host = host_files(tmp_path)
+    # ``(?i)`` is valid in Python but not in JavaScript's RegExp. The renderer
+    # must transmit it unchanged; only the Python validator decides.
+    saved = save_settings(host, {"replyStyleCustomRegex": r"(?i)[^\n]+"})
+    assert saved["replyStyleCustomRegex"] == r"(?i)[^\n]+"
+    for invalid in (r"(a)", r"x*", "("):
+        with pytest.raises(ValueError):
+            save_settings(host, {"replyStyleCustomRegex": invalid})

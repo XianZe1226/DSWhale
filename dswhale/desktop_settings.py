@@ -132,6 +132,73 @@ def read_settings(host):
     }
 
 
+def read_host_reply_context(host, platform=""):
+    """Resolve the one host profile that decorates replies, safely.
+
+    The desktop preview only needs public decoration flags. Credentials and
+    model settings are dropped before anything crosses the CLI boundary.
+    """
+    config_file, fish_file = _files(host)
+    if not config_file.is_file():
+        return {"computed": False, "reason": "config_missing"}
+    try:
+        config = _load(config_file, {})
+        fish = _load(fish_file, {})
+    except (OSError, ValueError):
+        return {"computed": False, "reason": "config_missing"}
+    if not isinstance(config, dict):
+        return {"computed": False, "reason": "config_missing"}
+    wanted = "qq_official" if str(platform).lower().startswith("qq_official") else "aiocqhttp"
+    ident = ""
+    if wanted == "qq_official":
+        ident = str(fish.get("official_owner_umo", "")).split(":", 1)[0]
+    else:
+        ident = str(fish.get("owner_umo", "")).split(":", 1)[0]
+    candidates = [
+        item
+        for item in config.get("platform", [])
+        if isinstance(item, dict) and item.get("type") == wanted
+    ]
+    if ident:
+        candidates = [item for item in candidates if item.get("id") == ident]
+    if len(candidates) != 1:
+        return {
+            "computed": False,
+            "reason": "profile_unknown" if candidates else "config_missing",
+        }
+    profile = candidates[0]
+    if not profile.get("enable"):
+        return {"computed": False, "reason": "profile_unknown"}
+    safe_config = {
+        "platform_settings": config.get("platform_settings") or {},
+        "provider_settings": config.get("provider_settings") or {},
+        "provider_tts_settings": {
+            key: (config.get("provider_tts_settings") or {}).get(key)
+            for key in ("enable", "trigger_probability")
+        },
+        "t2i": config.get("t2i"),
+        "t2i_word_threshold": config.get("t2i_word_threshold"),
+        "t2i_strategy": config.get("t2i_strategy"),
+    }
+    from .host_config import HostReplyConfig
+
+    cfg = HostReplyConfig.from_mapping(
+        safe_config, platform=wanted, profile_id=str(profile.get("id", ""))
+    )
+    return {
+        "computed": True,
+        "reason": "",
+        "host": {
+            "id": cfg.profile_id,
+            "platform": wanted,
+            "strategy": cfg.strategy,
+            "segmented": cfg.segmented,
+            "config": safe_config,
+        },
+        "hostSource": cfg.host_source(platform=wanted),
+    }
+
+
 def setup_status(host):
     _, fish_file = _files(host)
     fish = _load(fish_file, {})

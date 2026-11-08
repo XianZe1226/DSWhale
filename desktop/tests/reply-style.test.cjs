@@ -78,8 +78,12 @@ test('reply style fields are serialized with strict validation', () => {
   assert.throws(() => model.settingsPayload(settings({ replyStyleMode: 'token' })), /回复方式无效/);
   assert.throws(() => model.settingsPayload(settings({ replyStyleMaxBubbles: 4 })), /1–3/);
   assert.throws(() => model.settingsPayload(settings({ replyStyleInterval: '2,1' })), /发送间隔/);
-  assert.throws(() => model.settingsPayload(settings({ replyStyleCustomRegex: '(a)' })), /捕获组/);
-  assert.throws(() => model.settingsPayload(settings({ replyStyleCustomRegex: 'x*' })), /空字符串/);
+  // JavaScript's regex dialect is not authoritative. These are accepted by the
+  // transport and rejected by the Python settings validator instead of by a
+  // hidden renderer check that could reject valid host-only patterns.
+  assert.equal(model.settingsPayload(settings({ replyStyleCustomRegex: '(a)' })).replyStyleCustomRegex, '(a)');
+  assert.equal(model.settingsPayload(settings({ replyStyleCustomRegex: 'x*' })).replyStyleCustomRegex, 'x*');
+  assert.throws(() => model.settingsPayload(settings({ replyStyleCustomRegex: 'a'.repeat(201) })), /200/);
 });
 
 test('reply style fields are allowlisted by the renderer security gate', () => {

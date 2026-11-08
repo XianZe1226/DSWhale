@@ -17,12 +17,18 @@ from astrbot.core.agent.run_context import ContextWrapper
 from . import __version__
 from .config import Settings
 from .content import ContentClient, canonical_url
+from .host_config import (
+    HostReplyConfig,
+    decoration_reason,
+    result_is_llm,
+    stream_decoration_reason,
+)
 from .media import MediaError, MediaReader
 from .persona import AUTONOMOUS_PROMPT, DEFAULT_PERSONA, untrusted_block
 from .qq_identity import is_official_c2c
 from .qq_transport import owner_connected, owner_event
 from .reply_cleanup import clean_stream, clean_text
-from .reply_style import StyleError, parse_interval, plan, prompt_hint
+from .reply_style import StyleError, parse_interval, plan, plan_async, prompt_hint
 from .scheduler import Scheduler
 from .store import Store
 
@@ -312,10 +318,10 @@ class Companion:
                 return channel
         return ""
 
-    def reply_style_plan(self, text, event=None):
+    async def reply_style_plan(self, text, event=None):
         """Plan bubbles with the same pure function used by desktop preview."""
         low, high = parse_interval(self.settings.reply_style_interval)
-        return plan(
+        return await plan_async(
             text,
             mode=self.settings.reply_style_mode,
             max_bubbles=self.settings.reply_style_max_bubbles,
@@ -325,27 +331,42 @@ class Companion:
             platform=(event.get_platform_name() if event is not None else "aiocqhttp"),
         ), (low, high)
 
-    async def _style_fallback_reason(self, event):
+    async def _style_fallback_reason(self, event, result=None, text="", streaming=False):
         """Return why DSWhale must leave this reply to the host, if any.
 
-        A configured reply prefix or an enabled session TTS provider changes the
-        final outgoing structure. DSWhale can only own plain bubbles, so it must
-        hand the reply back instead of dropping that decoration.
+        AstrBot's decoration stage can add a prefix, quote, mention, TTS,
+        text-to-image or forward node, and can replace the plain chain before
+        the host sends it. DSWhale can only own plain bubbles, so any of those
+        decorations must keep the host's ownership instead of being dropped.
         """
         context = getattr(self, "context", None)
         if context is None:
             return ""
         try:
             config = context.get_config(getattr(event, "unified_msg_origin", None))
-            platform = config.get("platform_settings", {})
-            if platform.get("reply_prefix"):
-                return "reply_prefix"
-            if config.get("provider_tts_settings", {}).get("enable"):
+            cfg = HostReplyConfig.from_mapping(
+                config,
+                platform=event.get_platform_name(),
+                profile_id=str(getattr(event, "unified_msg_origin", "")),
+            )
+            message_type = event.get_message_type() if hasattr(event, "get_message_type") else None
+            if streaming:
+                reason = stream_decoration_reason(cfg, platform=event.get_platform_name())
+            else:
+                reason = decoration_reason(
+                    cfg,
+                    platform=event.get_platform_name(),
+                    message_type=message_type,
+                    plain_texts=[text] if text else [],
+                    use_t2i=getattr(result, "use_t2i_", None),
+                )
+            if reason == "tts":
                 provider = await context.get_using_tts_provider_async(
                     getattr(event, "unified_msg_origin", "")
                 )
-                if provider is not None:
-                    return "tts"
+                if provider is None:
+                    return ""
+            return reason
         except Exception:  # host config is best-effort; never lose a reply over it
             logger.debug("DSWhale reply style: host decoration probe failed", exc_info=True)
         return ""
@@ -401,14 +422,10 @@ class Companion:
         if event.get_extra("_dswhale_stream_owned"):
             return False
         event.set_extra("dswhale_delivery_channel", self._reply_style_channel(event))
-        fallback = await self._style_fallback_reason(event)
-        if fallback:
-            event.set_extra("dswhale_style_fallback", fallback)
-            return False
         result = event.get_result()
         if result is None or getattr(result, "async_stream", None) is not None:
             return False
-        if getattr(result, "is_llm_result", True) is False:
+        if not result_is_llm(result):
             return False
         chain = list(getattr(result, "chain", None) or [])
         if chain and any(not isinstance(part, Plain) for part in chain):
@@ -417,8 +434,12 @@ class Companion:
             event.set_extra("dswhale_style_fallback", "mixed_chain")
             return False
         text = "".join(part.text for part in chain if isinstance(part, Plain))
+        fallback = await self._style_fallback_reason(event, result, text)
+        if fallback:
+            event.set_extra("dswhale_style_fallback", fallback)
+            return False
         try:
-            value, interval = self.reply_style_plan(text, event)
+            value, interval = await self.reply_style_plan(text, event)
         except StyleError:
             # A custom regex can be saved only after validation, but a config
             # edited by hand must degrade to the user's whole reply, not crash.
@@ -435,7 +456,7 @@ class Companion:
     async def _style_stream(self, event, original, generator, use_fallback=False):
         """Own a streaming reply: collect text, clean once, plan once, send."""
         event.set_extra("dswhale_delivery_channel", self._reply_style_channel(event))
-        fallback = await self._style_fallback_reason(event)
+        fallback = await self._style_fallback_reason(event, None, "", streaming=True)
         if fallback:
             event.set_extra("dswhale_style_fallback", fallback)
             try:
@@ -509,7 +530,7 @@ class Companion:
             self.delivered(event)
             return
         try:
-            value, interval = self.reply_style_plan(cleaned, event)
+            value, interval = await self.reply_style_plan(cleaned, event)
         except StyleError:
             event.set_extra("dswhale_style_fallback", "invalid_custom_regex")
             value, interval = (

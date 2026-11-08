@@ -6,6 +6,7 @@ from types import SimpleNamespace
 
 import pytest
 from astrbot.api.message_components import Image, Plain
+from astrbot.core.message.message_event_result import MessageEventResult, ResultContentType
 
 from dswhale.adapter import Companion, DeliveryStopped
 from dswhale.config import Settings
@@ -35,7 +36,9 @@ def companion(mode="natural", **patch):
 
 class FakeEvent:
     def __init__(self, chain=None, stream=None):
-        self._result = SimpleNamespace(chain=chain or [], async_stream=stream, is_llm_result=True)
+        self._result = SimpleNamespace(
+            chain=chain or [], async_stream=stream, is_llm_result=lambda: True
+        )
         self.extra = {}
         self.sent = []
         self.cleared = False
@@ -241,14 +244,24 @@ def test_missing_reply_style_keys_default_to_inherit():
 
 
 class FakeHostContext:
-    def __init__(self, prefix="", tts=False):
+    def __init__(self, prefix="", tts=False, quote=False, t2i=False, mention=False, forward=1500):
         self.prefix = prefix
         self.tts = tts
+        self.quote = quote
+        self.t2i = t2i
+        self.mention = mention
+        self.forward = forward
 
     def get_config(self, umo=None):
         return {
-            "platform_settings": {"reply_prefix": self.prefix},
+            "platform_settings": {
+                "reply_prefix": self.prefix,
+                "reply_with_quote": self.quote,
+                "reply_with_mention": self.mention,
+                "forward_threshold": self.forward,
+            },
             "provider_tts_settings": {"enable": self.tts},
+            "t2i": self.t2i,
         }
 
     async def get_using_tts_provider_async(self, umo):
@@ -604,3 +617,41 @@ def test_old_install_missing_keys_keep_inherit_defaults_without_side_effects():
     assert settings.reply_style_prompt is True
     assert settings.reply_style_custom_regex == ""
     assert settings.reply_style_custom_cleanup == ""
+
+
+def test_streaming_ignores_host_quote_t2i_forward_and_mention():
+    """4.29.3 returns before decoration for streaming, so those must not abort."""
+
+    async def stream():
+        yield SimpleNamespace(type="plain", chain=[Plain("甲。乙。")])
+
+    event = FakeEvent()
+    value = companion("natural")
+    value.context = FakeHostContext(prefix="", quote=True, t2i=True, mention=True, forward=1)
+    asyncio.run(value._style_stream(event, None, stream(), False))
+    assert "_dswhale_stream_owned" in event.extra
+    assert "dswhale_style_fallback" not in event.extra
+    assert event.sent == [["甲。"], ["乙。"]]
+
+
+def test_general_command_result_is_not_taken_over():
+    event = FakeEvent(chain=[Plain("命令输出")])
+    result = MessageEventResult()
+    result.result_content_type = ResultContentType.GENERAL_RESULT
+    event._result = result
+    value = companion("natural")
+    assert asyncio.run(value.deliver_reply_style(event)) is False
+    assert event.cleared is False
+    assert event.sent == []
+
+
+def test_real_llm_result_is_owned_and_sent():
+    event = FakeEvent(chain=[Plain("乙。甲。")])
+    result = MessageEventResult()
+    result.result_content_type = ResultContentType.LLM_RESULT
+    result.chain = [Plain("乙。甲。")]
+    event._result = result
+    value = companion("natural")
+    assert asyncio.run(value.deliver_reply_style(event)) is True
+    assert event.cleared is True
+    assert event.sent

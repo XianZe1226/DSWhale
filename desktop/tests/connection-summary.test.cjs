@@ -294,3 +294,29 @@ test('R3: an ordinary snapshot without an error field keeps the dismissal', asyn
   assert.equal(controller.get().dismissedError, fault, 'an update that does not mention error keeps the dismissal');
   assert.equal(controller.get().state.error, fault, 'nor does it clear the real fault');
 });
+
+test('F5: a healthy channel outranks the stale preferred channel during startup', () => {
+  const base = liveNapcatState();
+  base.state.running = true;
+  base.connections.channels = [
+    { ...napcatChannel, platformEnabled: true, health: 'connected' },
+    { ...officialChannel, platformEnabled: true, configured: true, health: 'unknown' },
+  ];
+  base.settings.qqConnectionMode = 'official';
+  const summary = connectionSummary({ ...base, connectionTab: 'official' });
+  assert.equal(summary.globalChannel, 'napcat');
+  assert.equal(summary.badge, '已连接');
+  assert.equal(summary.tone, 'good');
+});
+
+test('F5: a single connecting channel does not make the global summary working', () => {
+  const base = liveNapcatState();
+  base.state.running = false;
+  base.connections.channels = [
+    { ...napcatChannel, health: 'connecting', processRunning: true, loginState: 'starting' },
+    officialChannel,
+  ];
+  const summary = connectionSummary({ ...base, connectionTab: 'napcat' });
+  assert.equal(summary.globalChannel, '');
+  assert.notEqual(summary.badge, '已连接');
+});

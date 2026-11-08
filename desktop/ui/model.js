@@ -52,12 +52,11 @@
         if (parts.length !== 2 || parts.some(part => !Number.isFinite(part) || part < 0.2 || part > 5) || parts[0] > parts[1]) throw new Error('发送间隔应为“最小,最大”，各 0.2–5 秒。');
         payload[key] = `${parts[0]},${parts[1]}`;
       } else if (key === 'replyStyleCustomRegex' || key === 'replyStyleCustomCleanup') {
+        // Python is the authority for regex syntax and capture-group rules.
+        // The renderer only guards transport size so a valid host-only pattern
+        // is not rejected by JavaScript's different regex dialect.
         const pattern = String(item ?? '');
         if (pattern.length > 200) throw new Error('自定义规则不能超过 200 个字符。');
-        if (pattern) {
-          if (/(^|[^\\])\([^?]/.test(pattern)) throw new Error('自定义规则不能包含捕获组。');
-          try { if (new RegExp(pattern).test('')) throw new Error('自定义规则不能匹配空字符串。'); } catch (error) { if (error.message === '自定义规则不能匹配空字符串。') throw error; throw new Error('自定义规则语法无效。'); }
-        }
         payload[key] = pattern;
       } else if (key === 'officialOwnerUMO' || key === 'ownerQQ' || key === 'onebotToken') {
         payload[key] = String(item ?? '').trim();
@@ -209,7 +208,7 @@
     const unverified = view => view.tone === 'good'
       ? { ...view, stage: 'checking', title: '正在确认连接状态', description: '正在读取实时连接状态；确认前不会显示为已连接。', badge: '检查中', tone: 'working', action: 'connections-status', actionLabel: '刷新连接状态', panel: undefined }
       : view;
-    if (!state.installed || !state.running || base.tone === 'working' || ['environment', 'recovery'].includes(base.stage)) return { ...unverified(base), globalChannel: '' };
+    if (!state.installed || ['environment', 'recovery'].includes(base.stage)) return { ...unverified(base), globalChannel: '' };
     const candidates = ['napcat', 'official'].map(channel => {
       const view = connectionViewModel({ ...data, connectionTab: channel });
       return { channel, enabled: enabled(channel), healthy: enabled(channel) && live(channel) && view.tone === 'good', view };
@@ -217,6 +216,7 @@
     const preferred = [settings.defaultDelivery, configuredMode].filter(channel => channel === 'napcat' || channel === 'official');
     const healthy = preferred.map(channel => candidates.find(item => item.channel === channel && item.healthy)).find(Boolean) || candidates.find(item => item.healthy);
     if (healthy) return { ...healthy.view, globalChannel: healthy.channel };
+    if (!state.running || base.tone === 'working') return { ...unverified(base), globalChannel: '' };
     const firstEnabled = preferred.map(channel => candidates.find(item => item.channel === channel && item.enabled)).find(Boolean) || candidates.find(item => item.enabled);
     if (firstEnabled) return { ...unverified(firstEnabled.view), globalChannel: '' };
     return { ...unverified(base), globalChannel: '' };

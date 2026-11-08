@@ -1,3 +1,4 @@
+import asyncio
 import json
 import subprocess
 import sys
@@ -9,11 +10,16 @@ from dswhale.reply_style import (
     host_path,
     parse_interval,
     plan,
+    plan_async,
     preview,
     prompt_hint,
     protected_ranges,
     validate_custom,
 )
+
+
+def plan_custom(text, **kwargs):
+    return asyncio.run(plan_async(text, mode="custom", **kwargs))
 
 
 def test_natural_splits_three_lines_without_punctuation():
@@ -138,7 +144,7 @@ def test_inherit_mode_keeps_text_untouched_and_reports_host_path():
 
 
 def test_custom_regex_splits_and_merges_tail():
-    result = plan("甲\n乙\n丙\n丁", mode="custom", custom_regex=r"[^\n]+", max_bubbles=2)
+    result = plan_custom("甲\n乙\n丙\n丁", custom_regex=r"[^\n]+", max_bubbles=2)
     assert result["bubbles"] == ["甲", "乙\n丙\n丁"]
     assert "merged_overflow" in result["warnings"]
 
@@ -155,9 +161,8 @@ def test_custom_regex_must_not_have_capture_groups_or_match_empty():
 
 
 def test_custom_cleanup_does_not_touch_protected_spans():
-    result = plan(
+    result = plan_custom(
         "看 https://example.com/a。 和 `x。` 好。",
-        mode="custom",
         custom_regex=r"[^\n]+",
         custom_cleanup=r"。",
     )
@@ -167,7 +172,7 @@ def test_custom_cleanup_does_not_touch_protected_spans():
 
 
 def test_custom_no_match_falls_back_to_whole_text():
-    result = plan("没有匹配", mode="custom", custom_regex=r"Z+")
+    result = plan_custom("没有匹配", custom_regex=r"Z+")
     assert result["count"] == 1
     assert result["bubbles"] == ["没有匹配"]
     assert "custom_no_match" in result["warnings"]
@@ -184,7 +189,7 @@ def test_interval_validation():
     with pytest.raises(StyleError, match="1–3"):
         plan("文本", max_bubbles=4)
     with pytest.raises(StyleError, match="捕获组"):
-        plan("文本", mode="custom", custom_regex=r"(.)")
+        plan_custom("文本", custom_regex=r"(.)")
 
 
 def test_protected_ranges_cover_urls_code_and_untrusted_blocks():

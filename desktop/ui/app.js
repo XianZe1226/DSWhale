@@ -25,7 +25,10 @@
   const icon = (name, cls = '') => `<svg class="icon ${cls}" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">${iconPaths[name] || iconPaths.environment}</svg>`;
   let route = routeNames[query.get('screen')] ? query.get('screen') : 'overview';
   let draft = null;
-  let dirty = false;
+  let draftBase = null;
+  let dirtyFields = new Set();
+  let conflictFields = new Set();
+  let overwritePending = false;
   let reveal = false;
   let settingsLoading = false;
   let extensionsLoading = false;
@@ -128,7 +131,7 @@
       return `<details class="card connection-advanced" id="connection-advanced"${connectionAdvancedOpen?' open':''}><summary id="connection-advanced-summary">更多官方连接选项<span>私聊绑定与主动互动</span></summary><div class="connection-option-content">${['official-owner','official-target'].includes(view.stage)?'':ownerField(data,value)}${defaultDeliveryField(data,value)}${preference(data,value,'proactiveEnabled','主动互动','需具备官方消息权限；结果不明确时不会自动重发。')}<p class="option-help">官方接口不支持修改个人 QQ 签名或发表 QQ 空间。机器人连接随对话服务启停，个人 QQ 不受影响。密钥只在内置机器人配置中填写。</p><div class="card-actions">${button('保存设置','save-settings',{off})}${button('打开机器人配置','open-panel',{payload:'qq',off:off||!data.state.running})}</div></div></details>`;
     }
     const qq=data.workspace.napcat,windows=data.state.platform.id==='win32-x64',off=!desktop(data)||busy(data),view=connectionViewModel(data);
-    return `<details class="card connection-advanced" id="connection-advanced"${connectionAdvancedOpen?' open':''}><summary id="connection-advanced-summary">更多连接选项<span>账号、端口、互动功能与组件管理</span></summary><div class="connection-option-content">${view.stage!=='owner'?ownerField(data,value):''}<h3>连接参数</h3><p class="option-help">通常保持默认即可。只在端口冲突或连接已有协议端时修改。</p><div class="form-grid"><div class="field"><label for="platformId">AstrBot 平台标识</label><input id="platformId" value="${esc(value.platformId||'qq')}"${disabled(off)}></div><div class="field"><label for="onebotPort">OneBot 反向 WebSocket 端口</label><input id="onebotPort" type="number" min="1024" max="65535" value="${esc(value.onebotPort)}"${disabled(off)}></div><div class="field"><label for="dashboardPort">AstrBot 控制台端口</label><input id="dashboardPort" type="number" min="1024" max="65535" value="${esc(value.dashboardPort??6185)}"${disabled(off)}></div><div class="field field-wide"><label for="onebotToken">OneBot 访问令牌</label><div class="secret-input"><input id="onebotToken" type="${reveal?'text':'password'}" autocomplete="off" value="${esc(value.onebotToken||'')}"${disabled(off)}><button type="button" class="reveal-button" data-reveal aria-controls="onebotToken" aria-pressed="${reveal}">${reveal?'隐藏':'显示'}</button></div><p class="field-help">只保存在本机，与协议端保持一致。</p></div></div><h3>互动功能</h3>${defaultDeliveryField(data,value)}${preference(data,value,'proactiveEnabled','主动互动','按现有插件设置主动发起对话。')}${preference(data,value,'signatureEnabled','QQ 个性签名','仅绑定的主人可要求修改机器人签名。')}${preference(data,value,'qzoneEnabled','QQ 空间文字动态','先创建草稿，经你确认后发布。')}<div class="card-actions">${button(data.pending==='settings-save'?'正在保存…':'保存设置','save-settings',{off})}<span class="option-help">${dirty?'有未保存的更改':'设置只保存在本机'}</span></div><h3>QQ 连接管理</h3><p class="option-help">停止对话服务会保留 QQ 在线。只有需要断开 QQ 时，才停止 QQ 连接。</p><div class="card-actions">${button('打开 QQ 管理','open-panel',{payload:'napcat',off:off||!data.state.running&&!qq?.running})}${windows?button('QQ 管理口令','napcat-login-code',{off:off||!qq?.configured}):''}${windows&&qq?.running?button('停止 QQ 连接','napcat-stop',{off}):''}${button('应用消息连接','napcat-wire',{off:off||!qq?.configured||qq?.loginState!=='online'||qq?.externalOnly})}</div><p class="option-help">管理口令用于本机管理页，不是 QQ 密码。首次 QQ 登录和账号验证由你本人完成。</p><h3>组件与帮助</h3><div class="card-actions">${windows?button('检查并准备组件','napcat-install',{off:off||!data.state.installed||qq?.running||qq?.canInstall===false}):''}${windows||data.state.platform.id==='linux-x64'?button('使用已有独立组件','napcat-configure',{off:off||!data.state.installed||qq?.running}):''}${button('官方连接指南','napcat-guide',{off})}${button('AstrBot 平台设置','open-panel',{payload:'qq',off:off||!data.state.running})}</div><p class="option-help">不会安装、注入或修改日常使用的官方 QQ。私人记忆与主人管理用于绑定私聊，群聊由 AstrBot 单独配置。</p></div></details>`;
+    return `<details class="card connection-advanced" id="connection-advanced"${connectionAdvancedOpen?' open':''}><summary id="connection-advanced-summary">更多连接选项<span>账号、端口、互动功能与组件管理</span></summary><div class="connection-option-content">${view.stage!=='owner'?ownerField(data,value):''}<h3>连接参数</h3><p class="option-help">通常保持默认即可。只在端口冲突或连接已有协议端时修改。</p><div class="form-grid"><div class="field"><label for="platformId">AstrBot 平台标识</label><input id="platformId" value="${esc(value.platformId||'qq')}"${disabled(off)}></div><div class="field"><label for="onebotPort">OneBot 反向 WebSocket 端口</label><input id="onebotPort" type="number" min="1024" max="65535" value="${esc(value.onebotPort)}"${disabled(off)}></div><div class="field"><label for="dashboardPort">AstrBot 控制台端口</label><input id="dashboardPort" type="number" min="1024" max="65535" value="${esc(value.dashboardPort??6185)}"${disabled(off)}></div><div class="field field-wide"><label for="onebotToken">OneBot 访问令牌</label><div class="secret-input"><input id="onebotToken" type="${reveal?'text':'password'}" autocomplete="off" value="${esc(value.onebotToken||'')}"${disabled(off)}><button type="button" class="reveal-button" data-reveal aria-controls="onebotToken" aria-pressed="${reveal}">${reveal?'隐藏':'显示'}</button></div><p class="field-help">只保存在本机，与协议端保持一致。</p></div></div><h3>互动功能</h3>${defaultDeliveryField(data,value)}${preference(data,value,'proactiveEnabled','主动互动','按现有插件设置主动发起对话。')}${preference(data,value,'signatureEnabled','QQ 个性签名','仅绑定的主人可要求修改机器人签名。')}${preference(data,value,'qzoneEnabled','QQ 空间文字动态','先创建草稿，经你确认后发布。')}<div class="card-actions">${button(data.pending==='settings-save'?'正在保存…':'保存设置','save-settings',{off})}<span class="option-help">${dirtyFields.size?'有未保存的更改':'设置只保存在本机'}</span></div><h3>QQ 连接管理</h3><p class="option-help">停止对话服务会保留 QQ 在线。只有需要断开 QQ 时，才停止 QQ 连接。</p><div class="card-actions">${button('打开 QQ 管理','open-panel',{payload:'napcat',off:off||!data.state.running&&!qq?.running})}${windows?button('QQ 管理口令','napcat-login-code',{off:off||!qq?.configured}):''}${windows&&qq?.running?button('停止 QQ 连接','napcat-stop',{off}):''}${button('应用消息连接','napcat-wire',{off:off||!qq?.configured||qq?.loginState!=='online'||qq?.externalOnly})}</div><p class="option-help">管理口令用于本机管理页，不是 QQ 密码。首次 QQ 登录和账号验证由你本人完成。</p><h3>组件与帮助</h3><div class="card-actions">${windows?button('检查并准备组件','napcat-install',{off:off||!data.state.installed||qq?.running||qq?.canInstall===false}):''}${windows||data.state.platform.id==='linux-x64'?button('使用已有独立组件','napcat-configure',{off:off||!data.state.installed||qq?.running}):''}${button('官方连接指南','napcat-guide',{off})}${button('AstrBot 平台设置','open-panel',{payload:'qq',off:off||!data.state.running})}</div><p class="option-help">不会安装、注入或修改日常使用的官方 QQ。私人记忆与主人管理用于绑定私聊，群聊由 AstrBot 单独配置。</p></div></details>`;
   }
   function updateCard(data) {
     const update=data.workspace.appUpdate||{},off=!desktop(data)||busy(data);
@@ -290,7 +293,7 @@
         <p class="option-help">${mode==='inherit'?'保持现状：不接管发送，也不改写宿主的分段、流式或间隔设置。':mode==='natural'?'会先收齐完整回复再发送，首字延迟可能增加；模型仍可能不严格遵守 1–3 条。':mode==='single'?'会接管最终发送；图片、引用、@、语音或混合链会回退宿主，页面会显示实际路径。':'自定义规则由 Python 正则执行；只接受可信规则，复杂规则仍有性能风险。'}</p>
         <div class="settings-grid"><label for="replyStyleMaxBubbles">最多几条<input id="replyStyleMaxBubbles" type="number" min="1" max="3" step="1" value="${esc(value.replyStyleMaxBubbles??3)}"${disabled(off||mode==='inherit'||mode==='single'||mode==='custom')}></label><label for="replyStyleInterval">发送间隔（秒）<input id="replyStyleInterval" type="text" value="${esc(value.replyStyleInterval||'0.8,1.5')}"${disabled(off||mode==='inherit')}></label><label for="replyStylePunctuation">句尾标点<select id="replyStylePunctuation"${disabled(off||mode==='inherit')}><option value="keep"${value.replyStylePunctuation!=='sentence_end'?' selected':''}>保留原标点</option><option value="sentence_end"${value.replyStylePunctuation==='sentence_end'?' selected':''}>去掉每条末尾一个句号</option></select></label><label class="switch-row"><input id="replyStylePrompt" type="checkbox"${value.replyStylePrompt!==false?' checked':''}${disabled(off||mode==='inherit')}><span>在授权聊天中附加一次排版提示</span></label></div>
         <details class="reply-style-advanced"${custom?' open':''}><summary>自定义规则与高级选项</summary><label for="replyStyleCustomRegex">拆分规则（Python 正则）<textarea id="replyStyleCustomRegex" rows="2" maxlength="200"${disabled(off)}>${esc(value.replyStyleCustomRegex||'')}</textarea></label><label for="replyStyleCustomCleanup">清理规则（可选，只在受保护区间外删除）<textarea id="replyStyleCustomCleanup" rows="2" maxlength="200"${disabled(off)}>${esc(value.replyStyleCustomCleanup||'')}</textarea></label><p class="option-help">不能包含捕获组、不能匹配空字符串；示例：[^\\n]+。保存后重载插件生效。</p></details>
-        <div class="reply-style-preview"><label for="replyStylePreviewText">离线预览（不调用模型或 QQ，不保存正文）<textarea id="replyStylePreviewText" rows="3" placeholder="粘贴一段合成文字，查看将如何分条。">${esc(replyStylePreviewText)}</textarea></label><div class="card-actions">${button('生成预览', 'reply-style-preview', {off})}${button('恢复回复方式默认值', 'reply-style-reset', {off})}${button('保存回复方式', 'save-settings', {primary:true,off})}</div>${preview?`<div class="reply-style-preview-result" role="status"><strong>${esc(preview.count)} 条 · ${preview.path==='plugin'?'DSWhale 接管':'沿用宿主'} · ${esc(preview.hostPath||'')}</strong><ol>${(preview.bubbles||[]).map(bubble=>`<li>${esc(bubble)}</li>`).join('')}</ol>${(preview.warnings||[]).length?`<p class="option-help">保护/回退：${esc(preview.warnings.join('、'))}</p>`:''}</div>`:''}</div>
+        <div class="reply-style-preview"><label for="replyStylePreviewText">离线预览（不调用模型或 QQ，不保存正文）<textarea id="replyStylePreviewText" rows="3" placeholder="粘贴一段合成文字，查看将如何分条。">${esc(replyStylePreviewText)}</textarea></label><div class="card-actions">${button('生成预览', 'reply-style-preview', {off})}${button('恢复回复方式默认值', 'reply-style-reset', {off})}${button('保存回复方式', 'save-settings', {primary:true,off})}</div>${preview?`<div class="reply-style-preview-result" role="status"><strong>${preview.computed===false?'条数未计算':`${esc(preview.count)} 条`} · ${preview.path==='plugin'?'DSWhale 接管':'沿用宿主'} · ${esc(preview.hostPath||'')}</strong>${preview.computed===false?`<p class="option-help">${esc(({host_owned:'发送由宿主装饰，条数由宿主决定',profile_unknown:'无法唯一确定宿主配置档',config_missing:'宿主配置档不存在',host_regex_timeout:'宿主分段规则执行超时，正文将整段发送'}[preview.uncomputedReason]||'当前无法计算实际条数'))}</p>`:`<ol>${(preview.bubbles||[]).map(bubble=>`<li>${esc(bubble)}</li>`).join('')}</ol>`}${(preview.warnings||[]).length?`<p class="option-help">保护/回退：${esc(preview.warnings.join('、'))}</p>`:''}${preview.hostSource?`<p class="option-help">宿主配置：${esc(preview.hostSource.profileId||'')} · ${esc(preview.hostSource.platform||'')} · 分段${preview.hostSource.segmented?.enable?'开':'关'}</p>`:''}</div>`:''}</div>
       </section>`;
   }
   function intelligence(data) {
@@ -299,7 +302,7 @@
   }
   function bilibili(data) {
     const value = draft || data.settings;
-    return `<section class="page-heading"><div><p class="eyebrow">发现更多感兴趣的内容</p><h1>哔哩哔哩</h1><p class="subtitle">管理关注、动态与视频相关能力。</p></div>${badge(data.state.setup.biliEnabled ? '已启用' : '未启用', data.state.setup.biliEnabled ? 'good' : '')}</section><section class="card bili-card"><span class="feature-icon pink">${icon('bilibili')}</span><h2>把喜欢的内容，带进对话。</h2><p>在完整设置面板中管理登录状态、关注与订阅规则。<br>沿用现有配置，在当前窗口继续操作。</p>${button('打开哔哩哔哩设置', 'open-panel', { primary: true, payload: 'bilibili', iconName: 'arrow', off: !desktop(data) || !data.state.running || busy(data) })}</section><section class="card preference-card"><div><h3>启用哔哩哔哩功能</h3><p>保存后生效。登录与详细订阅请在完整设置中管理。</p></div><label class="switch"><input id="biliEnabled" type="checkbox"${(value?.biliEnabled ?? data.state.setup.biliEnabled) ? ' checked' : ''}${disabled(!desktop(data) || !value || busy(data))}><span aria-hidden="true"></span><span class="sr-only">启用哔哩哔哩功能</span></label></section>${dirty ? `<div class="form-footer"><p>有未保存的更改</p>${button('保存设置', 'save-settings', { primary: true, off: !desktop(data) || busy(data) })}</div>` : ''}${!data.state.running ? '<p class="footnote">启动服务后，可打开完整哔哩哔哩设置。</p>' : ''}${healthCard(data,true)}`;
+    return `<section class="page-heading"><div><p class="eyebrow">发现更多感兴趣的内容</p><h1>哔哩哔哩</h1><p class="subtitle">管理关注、动态与视频相关能力。</p></div>${badge(data.state.setup.biliEnabled ? '已启用' : '未启用', data.state.setup.biliEnabled ? 'good' : '')}</section><section class="card bili-card"><span class="feature-icon pink">${icon('bilibili')}</span><h2>把喜欢的内容，带进对话。</h2><p>在完整设置面板中管理登录状态、关注与订阅规则。<br>沿用现有配置，在当前窗口继续操作。</p>${button('打开哔哩哔哩设置', 'open-panel', { primary: true, payload: 'bilibili', iconName: 'arrow', off: !desktop(data) || !data.state.running || busy(data) })}</section><section class="card preference-card"><div><h3>启用哔哩哔哩功能</h3><p>保存后生效。登录与详细订阅请在完整设置中管理。</p></div><label class="switch"><input id="biliEnabled" type="checkbox"${(value?.biliEnabled ?? data.state.setup.biliEnabled) ? ' checked' : ''}${disabled(!desktop(data) || !value || busy(data))}><span aria-hidden="true"></span><span class="sr-only">启用哔哩哔哩功能</span></label></section>${dirtyFields.size ? `<div class="form-footer"><p>有未保存的更改</p>${button('保存设置', 'save-settings', { primary: true, off: !desktop(data) || busy(data) })}</div>` : ''}${!data.state.running ? '<p class="footnote">启动服务后，可打开完整哔哩哔哩设置。</p>' : ''}${healthCard(data,true)}`;
   }
   const settingLabels={dashboardPort:'控制台端口',ownerQQ:'主人 QQ',qqConnectionMode:'接入方式',officialOwnerUMO:'官方私聊绑定',platformId:'平台标识',onebotPort:'OneBot 端口',biliEnabled:'B站整合',proactiveEnabled:'主动互动',signatureEnabled:'QQ 个性签名',qzoneEnabled:'QQ 空间',defaultDelivery:'主动消息渠道'};
   function settingsHistoryCard(data) {
@@ -368,7 +371,7 @@
     localMessage='';
     try {
       const result = await controller.act(action, payload);
-      if (['restore','backup-restore'].includes(action) && !result?.canceled) { draft = null; dirty = false; reveal = false; render(controller.get()); }
+      if (['restore','backup-restore'].includes(action) && !result?.canceled) { draft = null; draftBase = null; dirtyFields.clear(); conflictFields.clear(); overwritePending = false; reveal = false; render(controller.get()); }
       return result;
     } catch { /* Visible error and retry are rendered by the controller. */ }
   }
@@ -378,7 +381,7 @@
     settingsLoading = true; render(data);
     await run('settings-get');
     settingsLoading = false;
-    if (!dirty && controller.get().settings) draft = { ...controller.get().settings };
+    if (controller.get().settings) adoptSettings(controller.get().settings);
     render(controller.get());
   }
   async function ensureExtensions() {
@@ -432,14 +435,39 @@
     await ensureSettingsHistory(true);
     await ensureWorkspace(true);
   }
+  function adoptSettings(fresh) {
+    if (!fresh) return;
+    const previousBase = draftBase;
+    draftBase = { ...fresh };
+    if (!dirtyFields.size) {
+      draft = { ...fresh };
+      conflictFields.clear();
+    } else {
+      draft = { ...draft };
+      for (const key of Object.keys(fresh)) if (!dirtyFields.has(key)) draft[key] = fresh[key];
+      for (const key of dirtyFields) {
+        const externallyChanged = previousBase ? String(fresh[key] ?? '') !== String(previousBase[key] ?? '') : false;
+        if (externallyChanged && String(draft?.[key] ?? '') !== String(fresh[key] ?? '')) conflictFields.add(key);
+      }
+    }
+    overwritePending = false;
+  }
+  function markDraft(key, value) {
+    if (!draft) draft = { ...(controller.get().settings || {}) };
+    if (!draftBase) draftBase = { ...(controller.get().settings || {}) };
+    draft[key] = value;
+    if (String(value ?? '') === String(draftBase[key] ?? '')) dirtyFields.delete(key);
+    else dirtyFields.add(key);
+    conflictFields.delete(key);
+    overwritePending = false;
+  }
   function readField(target) {
     if(target.id==='app-update-channel'){updateChannel=target.value;return;}
+    if(target.id==='replyStylePreviewText'){replyStylePreviewText=target.value;return;}
 
     if(target.id.startsWith('pref-')){if(!preferencesDraft)preferencesDraft={...controller.get().workspace.preferences};preferencesDraft[target.id.slice(5)]=target.checked===true;preferencesDirty=true;return;}
     if(!['ownerQQ','platformId','onebotPort','dashboardPort','onebotToken','biliEnabled','proactiveEnabled','signatureEnabled','qzoneEnabled','officialOwnerUMO','defaultDelivery','replyStyleMode','replyStyleMaxBubbles','replyStyleInterval','replyStylePunctuation','replyStylePrompt','replyStyleCustomRegex','replyStyleCustomCleanup'].includes(target.id))return;
-    if (!draft) draft = { ...(controller.get().settings || {}) };
-    draft[target.id] = target.type === 'checkbox' ? target.checked : target.value;
-    dirty = true;
+    markDraft(target.id, target.type === 'checkbox' ? target.checked : target.value);
   }
   async function saveSettings() {
     const data = controller.get();
@@ -454,10 +482,22 @@
       return;
     }
     const settings = data.settings || {};
-    const patch = settingsPatch(value, settings);
+    if (!dirtyFields.size) { localMessage = '没有需要保存的修改。'; render(controller.get()); return; }
+    const edited = Object.fromEntries([...dirtyFields].map(key => [key, value?.[key]]));
+    const patch = settingsPatch(edited, draftBase || settings);
     if (!Object.keys(patch).length) { localMessage = '没有需要保存的修改。'; render(controller.get()); return; }
+    if (conflictFields.size && !overwritePending) {
+      overwritePending = true;
+      localMessage = `这些字段已在外部更新：${[...conflictFields].join('、')}。再次点击保存将覆盖外部值。`;
+      render(controller.get());
+      return;
+    }
     await run('settings-save', { patch, ...(settings.configRevision ? { expectedRevision: settings.configRevision } : {}) });
-    if (!controller.get().error) { dirty = false; draft = { ...controller.get().settings }; localMessage = ''; await run('connections-status'); render(controller.get()); }
+    if (!controller.get().error) {
+      draft = { ...controller.get().settings }; draftBase = { ...controller.get().settings };
+      dirtyFields.clear(); conflictFields.clear(); overwritePending = false;
+      localMessage = ''; await run('connections-status'); render(controller.get());
+    }
   }
   root.addEventListener('click', async event => {
     const target = event.target.closest('button'); if (!target || target.disabled) return;
@@ -508,13 +548,11 @@
     }
     if (action === 'reply-style-mode') {
       const mode = target.dataset.mode; if (!['inherit','natural','single','custom'].includes(mode)) return;
-      if (!draft) draft = { ...(controller.get().settings || {}) };
-      draft.replyStyleMode = mode; replyStylePreviewResult = null; dirty = true; render(controller.get()); return;
+      markDraft('replyStyleMode', mode); replyStylePreviewResult = null; render(controller.get()); return;
     }
     if (action === 'reply-style-reset') {
-      if (!draft) draft = { ...(controller.get().settings || {}) };
-      Object.assign(draft, { replyStyleMode:'inherit', replyStyleMaxBubbles:3, replyStyleInterval:'0.8,1.5', replyStylePunctuation:'keep', replyStylePrompt:true, replyStyleCustomRegex:'', replyStyleCustomCleanup:'' });
-      replyStylePreviewResult = null; dirty = true; localMessage = '已恢复回复方式默认值，保存后才会写入。'; render(controller.get()); return;
+      for (const [key, next] of Object.entries({ replyStyleMode:'inherit', replyStyleMaxBubbles:3, replyStyleInterval:'0.8,1.5', replyStylePunctuation:'keep', replyStylePrompt:true, replyStyleCustomRegex:'', replyStyleCustomCleanup:'' })) markDraft(key, next);
+      replyStylePreviewResult = null; localMessage = '已恢复回复方式默认值，保存后才会写入。'; render(controller.get()); return;
     }
     if (action === 'reply-style-preview') {
       const value = draft || controller.get().settings || {};
@@ -536,7 +574,7 @@
     if(action==='backup-confirm'){if(!backupReview)return;const review=backupReview;backupReview=null;await run(review.operation,{id:review.id});return;}
     if (action === 'retry') { const retry = controller.get().retry; if (retry) return run(retry.action, retry.payload); return; }
     if(action==='dismiss-error'){controller.dismissError();render(controller.get());return;}
-    if (action === 'settings-get') { await run(action); if (!dirty) draft = { ...controller.get().settings }; render(controller.get()); return; }
+    if (action === 'settings-get') { await run(action); if (!controller.get().error) adoptSettings(controller.get().settings); render(controller.get()); return; }
     if (action === 'extension-review') {
       const id = target.dataset.extension;
       if (!['memory', 'memes'].includes(id) || target.dataset.operation !== 'extension-rollback' || !controller.get().extensions?.[id]?.canRollback) return;
@@ -579,7 +617,7 @@
   root.addEventListener('toggle', event => { if(event.target.id==='connection-advanced')connectionAdvancedOpen=event.target.open;if(event.target.id==='external-connection-help')externalGuideOpen=event.target.open; }, true);
   root.addEventListener('compositionstart', event => { if (event.target && event.target.closest && event.target.closest('input,textarea')) composing = true; }, true);
   root.addEventListener('compositionend', event => { if (!(event.target && event.target.closest && event.target.closest('input,textarea'))) return; composing = false; const next = deferredData; deferredData = null; render(next || controller.get()); }, true);
-  controller.subscribe(data => { if (data.settings && !dirty) draft = { ...data.settings }; render(data); });
+  controller.subscribe(data => { if (data.settings) adoptSettings(data.settings); render(data); });
   window.addEventListener('beforeunload', () => controller.dispose());
   render(controller.get());
   controller.init().catch(() => {}).then(async () => { await ensureSettings(); await ensureExtensions(); await ensureConnections(); await ensureSettingsHistory(); await ensureWorkspace(); });
