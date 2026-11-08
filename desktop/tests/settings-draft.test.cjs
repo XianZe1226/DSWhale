@@ -38,7 +38,13 @@ function renderApp(invoke) {
       markup = value; document.activeElement = body;
       buttons = [...value.matchAll(/<button\b([^>]*)>/g)].map(([, attrs]) => {
         const attr = key => attrs.match(new RegExp(`(?:^|\\s)${key}="([^"]*)"`))?.[1];
-        return { id: attr('id'), disabled: /\sdisabled(?:\s|$)/.test(attrs), dataset: { action: attr('data-action'), mode: attr('data-mode'), route: attr('data-route') }, focus() { if (!this.disabled) document.activeElement = this; } };
+        return {
+          id: attr('id'), disabled: /\sdisabled(?:\s|$)/.test(attrs),
+          dataset: { action: attr('data-action'), mode: attr('data-mode'), route: attr('data-route') },
+          closest(selector) { return selector === 'button' ? this : null; },
+          hasAttribute(name) { return name === 'disabled' ? this.disabled : Object.hasOwn(this.dataset, name); },
+          focus() { if (!this.disabled) document.activeElement = this; },
+        };
       });
     },
     addEventListener(name, callback) { handlers[name] = callback; },
@@ -59,6 +65,7 @@ function renderApp(invoke) {
     calls, html: () => root.innerHTML,
     settle: () => new Promise(resolve => setImmediate(resolve)),
     click: dataset => handlers.click({ target: { closest() { return this; }, dataset, hasAttribute() { return false; } } }),
+    clickButton: button => handlers.click({ target: button }),
     input: (id, value) => { inputValues[id] = value; },
     type: (id, value) => { inputValues[id] = value; handlers.input?.({ target: { id, value, type: 'textarea', matches() { return true; } } }); },
     buttons: () => buttons,
@@ -192,8 +199,10 @@ test('S5: a failed save exposes an in-app refresh that preserves the draft', asy
   assert.equal(saves, 1);
   assert.match(app.html(), /设置已被外部修改/);
   assert.match(app.html(), /重新读取并保留修改/);
-
-  app.click({ action: 'settings-get' });
+  const refresh = app.buttons().find(button => button.dataset.action === 'settings-get');
+  assert.ok(refresh);
+  assert.equal(refresh.disabled, false);
+  app.clickButton(refresh);
   for (let i = 0; i < 4; i += 1) await app.settle();
   assert.equal(reads, 2);
 

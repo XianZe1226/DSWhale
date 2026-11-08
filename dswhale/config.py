@@ -9,7 +9,6 @@ from . import qq_routing
 from .reply_style import MODES as REPLY_STYLE_MODES
 from .reply_style import PUNCTUATION as REPLY_STYLE_PUNCTUATION
 from .reply_style import parse_interval, validate_custom
-from .reply_style_isolate import validate_sync
 
 
 @dataclass(frozen=True)
@@ -136,10 +135,12 @@ class Settings:
             raise ValueError("标点处理方式无效")
         if not isinstance(self.reply_style_prompt, bool):
             raise ValueError("排版提示开关无效")
-        regex = validate_custom(self.reply_style_custom_regex, "自定义拆分规则") or ""
-        cleanup = validate_custom(self.reply_style_custom_cleanup, "自定义清理规则") or ""
-        if regex or cleanup:
-            validate_sync(regex, cleanup)
+        # Keep this synchronous path shape-only. Settings is loaded inside the
+        # host event loop; compiling or running a user regex here would block
+        # every other task. The bounded worker in plan_async/preview_async is
+        # the only executor, and the desktop save CLI validates before writing.
+        validate_custom(self.reply_style_custom_regex, "自定义拆分规则")
+        validate_custom(self.reply_style_custom_cleanup, "自定义清理规则")
 
     @staticmethod
     def _minutes(value: str) -> int:

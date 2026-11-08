@@ -180,22 +180,22 @@ def test_shape_validation_never_executes_a_pathological_user_pattern():
     assert time.monotonic() - started < 0.1
 
 
-def test_sync_validation_uses_the_same_worker(monkeypatch):
+def test_settings_load_does_not_spawn_sync_validation(monkeypatch):
     calls = []
 
-    def fake_sync(request, deadline_seconds=0.75):
-        calls.append(request)
+    def fake_sync(*args, **kwargs):
+        calls.append((args, kwargs))
         return {"ok": True, "value": True}
 
     monkeypatch.setattr(reply_style_isolate, "run_sync", fake_sync)
+    monkeypatch.setattr(reply_style_isolate, "validate_sync", fake_sync)
     from dswhale.config import Settings
 
     value = Settings.from_mapping(
         {"reply_style_custom_regex": r"(?:a?|b?){30}(?!$)", "reply_style_custom_cleanup": ""}
     )
     assert value.reply_style_custom_regex.startswith("(?:")
-    assert calls and calls[0]["op"] == "validate"
-    assert calls[0]["regex"].startswith("(?:")
+    assert calls == []
 
 
 def test_cancelling_the_blocking_fallback_kills_and_reaps_the_child(monkeypatch):
@@ -267,11 +267,36 @@ def test_preview_custom_keeps_ticks_and_deadline():
     assert elapsed < 3.0
 
 
-def test_settings_load_validation_is_bounded_and_fails_closed():
+def test_settings_load_does_not_block_the_event_loop_with_a_pathological_rule():
     from dswhale.config import Settings
 
-    started = time.monotonic()
-    with pytest.raises(ValueError, match="校验超时"):
-        Settings.from_mapping({"reply_style_custom_regex": r"(?:a?|b?){30}(?!$)"})
-    elapsed = time.monotonic() - started
-    assert elapsed <= 1.5
+    rule = r"(?:a?|b?){30}(?!$)"
+    ticks = []
+
+    async def scenario():
+        async def ticker():
+            while True:
+                await asyncio.sleep(0.025)
+                ticks.append(time.monotonic())
+
+        task = asyncio.create_task(ticker())
+        await asyncio.sleep(0.06)
+        before = len(ticks)
+        started = time.monotonic()
+        value = Settings.from_mapping({"reply_style_custom_regex": rule})
+        elapsed = time.monotonic() - started
+        await asyncio.sleep(0.06)
+        assert not task.done()
+        after = len(ticks)
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+        return value, elapsed, before, after
+
+    value, elapsed, before, after = asyncio.run(scenario())
+    assert value.reply_style_custom_regex == rule
+    assert elapsed < 0.1
+    assert before > 0
+    assert after > before
