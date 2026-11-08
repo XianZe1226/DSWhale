@@ -45,6 +45,7 @@
   let preferencesDraft=null;
   let preferencesDirty=false;
   let localMessage='';
+  let settingsConflict=false;
   let pendingFocus = null;
   let lastAnnouncement = '';
   let connectionAdvancedOpen = false;
@@ -342,7 +343,7 @@
     // message; the underlying state.error (a real main-process fault) stays
     // published and a different/new error is still shown immediately.
     const error = rawError && rawError !== data.dismissedError ? rawError : '';
-    const feedback = error ? `<div class="alert error" role="alert"><span class="alert-symbol">!</span><div><strong>操作未完成</strong><p>${esc(error)}</p></div>${data.retry ? button('重试', 'retry', { off: busy(data) || !desktop(data) }) : ''}${button('关闭提示', 'dismiss-error', { off: false })}</div>` : localMessage||data.notice ? `<div class="alert success" role="status">${icon('check')}<span>${esc(localMessage||data.notice)}</span></div>` : '';
+    const feedback = error ? `<div class="alert error" role="alert"><span class="alert-symbol">!</span><div><strong>操作未完成</strong><p>${esc(error)}</p></div>${settingsConflict && data.settings ? button('重新读取并保留修改', 'settings-get', { off: busy(data) || !desktop(data) }) : ''}${data.retry ? button('重试', 'retry', { off: busy(data) || !desktop(data) }) : ''}${button('关闭提示', 'dismiss-error', { off: false })}</div>` : localMessage||data.notice ? `<div class="alert success" role="status">${icon('check')}<span>${esc(localMessage||data.notice)}</span></div>` : '';
     const views = { overview, environment, connect, intelligence, bilibili, settings };
     const content = data.mode === 'unavailable' ? `<section class="desktop-notice card"><img src="whale.svg" alt="DSWhale"><h1>请在桌面应用中打开</h1><p>运行环境、对话服务和本地设置需要 DSWhale 桌面应用。</p><p class="footnote">当前页面未连接桌面服务，无法读取或修改本机配置。</p></section>` : views[route](data);
     const markup = `<aside class="sidebar" aria-label="主导航"><div class="window-space"></div><div class="brand"><div class="brand-mark"><img src="whale.svg" alt=""></div><div><strong>DSWhale</strong><span>你的对话伙伴</span></div></div><div class="nav-label">工作空间</div><nav>${nav}</nav><div class="sidebar-bottom"><div class="sidebar-service"><span class="status-dot ${status.type==='good'?'good':status.type==='working'?'working':''}"></span><div><strong>${esc(status.label)}</strong><span>${data.state.running ? '对话服务已启动' : '对话服务尚未启动'}</span></div></div><div class="sidebar-version"><span>DSWhale Desktop</span><span>${esc(data.state.version || '')}</span></div></div></aside><div class="workspace"><header class="topbar"><div class="breadcrumb"><span>工作空间</span><span class="breadcrumb-slash">/</span><strong>${esc(panel ? panelNames[panel] || '控制台' : routeNames[route])}</strong></div><div class="topbar-right">${data.mode === 'preview' ? '<span class="preview-pill">只读预览</span>' : ''}<span class="topbar-status"><span class="status-dot ${data.state.running ? 'good' : ''}"></span>${esc(data.state.running ? '对话服务已启动' : '对话服务尚未启动')}</span></div></header>${panel ? `<main class="embedded" id="main-content" tabindex="-1"><div class="panel-toolbar"><button type="button" data-action="home" class="panel-back">${icon('back')}返回${esc(routeNames[route])}</button><div class="panel-toolbar-actions"><span class="panel-context">${esc(panelNames[panel] || '控制台')}${['astrbot','models','memory','qq'].includes(panel)?'<small>内核由 DSWhale 统一管理，更新请到应用设置</small>':''}</span>${button(panel==='napcat'?'QQ 管理口令':'控制台首次口令',panel==='napcat'?'napcat-login-code':'initial-login',{off:!desktop(data)||!data.state.installed||busy(data)})}</div></div><div class="embedded-placeholder"><span class="spinner" aria-hidden="true"></span><p>正在显示控制台…</p></div>${feedback ? `<div class="panel-feedback">${feedback}</div>` : ''}</main>` : `<main class="page" id="main-content" tabindex="-1">${preview}${feedback}${content}${route !== 'environment' ? progress(data) : ''}<footer class="page-footer"><span class="footer-line"></span><span>DSWhale · 让对话更有温度</span><span class="footer-line"></span></footer></main>`}</div>`;
@@ -493,9 +494,12 @@
       return;
     }
     await run('settings-save', { patch, ...(settings.configRevision ? { expectedRevision: settings.configRevision } : {}) });
-    if (!controller.get().error) {
+    if (controller.get().error) {
+      settingsConflict = dirtyFields.size > 0;
+      render(controller.get());
+    } else {
       draft = { ...controller.get().settings }; draftBase = { ...controller.get().settings };
-      dirtyFields.clear(); conflictFields.clear(); overwritePending = false;
+      dirtyFields.clear(); conflictFields.clear(); overwritePending = false; settingsConflict = false;
       localMessage = ''; await run('connections-status'); render(controller.get());
     }
   }
@@ -573,8 +577,8 @@
     if(action==='backup-cancel'){const focusId=backupReview?.focusId;backupReview=null;localMessage='已取消，备份与当前数据未更改。';render(controller.get());document.getElementById(focusId)?.focus({preventScroll:true});return;}
     if(action==='backup-confirm'){if(!backupReview)return;const review=backupReview;backupReview=null;await run(review.operation,{id:review.id});return;}
     if (action === 'retry') { const retry = controller.get().retry; if (retry) return run(retry.action, retry.payload); return; }
-    if(action==='dismiss-error'){controller.dismissError();render(controller.get());return;}
-    if (action === 'settings-get') { await run(action); if (!controller.get().error) adoptSettings(controller.get().settings); render(controller.get()); return; }
+    if(action==='dismiss-error'){settingsConflict=false;controller.dismissError();render(controller.get());return;}
+    if (action === 'settings-get') { await run(action); if (!controller.get().error) { adoptSettings(controller.get().settings); settingsConflict = false; } render(controller.get()); return; }
     if (action === 'extension-review') {
       const id = target.dataset.extension;
       if (!['memory', 'memes'].includes(id) || target.dataset.operation !== 'extension-rollback' || !controller.get().extensions?.[id]?.canRollback) return;

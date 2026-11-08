@@ -655,3 +655,133 @@ def test_real_llm_result_is_owned_and_sent():
     assert asyncio.run(value.deliver_reply_style(event)) is True
     assert event.cleared is True
     assert event.sent
+
+
+class _HostContext:
+    def __init__(self):
+        self.config = {
+            "platform_settings": {
+                "segmented_reply": {
+                    "enable": True,
+                    "words_count_threshold": 150,
+                    "split_mode": "regex",
+                    "regex": r".*?[。？！~…]+|.+$",
+                    "content_cleanup_rule": "",
+                }
+            },
+            "provider_settings": {"streaming_response": False},
+            "t2i": True,
+            "t2i_word_threshold": 50,
+        }
+
+    def get_config(self, umo=None):
+        return self.config
+
+    async def get_using_tts_provider_async(self, umo=""):
+        return object()
+
+
+async def test_t2i_fallback_uses_host_segmentation_blocks(monkeypatch):
+    value = Companion.__new__(Companion)
+    value.context = _HostContext()
+    event = FakeEvent()
+    event._result.use_t2i_ = None
+    text = "甲。" * 20
+    # The old total-length guess (42) is below the threshold; the host's own
+    # 20 blocks (each +2 newlines) are above it.
+    assert "t2i" in await value._style_fallback_reason(event, event._result, text)
+
+
+async def test_t2i_worker_failure_falls_back_to_the_safe_host_claim(monkeypatch):
+    value = Companion.__new__(Companion)
+    value.context = _HostContext()
+    event = FakeEvent()
+    event._result.use_t2i_ = None
+
+    async def timeout(request, deadline_seconds=0.75):
+        return {"ok": False, "error": "timeout"}
+
+    monkeypatch.setattr("dswhale.adapter.reply_style_isolate.run", timeout)
+    assert "t2i" in await value._style_fallback_reason(event, event._result, "甲。乙。")
+
+
+def _host_context(threshold=50, enabled=True, t2i=True):
+    value = _HostContext()
+    value.config["t2i"] = t2i
+    value.config["t2i_word_threshold"] = threshold
+    value.config["platform_settings"]["segmented_reply"]["enable"] = enabled
+    return value
+
+
+def _sdk_event(text):
+    event = FakeEvent()
+    result = MessageEventResult()
+    result.chain = [Plain(text)]
+    result.result_content_type = ResultContentType.LLM_RESULT
+    result.use_t2i_ = None
+    event._result = result
+    return event
+
+
+async def test_t2i_threshold_uses_host_segments_at_the_49_50_51_boundaries():
+    text = ("甲" * 14 + "。") * 3
+    for threshold, expected_fallback in ((49, True), (50, True), (51, False)):
+        value = companion("natural")
+        value.context = _host_context(threshold)
+        event = _sdk_event(text)
+        owned = await value.deliver_reply_style(event)
+        # 3 segments of 15 chars: host length 51; raw total is 47.
+        assert owned is (not expected_fallback), threshold
+        if expected_fallback:
+            assert event.sent == []
+            assert event.cleared is False
+        else:
+            assert len(event.sent) == 3
+
+
+async def test_t2i_off_or_segmentation_off_keeps_plugin_ownership():
+    text = ("甲" * 14 + "。") * 3
+    for context in (_host_context(50, enabled=False), _host_context(50, t2i=False)):
+        value = companion("natural")
+        value.context = context
+        event = _sdk_event(text)
+        assert await value.deliver_reply_style(event) is True
+        assert len(event.sent) == 3
+
+
+async def test_t2i_explicit_result_flag_and_official_platform_are_respected():
+    text = ("甲" * 14 + "。") * 3
+
+    value = companion("natural")
+    value.context = _host_context(50, t2i=False)
+    explicit = _sdk_event(text)
+    explicit._result.use_t2i_ = True
+    assert await value.deliver_reply_style(explicit) is False
+
+    value = companion("natural")
+    value.context = _host_context(50)
+    disabled = _sdk_event(text)
+    disabled._result.use_t2i_ = False
+    assert await value.deliver_reply_style(disabled) is True
+
+    webhook = _sdk_event(text)
+    webhook.get_platform_name = lambda: "qq_official_webhook"
+    value = companion("natural")
+    value.context = _host_context(50)
+    assert await value.deliver_reply_style(webhook) is True
+
+    websocket = _sdk_event(text)
+    websocket.get_platform_name = lambda: "qq_official"
+    value = companion("natural")
+    value.context = _host_context(50)
+    assert await value.deliver_reply_style(websocket) is False
+
+
+async def test_nonstreaming_event_ignores_the_hosts_global_streaming_switch_for_t2i():
+    text = ("甲" * 14 + "。") * 3
+    value = companion("natural")
+    value.context = _host_context(51)
+    value.context.config["provider_settings"]["streaming_response"] = True
+    event = _sdk_event(text)
+    assert await value.deliver_reply_style(event) is True
+    assert len(event.sent) == 3

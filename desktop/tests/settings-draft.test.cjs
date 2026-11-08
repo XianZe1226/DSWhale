@@ -168,3 +168,44 @@ test('F6: a host-segmented preview shows the real three bubbles, not one placeho
   assert.match(html, /乙。/);
   assert.match(html, /丙。/);
 });
+
+test('S5: a failed save exposes an in-app refresh that preserves the draft', async () => {
+  let reads = 0;
+  let saves = 0;
+  const app = await boot(async action => {
+    if (action === 'settings-get') {
+      reads += 1;
+      return reads === 1 ? settings() : settings({ replyStyleMode: 'single', proactiveEnabled: true });
+    }
+    if (action === 'settings-save') {
+      saves += 1;
+      return saves === 1 ? { error: '设置已被外部修改，请重新读取。' } : settings({ replyStyleMode: 'natural', proactiveEnabled: true });
+    }
+    if (action === 'inspect') return { installed: true, running: true, phase: 'ready', setup: { ownerConfigured: true, qqConfigured: true, modelConfigured: true } };
+    if (action === 'extensions-status') return {};
+    return {};
+  });
+  app.click({ action: 'reply-style-mode', mode: 'natural' });
+  await app.settle();
+  app.click({ action: 'save-settings' });
+  for (let i = 0; i < 4; i += 1) await app.settle();
+  assert.equal(saves, 1);
+  assert.match(app.html(), /设置已被外部修改/);
+  assert.match(app.html(), /重新读取并保留修改/);
+
+  app.click({ action: 'settings-get' });
+  for (let i = 0; i < 4; i += 1) await app.settle();
+  assert.equal(reads, 2);
+
+  app.click({ action: 'save-settings' });
+  for (let i = 0; i < 3; i += 1) await app.settle();
+  assert.equal(saves, 1, 'the first save after refresh must only ask for confirmation');
+  assert.match(app.html(), /再次点击保存将覆盖外部值/);
+
+  app.click({ action: 'save-settings' });
+  for (let i = 0; i < 4; i += 1) await app.settle();
+  assert.equal(saves, 2);
+  const save = app.calls.filter(([action]) => action === 'settings-save').at(-1);
+  assert.deepEqual(save[1].patch, { replyStyleMode: 'natural' });
+  assert.doesNotMatch(app.html(), /重新读取并保留修改/);
+});

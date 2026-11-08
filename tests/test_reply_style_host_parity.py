@@ -187,8 +187,26 @@ def test_inherit_preview_reports_host_owned_paths_without_fake_counts(tmp_path):
     streamed = preview(
         {"text": "甲。乙。", "mode": "inherit", "platform": "aiocqhttp", "streaming": True}, host
     )
+    assert streamed["computed"] is True
+    assert streamed["hostPath"] == "host_segmented"
+
+    streaming_host = read_host_reply_context(
+        make_host(
+            tmp_path / "streaming",
+            provider_settings={
+                "streaming_response": True,
+                "unsupported_streaming_strategy": "realtime_segmenting",
+            },
+        ),
+        "aiocqhttp",
+    )
+    streamed = preview(
+        {"text": "甲。乙。", "mode": "inherit", "platform": "aiocqhttp"}, streaming_host
+    )
     assert streamed["computed"] is False
     assert streamed["hostPath"] == "host_stream_realtime"
+    assert streamed["count"] is None
+    assert streamed["bubbles"] == []
     assert streamed["interval"] is None
     assert streamed["uncomputedReason"] == "host_owned"
 
@@ -211,4 +229,180 @@ def test_unknown_profile_is_honest(tmp_path):
     assert value["computed"] is False
     assert value["uncomputedReason"] == "config_missing"
     assert value["hostPath"] == "host_unknown"
+    assert value["count"] is None
+    assert value["bubbles"] == []
     assert value["interval"] is None
+
+
+def _fish(host, **values):
+    path = host / "data/config/astrbot_plugin_dswhale_config.json"
+    fish = json.loads(path.read_text(encoding="utf-8"))
+    fish.update(values)
+    path.write_text(json.dumps(fish), encoding="utf-8")
+
+
+def test_official_family_resolves_the_bound_profile_actual_type(tmp_path):
+    platforms = [
+        {"id": "official-ws", "type": "qq_official", "enable": True},
+        {"id": "official-hook", "type": "qq_official_webhook", "enable": True},
+    ]
+    host = make_host(
+        tmp_path,
+        platform=platforms,
+        provider_settings={
+            "streaming_response": True,
+            "unsupported_streaming_strategy": "realtime_segmenting",
+        },
+    )
+    _fish(host, official_owner_umo="official-hook:FriendMessage:1")
+    webhook = read_host_reply_context(host, "qq_official")
+    assert webhook["computed"] is True
+    assert webhook["host"]["platform"] == "qq_official_webhook"
+    assert webhook["hostSource"]["platform"] == "qq_official_webhook"
+    assert webhook["hostSource"]["streaming"] is True
+    assert webhook["hostSource"]["strategy"] == "realtime_segmenting"
+    assert read_host_reply_context(host, "qq_official_webhook")["host"]["platform"] == (
+        "qq_official_webhook"
+    )
+
+    _fish(host, official_owner_umo="official-ws:FriendMessage:1")
+    websocket = read_host_reply_context(host, "qq_official")
+    assert websocket["host"]["platform"] == "qq_official"
+    assert read_host_reply_context(host, "qq_official_webhook") == {
+        "computed": False,
+        "reason": "profile_unknown",
+    }
+
+
+def test_nonstream_host_preview_ignores_strategy_and_reports_streaming_honestly(tmp_path):
+    host = read_host_reply_context(
+        make_host(
+            tmp_path,
+            provider_settings={
+                "streaming_response": False,
+                "unsupported_streaming_strategy": "full",
+            },
+        ),
+        "aiocqhttp",
+    )
+    value = preview({"text": "甲。乙。丙。", "mode": "inherit", "platform": "aiocqhttp"}, host)
+    assert value["computed"] is True
+    assert value["hostPath"] == "host_segmented"
+    assert value["count"] == 3
+    assert value["bubbles"] == ["甲。", "乙。", "丙。"]
+
+    from dswhale.reply_style_ops import host_preview
+
+    streamed = host_preview("甲。乙。", {**host["host"], "streaming": True})
+    assert streamed == {"blocks": [], "warnings": ["host_streaming"], "path": "host_stream"}
+
+
+def test_host_worker_failure_never_fabricates_a_count(tmp_path, monkeypatch):
+    from dswhale import reply_style_isolate
+
+    async def timeout(request, deadline_seconds=0.75):
+        return {"ok": False, "error": "timeout"}
+
+    monkeypatch.setattr(reply_style_isolate, "run", timeout)
+    host = read_host_reply_context(make_host(tmp_path), "aiocqhttp")
+    value = preview({"text": "甲。乙。", "mode": "inherit", "platform": "aiocqhttp"}, host)
+    assert value["computed"] is False
+    assert value["hostPath"] == "host_unknown"
+    assert value["count"] is None
+    assert value["bubbles"] == []
+    assert value["interval"] is None
+    assert "host_regex_timeout" in value["warnings"]
+
+
+def test_t2i_uses_host_blocks_instead_of_a_total_length_guess():
+    cfg = HostReplyConfig.from_mapping(
+        config(t2i=True, t2i_word_threshold=50), platform="aiocqhttp"
+    )
+    text = "甲。" * 20
+    assert decoration_reason(cfg, platform="aiocqhttp", plain_texts=[text]) == ""
+    blocks = ["甲。"] * 20
+    assert (
+        decoration_reason(cfg, platform="aiocqhttp", plain_texts=[text], t2i_blocks=blocks) == "t2i"
+    )
+
+
+def test_official_webhook_and_websocket_previews_use_their_real_paths(tmp_path):
+    webhook_host = make_host(
+        tmp_path / "webhook",
+        platform=[{"id": "hook", "type": "qq_official_webhook", "enable": True}],
+    )
+    _fish(webhook_host, official_owner_umo="hook:FriendMessage:1")
+    webhook = read_host_reply_context(webhook_host, "qq_official")
+    single = preview(
+        {"text": "甲。乙。丙。", "mode": "inherit", "platform": "qq_official"}, webhook
+    )
+    assert single["computed"] is True
+    assert single["hostPath"] == "host_single"
+    assert single["count"] == 1
+
+    ws_host = make_host(
+        tmp_path / "ws", platform=[{"id": "ws", "type": "qq_official", "enable": True}]
+    )
+    _fish(ws_host, official_owner_umo="ws:FriendMessage:1")
+    websocket = read_host_reply_context(ws_host, "qq_official")
+    segmented = preview(
+        {"text": "甲。乙。丙。", "mode": "inherit", "platform": "qq_official"}, websocket
+    )
+    assert segmented["computed"] is True
+    assert segmented["hostPath"] == "host_segmented"
+    assert segmented["count"] == 3
+
+
+def test_preview_t2i_uses_the_hosts_post_segmentation_length(tmp_path):
+    host = make_host(tmp_path, t2i=True, t2i_word_threshold=50)
+    context = read_host_reply_context(host, "aiocqhttp")
+    text = ("甲" * 14 + "。") * 3
+    inherit = preview({"text": text, "mode": "inherit", "platform": "aiocqhttp"}, context)
+    assert inherit["hostPath"] == "host_decorated_t2i"
+    assert inherit["computed"] is False
+    assert inherit["count"] is None
+    assert inherit["bubbles"] == []
+
+    natural = preview({"text": text, "mode": "natural", "platform": "aiocqhttp"}, context)
+    assert natural["hostPath"] == "host_decorated_t2i"
+    assert natural["computed"] is False
+    assert natural["count"] is None
+    assert natural["bubbles"] == []
+
+
+def test_plugin_owned_preview_ignores_host_quote_and_t2i_while_streaming(tmp_path):
+    platform_settings = {
+        "reply_prefix": "",
+        "reply_with_quote": True,
+        "reply_with_mention": False,
+        "forward_threshold": 1500,
+        "segmented_reply": {
+            "enable": True,
+            "interval": "0.8,1.5",
+            "words_count_threshold": 150,
+            "split_mode": "regex",
+            "regex": r".*?[。？！~…]+|.+$",
+            "content_cleanup_rule": "",
+        },
+    }
+    host = make_host(
+        tmp_path,
+        platform_settings=platform_settings,
+        provider_settings={
+            "streaming_response": True,
+            "unsupported_streaming_strategy": "realtime_segmenting",
+        },
+        t2i=True,
+        t2i_word_threshold=50,
+    )
+    context = read_host_reply_context(host, "aiocqhttp")
+    text = ("甲" * 14 + "。") * 3
+    natural = preview({"text": text, "mode": "natural", "platform": "aiocqhttp"}, context)
+    assert natural["path"] != "host"
+    assert natural["computed"] is True
+    assert natural["count"] == 3
+
+    inherit = preview({"text": text, "mode": "inherit", "platform": "aiocqhttp"}, context)
+    assert inherit["hostPath"] == "host_stream_realtime"
+    assert inherit["computed"] is False
+    assert inherit["count"] is None

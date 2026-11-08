@@ -38,6 +38,12 @@ def test_url_query_and_code_punctuation_are_never_cleanup_targets():
     assert joined.endswith("好")
 
 
+def test_custom_spans_keep_adjacent_matches_separate():
+    text = "甲。乙。丙。"
+    spans = custom_spans(text, r"[^。]+。?")
+    assert [(start, end) for start, end, _kind in spans] == [(0, 2), (2, 4), (4, 6)]
+
+
 def test_custom_spans_merge_a_boundary_that_cuts_the_protected_range():
     text = "甲。`乙。丙`。丁"
     spans = custom_spans(text, r"[^。]+。?")
@@ -72,3 +78,9 @@ def test_protected_proof_requires_each_duplicate_fragment():
     source = "前 `重复。` 后 `重复。` 尾"
     assert _protected_preserved(source, ["前 `重复。` 后 `重复。` 尾"]) is True
     assert _protected_preserved(source, ["前 `重复。` 尾"]) is False
+
+
+def test_adjacent_custom_matches_become_three_bubbles():
+    value = run("甲。乙。丙。", r"[^。]+。?")
+    assert value["bubbles"] == ["甲。", "乙。", "丙。"]
+    assert value["count"] == 3

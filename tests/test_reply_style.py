@@ -14,7 +14,6 @@ from dswhale.reply_style import (
     preview,
     prompt_hint,
     protected_ranges,
-    validate_custom,
 )
 
 
@@ -149,15 +148,15 @@ def test_custom_regex_splits_and_merges_tail():
     assert "merged_overflow" in result["warnings"]
 
 
-def test_custom_regex_must_not_have_capture_groups_or_match_empty():
+def test_custom_regex_worker_rejects_capture_groups_and_empty_matches():
     with pytest.raises(StyleError, match="捕获组"):
-        validate_custom(r"(甲|乙)")
+        plan_custom("甲。", custom_regex=r"(甲|乙)")
     with pytest.raises(StyleError, match="空字符串"):
-        validate_custom(r"x*")
+        plan_custom("甲。", custom_regex=r"x*")
     with pytest.raises(StyleError, match="语法"):
-        validate_custom("(")
-    with pytest.raises(StyleError, match="200"):
-        validate_custom("a" * 201)
+        plan_custom("甲。", custom_regex="(")
+    with pytest.raises(StyleError, match="2000"):
+        plan_custom("甲。", custom_regex="a" * 2001)
 
 
 def test_custom_cleanup_does_not_touch_protected_spans():

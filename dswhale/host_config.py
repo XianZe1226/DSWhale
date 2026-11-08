@@ -97,12 +97,17 @@ class HostReplyConfig:
             },
         )
 
-    def host_preview(self, platform=None):
-        """Full, safe input for the isolated host segmentation preview."""
+    def host_preview(self, platform=None, streaming=None):
+        """Full, safe input for the isolated host segmentation preview.
+
+        ``streaming`` overrides the host-wide switch for the current event: a
+        non-streaming reply must be segmented even when streaming_response is
+        enabled globally.
+        """
         return {
             "platform": platform or self.platform,
             "segmentPlatform": platform or self.platform,
-            "streaming": self.streaming,
+            "streaming": self.streaming if streaming is None else bool(streaming),
             "strategy": self.strategy,
             "segmented": dict(self.segmented),
         }
@@ -134,7 +139,9 @@ def result_is_llm(result):
         return False
 
 
-def decoration_reason(cfg, *, platform="", message_type="", plain_texts=(), use_t2i=None):
+def decoration_reason(
+    cfg, *, platform="", message_type="", plain_texts=(), use_t2i=None, t2i_blocks=None
+):
     """Return the first host decoration that must keep the reply's ownership."""
     if cfg is None:
         return ""
@@ -150,7 +157,13 @@ def decoration_reason(cfg, *, platform="", message_type="", plain_texts=(), use_
     if platform == "aiocqhttp" and total > cfg.forward_threshold:
         return "forward"
     wanted_t2i = (use_t2i is None and cfg.t2i) or use_t2i is True
-    if wanted_t2i and total + 2 * len(plain_texts) > cfg.t2i_word_threshold:
+    if t2i_blocks is not None:
+        # The host splits first, adds two newlines around every Plain, then
+        # compares the rendered length with the threshold.
+        t2i_length = sum(len(block) + 2 for block in t2i_blocks)
+    else:
+        t2i_length = total + 2 * len(plain_texts)
+    if wanted_t2i and t2i_length > cfg.t2i_word_threshold:
         return "t2i"
     if cfg.tts_enabled and cfg.tts_probability > 0:
         return "tts"

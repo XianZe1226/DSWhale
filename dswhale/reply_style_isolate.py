@@ -13,6 +13,8 @@ import json
 import os
 import subprocess
 import sys
+import threading
+import time
 from pathlib import Path
 from weakref import WeakKeyDictionary
 
@@ -39,6 +41,10 @@ def _semaphore():
         value = asyncio.Semaphore(MAX_CONCURRENCY)
         _semaphores[loop] = value
     return value
+
+
+def _worker_command():
+    return [sys.executable, str(_WORKER)]
 
 
 def _environment():
@@ -121,29 +127,113 @@ async def _run_async(payload, limit):
     return _decode(stdout)
 
 
-def _run_blocking(payload, timeout):
-    kwargs = {}
-    if os.name == "nt":
-        kwargs["creationflags"] = getattr(subprocess, "CREATE_NO_WINDOW", 0)
-    try:
-        process = subprocess.Popen(
-            [sys.executable, str(_WORKER)],
-            cwd=str(_PACKAGE_ROOT),
-            env=_environment(),
-            stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.DEVNULL,
-            **kwargs,
-        )
-    except OSError:
+class _BlockingWorker:
+    """Own a blocking worker so cancellation can kill and reap it.
+
+    A thread cannot be cancelled directly. The holder starts the child inside
+    the executor thread, exposes ``terminate`` to the event-loop thread and
+    ``wait`` so the slot is released only after the child has been collected.
+    """
+
+    def __init__(self, payload, timeout):
+        self.payload = payload
+        self.timeout = timeout
+        self._process = None
+        self._cancelled = False
+        self._lock = threading.Lock()
+
+    def _start(self):
+        kwargs = {}
+        if os.name == "nt":
+            kwargs["creationflags"] = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+        with self._lock:
+            if self._cancelled:
+                return None
+            if self._process is not None:
+                return self._process
+            self._process = subprocess.Popen(
+                _worker_command(),
+                cwd=str(_PACKAGE_ROOT),
+                env=_environment(),
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+                **kwargs,
+            )
+            return self._process
+
+    def run(self):
+        try:
+            process = self._start()
+        except OSError:
+            return {"ok": False, "error": "unavailable"}
+        if process is None:
+            return {"ok": False, "error": "unavailable"}
+        try:
+            stdout, _ = process.communicate(self.payload, timeout=self.timeout)
+        except subprocess.TimeoutExpired:
+            self.terminate()
+            try:
+                process.communicate(timeout=1)
+            except (subprocess.TimeoutExpired, OSError):
+                pass
+            return {"ok": False, "error": "timeout"}
+        return _decode(stdout)
+
+    def terminate(self):
+        with self._lock:
+            self._cancelled = True
+            process = self._process
+        if process is not None and process.poll() is None:
+            try:
+                process.kill()
+            except (ProcessLookupError, OSError):
+                pass
+
+    def wait(self):
+        with self._lock:
+            process = self._process
+        if process is None:
+            return
+        try:
+            process.wait(timeout=1.0)
+        except (subprocess.TimeoutExpired, OSError):
+            pass
+
+
+async def _finish_future(future):
+    """Wait for an executor future even while the surrounding task is cancelled."""
+    while not future.done():
+        try:
+            await asyncio.shield(future)
+        except asyncio.CancelledError:
+            continue
+    return future.result()
+
+
+def run_sync(request, deadline_seconds=DEFAULT_TIMEOUT):
+    """Run one worker synchronously, e.g. while loading or saving settings."""
+    started = time.monotonic()
+
+    def remaining():
+        return max(0.0, deadline_seconds - DEADLINE_MARGIN - (time.monotonic() - started))
+
+    if remaining() <= MIN_WORKER_BUDGET:
         return {"ok": False, "error": "unavailable"}
-    try:
-        stdout, _ = process.communicate(payload, timeout=timeout)
-    except subprocess.TimeoutExpired:
-        process.kill()
-        process.communicate()
-        return {"ok": False, "error": "timeout"}
-    return _decode(stdout)
+    payload = json.dumps(request, ensure_ascii=False).encode("utf-8")
+    holder = _BlockingWorker(payload, remaining())
+    return holder.run()
+
+
+def validate_sync(pattern, cleanup=""):
+    """Validate custom regexes in a worker for settings load/save paths."""
+    outcome = run_sync({"op": "validate", "regex": pattern, "cleanup": cleanup})
+    if outcome.get("ok") is True:
+        return True
+    if outcome.get("error") in {"timeout", "unavailable"}:
+        raise ValueError("自定义规则校验超时，请简化规则后重试")
+    message = outcome.get("message") or "自定义规则无法执行"
+    raise ValueError(str(message))
 
 
 async def run(request, deadline_seconds=DEFAULT_TIMEOUT):
@@ -181,7 +271,15 @@ async def run(request, deadline_seconds=DEFAULT_TIMEOUT):
                 budget = remaining()
                 if budget <= MIN_WORKER_BUDGET:
                     return {"ok": False, "error": "unavailable"}
-                value = await asyncio.to_thread(_run_blocking, payload, budget)
+                holder = _BlockingWorker(payload, budget)
+                future = loop.run_in_executor(None, holder.run)
+                try:
+                    value = await asyncio.shield(future)
+                except asyncio.CancelledError:
+                    holder.terminate()
+                    await _finish_future(future)
+                    holder.wait()
+                    raise
             return value
         finally:
             _active -= 1

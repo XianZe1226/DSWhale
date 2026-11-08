@@ -10,7 +10,6 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
-import re
 import sys
 
 from . import reply_style_isolate
@@ -63,7 +62,13 @@ def parse_interval(value):
 
 
 def validate_custom(pattern, label="自定义规则"):
-    """Compile a user regex and reject forms whose output is ambiguous."""
+    """Shape-check a user regex without compiling or running it.
+
+    Compilation, capture-group rejection and the empty-match check happen in
+    the worker (``reply_style_ops.validate_rules``). The parent process must
+    never touch user input with ``re``; a pathological pattern could otherwise
+    block the host event loop before the worker deadline exists.
+    """
     if not isinstance(pattern, str):
         raise StyleError(f"{label}必须是字符串")
     pattern = pattern.strip()
@@ -71,19 +76,9 @@ def validate_custom(pattern, label="自定义规则"):
         return None
     if len(pattern) > MAX_CUSTOM_PATTERN:
         raise StyleError(f"{label}不能超过 {MAX_CUSTOM_PATTERN} 个字符")
-    try:
-        compiled = re.compile(pattern, re.DOTALL | re.MULTILINE)
-    except re.error as exc:
-        raise StyleError(f"{label}语法无效：{exc}") from exc
-    if compiled.groups:
-        raise StyleError(f"{label}不能包含捕获组；请使用 (?:...) 非捕获分组")
-    try:
-        empty = compiled.search("")
-    except re.error as exc:  # defensive: some patterns fail only at match time
-        raise StyleError(f"{label}无法执行：{exc}") from exc
-    if empty is not None:
-        raise StyleError(f"{label}不能匹配空字符串")
-    return compiled
+    if "\x00" in pattern:
+        raise StyleError(f"{label}不能包含空字符")
+    return pattern
 
 
 def _split_sentences(text, ranges):
@@ -271,13 +266,14 @@ async def plan_async(
             streaming=streaming,
             segmented=segmented,
         )
-    if max_bubbles not in (1, 2, 3) or isinstance(max_bubbles, bool):
+    if isinstance(max_bubbles, bool) or max_bubbles not in (1, 2, 3):
         raise StyleError("目标条数应在 1–3 之间")
     if punctuation not in PUNCTUATION:
         raise StyleError("标点处理方式无效")
-    if validate_custom(custom_regex, "自定义拆分规则") is None:
+    custom_regex = validate_custom(custom_regex, "自定义拆分规则")
+    if custom_regex is None:
         raise StyleError("请先填写自定义拆分规则")
-    validate_custom(custom_cleanup, "自定义清理规则")
+    custom_cleanup = validate_custom(custom_cleanup, "自定义清理规则") or ""
     low, high = parse_interval(DEFAULT_INTERVAL)
     original = normalize_text(text)
     cleaned = clean_text(original)
@@ -305,6 +301,8 @@ async def plan_async(
             original,
             custom_executed=True,
         )
+    if outcome.get("error") == "ValueError":
+        raise StyleError(str(outcome.get("message") or "自定义规则无法安全执行"))
     degraded = "custom_timeout" if outcome.get("error") == "timeout" else "custom_unavailable"
     bubbles = [cleaned.strip()] if cleaned.strip() else []
     return _result(
@@ -375,6 +373,42 @@ def preview(payload, host=None):
     raise StyleError("预览需要在没有运行事件循环时调用")
 
 
+async def _host_blocks(cfg, platform, text):
+    """Return the host's own segmentation blocks, or a conservative failure.
+
+    The host splits first, adds two newlines around every Plain, and only then
+    applies the T2I threshold. Calling this before ``decoration_reason`` keeps
+    the preview consistent with the real ResultDecorateStage.
+    """
+    actual = str(platform or "").lower()
+    if (
+        actual in {"qq_official_webhook", "weixin_official_account", "dingtalk"}
+        or cfg.segmented.get("enable") is not True
+    ):
+        return ([text] if text.strip() else []), None, "host_single"
+    outcome = await reply_style_isolate.run(
+        {"op": "host", "text": text, "host": cfg.host_preview(platform, streaming=False)}
+    )
+    value = outcome.get("value")
+    if outcome.get("ok") is not True or not isinstance(value, dict):
+        return (
+            None,
+            (
+                "host_regex_timeout"
+                if outcome.get("error") == "timeout"
+                else "host_regex_unavailable"
+            ),
+            None,
+        )
+    if value.get("warnings"):
+        return None, str(value["warnings"][0]), None
+    return list(value.get("blocks") or []), None, value.get("path") or "host_segmented"
+
+
+def _wants_t2i(cfg, use_t2i):
+    return (use_t2i is None and cfg.t2i) or use_t2i is True
+
+
 async def preview_async(payload, host=None):
     """Validate a desktop preview request and return the plan the runtime uses."""
     if not isinstance(payload, dict):
@@ -399,35 +433,61 @@ async def preview_async(payload, host=None):
     streaming = payload.get("streaming", False) is True
     segmented = payload.get("segmented", True) is not False
     low, high = parse_interval(interval)
-    if mode == "custom":
-        validate_custom(custom_regex, "自定义拆分规则")
-        validate_custom(custom_cleanup, "自定义清理规则")
     host = host if isinstance(host, dict) else {}
     host_computed = host.get("computed") is True
     profile = host.get("host") if isinstance(host.get("host"), dict) else {}
     host_source = host.get("hostSource") if isinstance(host.get("hostSource"), dict) else None
     decoration = ""
     if mode != "inherit" and host_computed:
-        from .host_config import HostReplyConfig, decoration_reason
+        from .host_config import HostReplyConfig, decoration_reason, stream_decoration_reason
 
         cfg = HostReplyConfig.from_mapping(
             profile.get("config") or {}, platform=profile.get("platform") or platform
         )
-        decoration = decoration_reason(
-            cfg,
-            platform=cfg.platform or platform,
-            message_type=payload.get("messageType", "FriendMessage"),
-            plain_texts=[text],
-            use_t2i=payload.get("useT2i"),
-        )
+        actual_platform = cfg.platform or platform
+        use_t2i = payload.get("useT2i")
+        if cfg.streaming:
+            # The host returns before decoration in streaming mode. Only the
+            # prefix and TTS survive upstream, so quote/T2I/forward/mention must
+            # not make this plugin-owned preview look host-owned.
+            decoration = stream_decoration_reason(cfg, platform=actual_platform)
+        else:
+            decoration = decoration_reason(
+                cfg,
+                platform=actual_platform,
+                message_type=payload.get("messageType", "FriendMessage"),
+                plain_texts=[text],
+                use_t2i=use_t2i,
+                t2i_blocks=[],
+            )
+            if not decoration and _wants_t2i(cfg, use_t2i):
+                blocks, failure, _path = await _host_blocks(cfg, actual_platform, text)
+                decoration = (
+                    "t2i"
+                    if failure
+                    else decoration_reason(
+                        cfg,
+                        platform=actual_platform,
+                        message_type=payload.get("messageType", "FriendMessage"),
+                        plain_texts=[text],
+                        use_t2i=use_t2i,
+                        t2i_blocks=blocks,
+                    )
+                )
     elif mode != "inherit" and (payload.get("hostReplyPrefix") or payload.get("hostTtsEnabled")):
         decoration = "reply_prefix" if payload.get("hostReplyPrefix") else "tts"
     if decoration:
         base = plan(text, mode="single", platform=platform)
         base.update(
             path="host",
-            hostPath=f"host_fallback_{decoration}",
+            hostPath=(
+                f"host_decorated_{decoration}"
+                if decoration == "t2i"
+                else f"host_fallback_{decoration}"
+            ),
             warnings=[*base["warnings"], "host_decoration"],
+            count=None if host_computed else base["count"],
+            bubbles=[] if host_computed else base["bubbles"],
             interval=None,
             computed=False,
             uncomputedReason="host_owned",
@@ -458,6 +518,8 @@ async def preview_async(payload, host=None):
         value.update(
             path="host",
             hostPath="host_unknown",
+            bubbles=[],
+            count=None,
             interval=None,
             computed=False,
             uncomputedReason=host.get("reason") or "profile_unknown",
@@ -474,73 +536,117 @@ async def preview_async(payload, host=None):
         value["effectivePath"] = "host"
         value["hostSource"] = host_source
         value["interval"] = None
-        if streaming:
+        from .host_config import HostReplyConfig, decoration_reason
+
+        cfg = HostReplyConfig.from_mapping(
+            profile.get("config") or {},
+            platform=profile.get("platform") or platform,
+            profile_id=str(profile.get("id") or ""),
+        )
+        actual_platform = cfg.platform or str(profile.get("platform") or platform)
+        if cfg.streaming:
+            # The host streams without decoration. Guessing a bubble count or a
+            # send interval here would be fabricated evidence.
             value.update(
                 hostPath="host_stream_realtime",
                 computed=False,
                 uncomputedReason="host_owned",
+                count=None,
+                bubbles=[],
                 warnings=[*value["warnings"], "host_streaming"],
             )
             return value
-        from .host_config import HostReplyConfig, decoration_reason
-
-        cfg = HostReplyConfig.from_mapping(
-            profile.get("config") or {}, platform=profile.get("platform") or platform
-        )
+        use_t2i = payload.get("useT2i")
+        message_type = payload.get("messageType", "FriendMessage")
         decoration = decoration_reason(
             cfg,
-            platform=cfg.platform or platform,
-            message_type=payload.get("messageType", "FriendMessage"),
+            platform=actual_platform,
+            message_type=message_type,
             plain_texts=[text],
-            use_t2i=payload.get("useT2i"),
+            use_t2i=use_t2i,
+            t2i_blocks=[],
         )
+        blocks = None
+        path = None
+        failure = None
+        if not decoration and _wants_t2i(cfg, use_t2i):
+            blocks, failure, path = await _host_blocks(cfg, actual_platform, text)
+            if failure:
+                # The host may split differently. Claiming the host's plain
+                # path here could drop a T2I decoration, so stay conservative.
+                value.update(
+                    hostPath="host_decorated_t2i",
+                    computed=False,
+                    uncomputedReason="host_owned",
+                    count=None,
+                    bubbles=[],
+                    interval=None,
+                    warnings=[*value["warnings"], failure, "host_decoration"],
+                    decorationReason="t2i",
+                )
+                return value
+            decoration = decoration_reason(
+                cfg,
+                platform=actual_platform,
+                message_type=message_type,
+                plain_texts=[text],
+                use_t2i=use_t2i,
+                t2i_blocks=blocks,
+            )
         if decoration:
             value.update(
                 hostPath=f"host_decorated_{decoration}",
                 computed=False,
                 uncomputedReason="host_owned",
+                count=None,
+                bubbles=[],
+                interval=None,
                 warnings=[*value["warnings"], "host_decoration"],
                 decorationReason=decoration,
             )
             return value
-        host_data = {
-            "platform": platform,
-            "segmentPlatform": profile.get("platform") or platform,
-            "segmented": profile.get("segmented") or {},
-        }
         if (
-            str(platform).lower() not in {"aiocqhttp", "onebot", "napcat"}
-            or profile.get("strategy", "realtime_segmenting") != "realtime_segmenting"
-            or not (profile.get("segmented") or {}).get("enable")
+            actual_platform.lower()
+            in {
+                "qq_official_webhook",
+                "weixin_official_account",
+                "dingtalk",
+            }
+            or cfg.segmented.get("enable") is not True
         ):
             value.update(
                 hostPath="host_single",
                 bubbles=[text.strip()] if text.strip() else [],
                 count=1 if text.strip() else 0,
+                computed=True,
+                uncomputedReason=None,
                 warnings=[*value["warnings"], "host_single"],
             )
             return value
-        outcome = await reply_style_isolate.run({"op": "host", "text": text, "host": host_data})
-        if outcome.get("ok") is not True or not isinstance(outcome.get("value"), dict):
-            degraded = (
-                "host_regex_timeout"
-                if outcome.get("error") == "timeout"
-                else "host_regex_unavailable"
-            )
+        if blocks is None:
+            blocks, failure, path = await _host_blocks(cfg, actual_platform, text)
+        if blocks is None:
             value.update(
-                bubbles=[text.strip()] if text.strip() else [],
-                count=1 if text.strip() else 0,
-                warnings=[*value["warnings"], degraded],
+                hostPath="host_unknown",
+                bubbles=[],
+                count=None,
+                interval=None,
+                warnings=[
+                    *value["warnings"],
+                    failure or "host_regex_unavailable",
+                    "host_unavailable",
+                ],
                 computed=False,
-                uncomputedReason=degraded,
+                uncomputedReason=failure or "host_regex_unavailable",
             )
             return value
-        result = outcome["value"]
         value.update(
-            hostPath=result.get("path") or "host_segmented",
-            bubbles=result.get("blocks") or [],
-            count=len(result.get("blocks") or []),
-            warnings=[*value["warnings"], *(result.get("warnings") or [])],
+            hostPath=path or "host_segmented",
+            bubbles=blocks,
+            count=len(blocks),
+            computed=True,
+            uncomputedReason=None,
+            warnings=[*value["warnings"]],
         )
         return value
     value = await plan_async(

@@ -12,13 +12,43 @@ import re
 
 SENTENCE_END = "。！？!?…"
 SENTENCE_CLOSERS = "」』”’\"')）】]}>"
-MAX_CUSTOM_PATTERN = 200
+MAX_CUSTOM_PATTERN = 2000
 DEFAULT_HOST_REGEX = r".*?[。？！~…]+|.+$"
 WORKER_MARKER = "DSWHALE_REPLY_STYLE_WORKER"
 
 
 class CustomWorkerRequired(RuntimeError):
     """Raised when user regex work is attempted in the plugin process."""
+
+
+def validate_rules(pattern, cleanup=""):
+    """Validate user regexes without executing them outside the worker.
+
+    The calling process may run this only inside ``reply_style_worker``. Shape
+    checks (type, length, NUL) live elsewhere and never compile user input.
+    """
+    for label, value in (("自定义拆分规则", pattern), ("自定义清理规则", cleanup)):
+        if not isinstance(value, str):
+            raise ValueError(f"{label}必须是字符串")
+        if len(value) > MAX_CUSTOM_PATTERN:
+            raise ValueError(f"{label}不能超过 {MAX_CUSTOM_PATTERN} 个字符")
+        if "\x00" in value:
+            raise ValueError(f"{label}不能包含空字符")
+        if not value.strip():
+            continue
+        try:
+            compiled = re.compile(value, re.DOTALL | re.MULTILINE)
+        except re.error as exc:
+            raise ValueError(f"{label}语法无效：{exc}") from exc
+        if compiled.groups:
+            raise ValueError(f"{label}不能包含捕获组；请使用 (?:...) 非捕获分组")
+        try:
+            empty = compiled.search("")
+        except re.error as exc:
+            raise ValueError(f"{label}无法执行：{exc}") from exc
+        if empty is not None:
+            raise ValueError(f"{label}不能匹配空字符串")
+    return True
 
 
 def _merge(ranges):
@@ -177,7 +207,7 @@ def custom_spans(text, pattern):
         if match.end() <= match.start():
             continue
         start, end = _expand_protected(match.start(), match.end(), ranges)
-        if spans and start <= spans[-1][1]:
+        if spans and start < spans[-1][1]:
             spans[-1] = (spans[-1][0], max(spans[-1][1], end), spans[-1][2])
         else:
             spans.append((start, end, match.group(0)))
@@ -190,6 +220,7 @@ def custom_plan(text, pattern, cleanup, maximum):
 
     if environ.get(WORKER_MARKER) != "1":
         raise CustomWorkerRequired("custom regex must run in the isolated worker")
+    validate_rules(pattern, cleanup)
     spans = custom_spans(text, pattern)
     warnings = []
     if spans:
@@ -249,7 +280,9 @@ def host_preview(text, host):
     excluded = {"qq_official_webhook", "weixin_official_account", "dingtalk"}
     if not text.strip():
         return {"blocks": [], "warnings": [], "path": "host_single"}
-    if not segmented.get("enable") or platform in excluded or platform.startswith("qq_official"):
+    if (host or {}).get("streaming") is True:
+        return {"blocks": [], "warnings": ["host_streaming"], "path": "host_stream"}
+    if not segmented.get("enable") or platform in excluded:
         return {"blocks": [text.strip()], "warnings": [], "path": "host_single"}
     threshold = segmented.get("threshold")
     try:

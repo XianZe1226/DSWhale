@@ -148,27 +148,47 @@ def read_host_reply_context(host, platform=""):
         return {"computed": False, "reason": "config_missing"}
     if not isinstance(config, dict):
         return {"computed": False, "reason": "config_missing"}
-    wanted = "qq_official" if str(platform).lower().startswith("qq_official") else "aiocqhttp"
-    ident = ""
-    if wanted == "qq_official":
-        ident = str(fish.get("official_owner_umo", "")).split(":", 1)[0]
+    requested = str(platform or "").lower()
+    if requested == "qq_official":
+        # The UI calls the whole official family qq_official. The host may use
+        # either the WebSocket or webhook platform type; the bound profile id
+        # in official_owner_umo decides which one is actually in use.
+        wanted = {"qq_official", "qq_official_webhook"}
+        official = True
+    elif requested == "qq_official_webhook":
+        wanted = {"qq_official_webhook"}
+        official = True
     else:
-        ident = str(fish.get("owner_umo", "")).split(":", 1)[0]
+        wanted = {"aiocqhttp"}
+        official = False
+    ident = str(fish.get("official_owner_umo" if official else "owner_umo", "") or "").split(
+        ":", 1
+    )[0]
     candidates = [
         item
         for item in config.get("platform", [])
-        if isinstance(item, dict) and item.get("type") == wanted
+        if isinstance(item, dict) and item.get("type") in wanted
     ]
     if ident:
         candidates = [item for item in candidates if item.get("id") == ident]
     if len(candidates) != 1:
+        family = {"qq_official", "qq_official_webhook"} if official else {"aiocqhttp"}
+        family_profiles = [
+            item
+            for item in config.get("platform", [])
+            if isinstance(item, dict) and item.get("type") in family
+        ]
+        # A profile from the same family but a different concrete type means the
+        # requested type is not the bound one; that is an unknown profile, not a
+        # missing configuration.
         return {
             "computed": False,
-            "reason": "profile_unknown" if candidates else "config_missing",
+            "reason": "profile_unknown" if family_profiles else "config_missing",
         }
     profile = candidates[0]
     if not profile.get("enable"):
         return {"computed": False, "reason": "profile_unknown"}
+    actual_platform = str(profile.get("type") or "")
     safe_config = {
         "platform_settings": config.get("platform_settings") or {},
         "provider_settings": config.get("provider_settings") or {},
@@ -183,19 +203,19 @@ def read_host_reply_context(host, platform=""):
     from .host_config import HostReplyConfig
 
     cfg = HostReplyConfig.from_mapping(
-        safe_config, platform=wanted, profile_id=str(profile.get("id", ""))
+        safe_config, platform=actual_platform, profile_id=str(profile.get("id") or "")
     )
     return {
         "computed": True,
         "reason": "",
         "host": {
             "id": cfg.profile_id,
-            "platform": wanted,
+            "platform": actual_platform,
             "strategy": cfg.strategy,
             "segmented": cfg.segmented,
             "config": safe_config,
         },
-        "hostSource": cfg.host_source(platform=wanted),
+        "hostSource": cfg.host_source(platform=actual_platform),
     }
 
 
@@ -776,9 +796,12 @@ def save_settings(host, patch, expected_revision=None):
                 parse_interval(value["replyStyleInterval"])
             if "replyStyleCustomRegex" in patch or "replyStyleCustomCleanup" in patch:
                 from .reply_style import validate_custom
+                from .reply_style_isolate import validate_sync
 
-                validate_custom(value["replyStyleCustomRegex"], "自定义拆分规则")
-                validate_custom(value["replyStyleCustomCleanup"], "自定义清理规则")
+                regex = validate_custom(value["replyStyleCustomRegex"], "自定义拆分规则") or ""
+                cleanup = validate_custom(value["replyStyleCustomCleanup"], "自定义清理规则") or ""
+                if regex or cleanup:
+                    validate_sync(regex, cleanup)
             for key, fish_key in (
                 ("replyStyleMode", "reply_style_mode"),
                 ("replyStyleMaxBubbles", "reply_style_max_bubbles"),

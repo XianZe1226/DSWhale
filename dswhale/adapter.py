@@ -14,7 +14,7 @@ from weakref import WeakValueDictionary
 from astrbot.api.message_components import Plain
 from astrbot.core.agent.run_context import ContextWrapper
 
-from . import __version__
+from . import __version__, reply_style_isolate
 from .config import Settings
 from .content import ContentClient, canonical_url
 from .host_config import (
@@ -343,23 +343,71 @@ class Companion:
         if context is None:
             return ""
         try:
+            platform = str(event.get_platform_name() or "")
             config = context.get_config(getattr(event, "unified_msg_origin", None))
             cfg = HostReplyConfig.from_mapping(
                 config,
-                platform=event.get_platform_name(),
+                platform=platform,
                 profile_id=str(getattr(event, "unified_msg_origin", "")),
             )
             message_type = event.get_message_type() if hasattr(event, "get_message_type") else None
             if streaming:
-                reason = stream_decoration_reason(cfg, platform=event.get_platform_name())
+                reason = stream_decoration_reason(cfg, platform=platform)
             else:
+                # First pass: every decoration except T2I. T2I needs the host's
+                # own segmentation blocks, which are computed below.
                 reason = decoration_reason(
                     cfg,
-                    platform=event.get_platform_name(),
+                    platform=platform,
                     message_type=message_type,
                     plain_texts=[text] if text else [],
                     use_t2i=getattr(result, "use_t2i_", None),
+                    t2i_blocks=[],
                 )
+            if reason == "tts":
+                provider = await context.get_using_tts_provider_async(
+                    getattr(event, "unified_msg_origin", "")
+                )
+                if provider is None:
+                    reason = ""
+            if reason or streaming:
+                return reason
+            use_t2i = getattr(result, "use_t2i_", None)
+            wanted_t2i = (use_t2i is None and cfg.t2i) or use_t2i is True
+            if not wanted_t2i or not text:
+                return ""
+            blocks = None
+            if platform.lower() in {
+                "qq_official_webhook",
+                "weixin_official_account",
+                "dingtalk",
+            } or not cfg.segmented.get("enable"):
+                blocks = [text]
+            else:
+                outcome = await reply_style_isolate.run(
+                    {
+                        "op": "host",
+                        "text": text,
+                        "host": cfg.host_preview(platform, streaming=False),
+                    }
+                )
+                value = outcome.get("value")
+                if (
+                    outcome.get("ok") is not True
+                    or not isinstance(value, dict)
+                    or value.get("warnings")
+                ):
+                    # The host may split differently; T2I stays the safe claim.
+                    return "t2i"
+                blocks = value.get("blocks") or []
+            reason = decoration_reason(
+                cfg,
+                platform=platform,
+                message_type=message_type,
+                plain_texts=[text],
+                use_t2i=use_t2i,
+                t2i_blocks=blocks,
+            )
             if reason == "tts":
                 provider = await context.get_using_tts_provider_async(
                     getattr(event, "unified_msg_origin", "")

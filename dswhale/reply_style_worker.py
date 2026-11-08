@@ -27,7 +27,10 @@ def main():
         return 2
     try:
         op = request.get("op")
-        if op == "custom":
+        if op == "validate":
+            reply_style_ops.validate_rules(request.get("regex", ""), request.get("cleanup", ""))
+            value = True
+        elif op == "custom":
             value = reply_style_ops.custom_plan(
                 request.get("text", ""),
                 request.get("regex", ""),
