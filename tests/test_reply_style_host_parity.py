@@ -12,6 +12,7 @@ from dswhale.host_config import (
     stream_decoration_reason,
 )
 from dswhale.reply_style import preview
+from dswhale.reply_style_ops import host_preview
 
 
 def config(**patch):
@@ -406,3 +407,14 @@ def test_plugin_owned_preview_ignores_host_quote_and_t2i_while_streaming(tmp_pat
     assert inherit["hostPath"] == "host_stream_realtime"
     assert inherit["computed"] is False
     assert inherit["count"] is None
+
+
+def test_host_preview_preserves_unsplit_whitespace_exactly():
+    host = {
+        "platform": "aiocqhttp",
+        "segmented": {"enable": False, "threshold": 150},
+    }
+    assert host_preview("  " + "甲" * 148 + "  ", host)["blocks"] == ["  " + "甲" * 148 + "  "]
+
+    host["segmented"] = {"enable": True, "threshold": 150}
+    assert host_preview("  " + "甲" * 148 + "  ", host)["blocks"] == ["  " + "甲" * 148 + "  "]

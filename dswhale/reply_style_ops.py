@@ -283,14 +283,14 @@ def host_preview(text, host):
     if (host or {}).get("streaming") is True:
         return {"blocks": [], "warnings": ["host_streaming"], "path": "host_stream"}
     if not segmented.get("enable") or platform in excluded:
-        return {"blocks": [text.strip()], "warnings": [], "path": "host_single"}
+        return {"blocks": [text], "warnings": [], "path": "host_single"}
     threshold = segmented.get("threshold")
     try:
         threshold = int(threshold)
     except (TypeError, ValueError):
         threshold = 0
     if threshold and len(text) > threshold:
-        return {"blocks": [text.strip()], "warnings": [], "path": "host_segmented"}
+        return {"blocks": [text], "warnings": [], "path": "host_segmented"}
     split_mode = segmented.get("split_mode") or "regex"
     warnings = []
     if split_mode == "words":

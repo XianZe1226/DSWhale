@@ -714,9 +714,13 @@ def _host_context(threshold=50, enabled=True, t2i=True):
 
 
 def _sdk_event(text):
+    return _sdk_event_parts(text)
+
+
+def _sdk_event_parts(*texts):
     event = FakeEvent()
     result = MessageEventResult()
-    result.chain = [Plain(text)]
+    result.chain = [Plain(text) for text in texts]
     result.result_content_type = ResultContentType.LLM_RESULT
     result.use_t2i_ = None
     event._result = result
@@ -785,3 +789,29 @@ async def test_nonstreaming_event_ignores_the_hosts_global_streaming_switch_for_
     event = _sdk_event(text)
     assert await value.deliver_reply_style(event) is True
     assert len(event.sent) == 3
+
+
+async def test_multi_plain_t2i_is_left_to_the_host_without_merging():
+    # 24 + 23 is below the T2I threshold as one merged string (47 + 2), but
+    # the host decorates each original Plain (24 + 23 + 2 + 2 = 51).
+    for segmented in (False, True):
+        value = companion("natural")
+        value.context = _host_context(200, enabled=segmented)
+        event = _sdk_event_parts("甲" * 24, "乙" * 23)
+        assert await value.deliver_reply_style(event) is False
+        assert event.sent == []
+        assert event.cleared is False
+        assert event.extra["dswhale_style_fallback"] == "t2i"
+        assert [part.text for part in event._result.chain] == ["甲" * 24, "乙" * 23]
+
+
+async def test_single_plain_with_preserved_whitespace_is_left_to_the_host():
+    text = "  " + "甲" * 148 + "  "
+    value = companion("natural")
+    value.context = _host_context(200)
+    event = _sdk_event(text)
+    assert await value.deliver_reply_style(event) is False
+    assert event.sent == []
+    assert event.cleared is False
+    assert event.extra["dswhale_style_fallback"] == "t2i"
+    assert event._result.chain[0].text == text

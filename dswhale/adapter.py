@@ -331,7 +331,9 @@ class Companion:
             platform=(event.get_platform_name() if event is not None else "aiocqhttp"),
         ), (low, high)
 
-    async def _style_fallback_reason(self, event, result=None, text="", streaming=False):
+    async def _style_fallback_reason(
+        self, event, result=None, text="", streaming=False, plain_texts=None
+    ):
         """Return why DSWhale must leave this reply to the host, if any.
 
         AstrBot's decoration stage can add a prefix, quote, mention, TTS,
@@ -342,6 +344,8 @@ class Companion:
         context = getattr(self, "context", None)
         if context is None:
             return ""
+        if plain_texts is None:
+            plain_texts = [text] if text else []
         try:
             platform = str(event.get_platform_name() or "")
             config = context.get_config(getattr(event, "unified_msg_origin", None))
@@ -360,7 +364,7 @@ class Companion:
                     cfg,
                     platform=platform,
                     message_type=message_type,
-                    plain_texts=[text] if text else [],
+                    plain_texts=plain_texts,
                     use_t2i=getattr(result, "use_t2i_", None),
                     t2i_blocks=[],
                 )
@@ -376,6 +380,12 @@ class Companion:
             wanted_t2i = (use_t2i is None and cfg.t2i) or use_t2i is True
             if not wanted_t2i or not text:
                 return ""
+            # The host may render a different string than the joined bubbles:
+            # multiple Plain parts each contribute decoration length, and a
+            # leading/trailing space survives until the host stage. Do not
+            # guess from the merged text; leave an enabled T2I to the host.
+            if len(plain_texts) != 1 or (plain_texts and plain_texts[0] != plain_texts[0].strip()):
+                return "t2i"
             blocks = None
             if platform.lower() in {
                 "qq_official_webhook",
@@ -404,7 +414,7 @@ class Companion:
                 cfg,
                 platform=platform,
                 message_type=message_type,
-                plain_texts=[text],
+                plain_texts=plain_texts,
                 use_t2i=use_t2i,
                 t2i_blocks=blocks,
             )
@@ -481,8 +491,9 @@ class Companion:
             # structure. The UI reports this as the actual mixed-chain path.
             event.set_extra("dswhale_style_fallback", "mixed_chain")
             return False
-        text = "".join(part.text for part in chain if isinstance(part, Plain))
-        fallback = await self._style_fallback_reason(event, result, text)
+        plain_texts = [part.text for part in chain if isinstance(part, Plain)]
+        text = "".join(plain_texts)
+        fallback = await self._style_fallback_reason(event, result, text, plain_texts=plain_texts)
         if fallback:
             event.set_extra("dswhale_style_fallback", fallback)
             return False
