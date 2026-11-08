@@ -18,6 +18,10 @@ from weakref import WeakKeyDictionary
 
 DEFAULT_TIMEOUT = 0.75
 MAX_CONCURRENCY = 4
+# Reserved for kill+reap and event-loop bookkeeping. Subtracting it keeps the
+# whole call (queue wait, spawn, matching, cleanup) inside the requested budget.
+DEADLINE_MARGIN = 0.05
+MIN_WORKER_BUDGET = 0.01
 _PACKAGE_ROOT = Path(__file__).resolve().parent.parent
 _WORKER = Path(__file__).resolve().with_name("reply_style_worker.py")
 _active = 0
@@ -107,7 +111,10 @@ async def _run_async(payload, limit):
         return {"ok": False, "error": "timeout"}
     except (NotImplementedError, OSError):
         return None
-    remaining = max(0.05, limit - (loop.time() - started))
+    remaining = limit - (loop.time() - started)
+    if remaining <= 0:
+        await _kill(process)
+        return {"ok": False, "error": "timeout"}
     stdout = await _communicate(process, payload, remaining)
     if stdout is None:
         return {"ok": False, "error": "timeout"}
@@ -147,7 +154,12 @@ async def run(request, deadline_seconds=DEFAULT_TIMEOUT):
     started = loop.time()
 
     def remaining():
-        return max(0.0, deadline_seconds - (loop.time() - started))
+        # The margin is subtracted, never added: it protects the hard deadline
+        # from cleanup overhead instead of extending the execution window.
+        return max(0.0, deadline_seconds - DEADLINE_MARGIN - (loop.time() - started))
+
+    if remaining() <= 0:
+        return {"ok": False, "error": "unavailable"}
 
     semaphore = _semaphore()
     try:
@@ -156,14 +168,22 @@ async def run(request, deadline_seconds=DEFAULT_TIMEOUT):
         # Waiting for a slot is part of the same hard budget. The caller maps
         # this to custom_unavailable, never to a successful execution.
         return {"ok": False, "error": "unavailable"}
-    _active += 1
     try:
-        budget = max(0.05, remaining())
-        value = await _run_async(payload, budget)
-        if value is None:
-            budget = max(0.05, remaining())
-            value = await asyncio.to_thread(_run_blocking, payload, budget)
-        return value
+        budget = remaining()
+        if budget <= MIN_WORKER_BUDGET:
+            # The slot arrived after the budget was exhausted (or so close to
+            # the deadline that starting a worker would necessarily overrun).
+            return {"ok": False, "error": "unavailable"}
+        _active += 1
+        try:
+            value = await _run_async(payload, budget)
+            if value is None:
+                budget = remaining()
+                if budget <= MIN_WORKER_BUDGET:
+                    return {"ok": False, "error": "unavailable"}
+                value = await asyncio.to_thread(_run_blocking, payload, budget)
+            return value
+        finally:
+            _active -= 1
     finally:
-        _active -= 1
         semaphore.release()

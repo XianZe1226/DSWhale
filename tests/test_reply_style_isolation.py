@@ -104,22 +104,24 @@ def test_preview_inherit_without_host_context_does_not_fabricate_host_profile():
     assert value["interval"] is None
 
 
-def test_five_concurrent_calls_are_bounded_by_the_same_deadline(monkeypatch):
-    async def slow(payload, limit):
-        await asyncio.sleep(0.2)
-        return {"ok": True, "value": {}}
+def test_five_concurrent_calls_are_bounded_by_the_same_deadline():
+    text = "a" * 33 + "!"
 
-    monkeypatch.setattr(reply_style_isolate, "_run_async", slow)
+    async def one():
+        started = time.monotonic()
+        value = await plan_async(text, mode="custom", custom_regex=r"(?:a+)+$", max_bubbles=3)
+        return value, time.monotonic() - started
 
     async def scenario():
-        return await asyncio.gather(
-            *[reply_style_isolate.run({}, deadline_seconds=0.15) for _ in range(5)]
-        )
+        return await asyncio.gather(*(one() for _ in range(5)))
 
-    results = run(scenario())
-    assert len(results) == 5
-    assert sum(item.get("ok") is True for item in results) == 4
-    assert [item.get("error") for item in results if item.get("ok") is not True] == ["unavailable"]
+    rows = run(scenario())
+    elapsed = [item[1] for item in rows]
+    assert len(rows) == 5
+    assert max(elapsed) <= 0.75
+    assert sum(value["degraded"] == "custom_timeout" for value, _ in rows) == 4
+    assert sum(value["degraded"] == "custom_unavailable" for value, _ in rows) == 1
+    assert all(value["bubbles"] == [text] for value, _ in rows)
     assert reply_style_isolate.active_workers() == 0
 
 
