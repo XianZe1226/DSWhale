@@ -224,12 +224,21 @@ def custom_plan(text, pattern, cleanup, maximum):
 
 
 def _protected_preserved(source, blocks):
-    """Prove every protected source fragment is byte-identical in the output."""
+    """Prove every protected source fragment survives at its ordered position.
+
+    Searching from a moving cursor (rather than a global substring check) also
+    catches a cleanup that collapses two identical protected fragments into one.
+    """
     output = "\n".join(blocks)
+    cursor = 0
     for start, end, _kind in protected_ranges(source):
         fragment = source[start:end]
-        if fragment and fragment not in output:
+        if not fragment:
+            continue
+        position = output.find(fragment, cursor)
+        if position < 0:
             return False
+        cursor = position + len(fragment)
     return True
 
 

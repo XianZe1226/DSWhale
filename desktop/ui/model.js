@@ -98,9 +98,15 @@
       ({ stage, title, description, badge, tone, action, actionLabel, ...(action === 'open-panel' ? { panel: 'napcat' } : {}) });
     if (data.workspace?.appUpdate?.recovery?.servicesMustRemainStopped) return view('recovery', '先完成应用更新', '当前更新或恢复尚未完成，请先处理应用设置中的提示。', '等待恢复', 'warn', 'route-settings', '查看恢复步骤');
     if (!state.installed || state.platform?.supported === false) return view('environment', '先准备运行环境', '环境准备完成后，再连接 QQ。已有配置与登录数据会保留。', '尚未准备', '', 'route-environment', '准备运行环境');
+    const startup = {
+      'starting-conversation': ['正在启动对话服务', '先启动消息处理服务，完成后再连接 QQ。'],
+      'checking-qq': ['对话服务已启动', '正在检查已有的 QQ 连接。'],
+      'starting-qq': ['正在启动 QQ 连接', '对话服务已准备好，正在启动独立 QQ 组件。'],
+      'reusing-qq': ['沿用现有 QQ 连接', 'QQ 仍在运行，正在把它连接到对话服务，不会重新登录。'],
+    }[state.startup?.stage];
     const official = viewing === 'official';
     if(official){
-      if(state.startup?.stage==='starting-conversation')return view('official-starting','正在启动对话服务','服务准备好后会连接官方网关。','正在启动','working');
+      if(startup)return view(state.startup.stage,...startup,'正在启动','working');
       if(!state.running)return view('official-stopped','启动官方机器人','启动对话服务与官方接口，不安装或启动 NapCat，也不修改个人 QQ。','尚未启动','','start','启动');
       const officialEntry=(data.connections?.channels||[]).find(item=>item.channel==='official');
       const settingsConfigured=data.settings?data.settings.officialConfigured===true:state.setup?.qqConfigured===true;
@@ -143,12 +149,6 @@
       }
       return {...view('official-connecting','正在连接 QQ 官方接口','配置保存后仍需等待连接。若长时间未连通，可检查机器人启用状态、凭据及平台要求的出口 IP。','等待连接','working','open-panel','检查官方配置'),panel:'qq'};
     }
-    const startup = {
-      'starting-conversation': ['正在启动对话服务', '先启动消息处理服务，完成后再连接 QQ。'],
-      'checking-qq': ['对话服务已启动', '正在检查已有的 QQ 连接。'],
-      'starting-qq': ['正在启动 QQ 连接', '对话服务已准备好，正在启动独立 QQ 组件。'],
-      'reusing-qq': ['沿用现有 QQ 连接', 'QQ 仍在运行，正在把它连接到对话服务，不会重新登录。'],
-    }[state.startup?.stage];
     if (startup) return view(state.startup.stage, ...startup, '正在启动', 'working');
     if (!qq) return view('checking', '正在检查 QQ 连接', '读取已有配置和当前连接状态。', '检查中', 'working', 'workspace-status', '检查连接状态');
     const ownerSaved = data.settings ? /^[1-9]\d{4,19}$/.test(data.settings.ownerQQ || '') : state.setup?.ownerConfigured;

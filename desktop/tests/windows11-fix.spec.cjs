@@ -428,3 +428,25 @@ test('R3 spec: a tray-style fault that clears and recurs with the same text is s
   await app.settle();
   assert.doesNotMatch(app.html(), /启动未完成/, 'an ordinary snapshot without an error field keeps the dismissal');
 });
+
+test('F5 spec: checking-qq is visible in sidebar and overview before any official connection', async () => {
+  const app = renderApp({ screen: 'connect', invoke: connectInvoke(officialOnlySnapshot()) });
+  for (let i = 0; i < 8; i += 1) await app.settle();
+  app.pushState({ running: false, startup: { stage: 'checking-qq' } });
+  await app.settle();
+
+  const sidebar = () => app.html().match(/<div class="sidebar-service">[\s\S]*?<\/div><\/div>/)?.[0] || '';
+  const hero = () => app.html().match(/<section class="hero"[\s\S]*?<\/section>/)?.[0] || '';
+  assert.match(sidebar(), /正在启动/, 'sidebar keeps the working startup badge');
+  assert.doesNotMatch(sidebar(), /启动官方机器人|QQ 官方机器人已连接/, 'startup is not replaced by the official stopped state');
+
+  await app.clickRoute('overview');
+  await app.settle();
+  assert.match(hero(), /对话服务已启动/, 'overview keeps the real checking-qq title');
+
+  await app.clickRoute('connect');
+  await app.selectMode('official');
+  await app.settle();
+  assert.match(hero(), /对话服务已启动/, 'official tab also keeps the startup stage');
+  assert.doesNotMatch(hero(), /启动官方机器人/);
+});

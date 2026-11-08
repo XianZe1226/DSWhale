@@ -102,3 +102,33 @@ def test_preview_inherit_without_host_context_does_not_fabricate_host_profile():
     assert value["computed"] is False
     assert value["uncomputedReason"] == "profile_unknown"
     assert value["interval"] is None
+
+
+def test_five_concurrent_calls_are_bounded_by_the_same_deadline(monkeypatch):
+    async def slow(payload, limit):
+        await asyncio.sleep(0.2)
+        return {"ok": True, "value": {}}
+
+    monkeypatch.setattr(reply_style_isolate, "_run_async", slow)
+
+    async def scenario():
+        return await asyncio.gather(
+            *[reply_style_isolate.run({}, deadline_seconds=0.15) for _ in range(5)]
+        )
+
+    results = run(scenario())
+    assert len(results) == 5
+    assert sum(item.get("ok") is True for item in results) == 4
+    assert [item.get("error") for item in results if item.get("ok") is not True] == ["unavailable"]
+    assert reply_style_isolate.active_workers() == 0
+
+
+def test_plan_maps_an_unavailable_worker_slot_to_custom_unavailable(monkeypatch):
+    async def unavailable(request, deadline_seconds=0.75):
+        return {"ok": False, "error": "unavailable"}
+
+    monkeypatch.setattr(reply_style_isolate, "run", unavailable)
+    result = run(plan_async("整段正文", mode="custom", custom_regex=r"[^\n]+"))
+    assert result["degraded"] == "custom_unavailable"
+    assert result["customExecuted"] is False
+    assert result["bubbles"] == ["整段正文"]

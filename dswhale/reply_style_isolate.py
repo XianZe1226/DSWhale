@@ -143,12 +143,27 @@ async def run(request, deadline_seconds=DEFAULT_TIMEOUT):
     """Return ``{"ok": True, "value": ...}`` or a bounded failure object."""
     global _active
     payload = json.dumps(request, ensure_ascii=False).encode("utf-8")
-    async with _semaphore():
-        _active += 1
-        try:
-            value = await _run_async(payload, deadline_seconds)
-            if value is None:
-                value = await asyncio.to_thread(_run_blocking, payload, deadline_seconds)
-            return value
-        finally:
-            _active -= 1
+    loop = asyncio.get_running_loop()
+    started = loop.time()
+
+    def remaining():
+        return max(0.0, deadline_seconds - (loop.time() - started))
+
+    semaphore = _semaphore()
+    try:
+        await asyncio.wait_for(semaphore.acquire(), remaining())
+    except TimeoutError:
+        # Waiting for a slot is part of the same hard budget. The caller maps
+        # this to custom_unavailable, never to a successful execution.
+        return {"ok": False, "error": "unavailable"}
+    _active += 1
+    try:
+        budget = max(0.05, remaining())
+        value = await _run_async(payload, budget)
+        if value is None:
+            budget = max(0.05, remaining())
+            value = await asyncio.to_thread(_run_blocking, payload, budget)
+        return value
+    finally:
+        _active -= 1
+        semaphore.release()

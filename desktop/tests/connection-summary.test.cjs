@@ -320,3 +320,30 @@ test('F5: a single connecting channel does not make the global summary working',
   assert.equal(summary.globalChannel, '');
   assert.notEqual(summary.badge, '已连接');
 });
+
+test('F5: every startup stage wins before the official connection state', () => {
+  const base = liveNapcatState();
+  base.state.running = false;
+  base.connections.channels = [{ ...officialChannel, platformEnabled: true, configured: true }];
+  for (const stage of ['checking-qq', 'starting-qq', 'reusing-qq', 'starting-conversation']) {
+    const view = connectionViewModel({ ...base, state: { ...base.state, startup: { stage } }, connectionTab: 'official' });
+    assert.equal(view.stage, stage);
+    assert.equal(view.tone, 'working');
+    assert.doesNotMatch(view.title, /启动官方机器人/);
+  }
+});
+
+test('F5: overview and sidebar summary keep checking-qq before connection', () => {
+  const base = liveNapcatState();
+  base.state.running = false;
+  base.state.startup = { stage: 'checking-qq' };
+  base.connections.channels = [
+    { ...napcatChannel, platformEnabled: true, health: 'unknown', protocolConnected: false },
+    { ...officialChannel, platformEnabled: true, configured: true, health: 'unknown', protocolConnected: false },
+  ];
+  const summary = connectionSummary({ ...base, connectionTab: 'official' });
+  assert.equal(summary.stage, 'checking-qq');
+  assert.equal(summary.tone, 'working');
+  assert.match(summary.title, /对话服务已启动/);
+  assert.doesNotMatch(summary.title, /启动官方机器人|先启用/);
+});

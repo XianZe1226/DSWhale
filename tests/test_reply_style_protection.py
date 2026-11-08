@@ -64,3 +64,11 @@ def test_protected_proof_rejects_a_missing_fragment():
     source = "前 `代码。` 后"
     assert _protected_preserved(source, ["前 `代码。` 后"]) is True
     assert _protected_preserved(source, ["前 代码。 后"]) is False
+
+
+def test_protected_proof_requires_each_duplicate_fragment():
+    from dswhale.reply_style_ops import _protected_preserved
+
+    source = "前 `重复。` 后 `重复。` 尾"
+    assert _protected_preserved(source, ["前 `重复。` 后 `重复。` 尾"]) is True
+    assert _protected_preserved(source, ["前 `重复。` 尾"]) is False
