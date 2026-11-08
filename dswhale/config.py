@@ -38,7 +38,7 @@ class Settings:
     media_timeout_seconds: int = 180
     cookies_path: str = ""
     persona: str = ""
-    reply_style_mode: str = "inherit"
+    reply_style_mode: str = "natural"
     reply_style_max_bubbles: int = 3
     reply_style_interval: str = "0.8,1.5"
     reply_style_punctuation: str = "keep"

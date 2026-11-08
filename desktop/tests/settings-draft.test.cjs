@@ -1,6 +1,5 @@
 'use strict';
-// F1/F7: edits are tracked per field, external refreshes never overwrite a dirty
-// draft, and the preview textarea is local state that never enters a save patch.
+// Edits are tracked per field; refresh and conflict handling preserve the draft.
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
@@ -60,14 +59,14 @@ function renderApp(invoke) {
   };
   const calls = [];
   const bridge = { invoke: async (action, payload) => { calls.push([action, payload]); return action === 'workspace-status' ? workspace() : invoke(action, payload); }, onState: () => () => {} };
-  vm.runInNewContext(fs.readFileSync(path.join(__dirname, '../ui/app.js'), 'utf8'), { window: { DSWhaleUI: model, dswhale: bridge, addEventListener() {} }, document, location: { search: '?screen=intelligence' }, URLSearchParams });
+  vm.runInNewContext(fs.readFileSync(path.join(__dirname, '../ui/app.js'), 'utf8'), { window: { DSWhaleUI: model, dswhale: bridge, addEventListener() {} }, document, location: { search: '?screen=connect' }, URLSearchParams });
   return {
     calls, html: () => root.innerHTML,
     settle: () => new Promise(resolve => setImmediate(resolve)),
     click: dataset => handlers.click({ target: { closest() { return this; }, dataset, hasAttribute() { return false; } } }),
     clickButton: button => handlers.click({ target: button }),
     input: (id, value) => { inputValues[id] = value; },
-    type: (id, value) => { inputValues[id] = value; handlers.input?.({ target: { id, value, type: 'textarea', matches() { return true; } } }); },
+    type: (id, value) => { inputValues[id] = value; handlers.input?.({ target: { id, value, type: 'text', matches() { return true; } } }); },
     buttons: () => buttons,
   };
 }
@@ -87,28 +86,28 @@ test('F1: a dirty field survives an external refresh and only that field is patc
     if (action === 'connections-status') return { channels: [] };
     return {};
   });
-  app.click({ action: 'reply-style-mode', mode: 'natural' });
+  app.type('dashboardPort', '6186');
   await app.settle();
   app.click({ action: 'settings-get' });
   for (let i = 0; i < 4; i += 1) await app.settle();
-  assert.match(app.html(), /自然短句/);
+  assert.match(app.html(), /6186/);
   app.click({ action: 'save-settings' });
   for (let i = 0; i < 4; i += 1) await app.settle();
   const save = app.calls.find(([action]) => action === 'settings-save');
   assert.ok(save);
-  assert.equal(save[1].patch.replyStyleMode, 'natural');
+  assert.equal(save[1].patch.dashboardPort, 6186);
   assert.equal(Object.hasOwn(save[1].patch, 'proactiveEnabled'), false);
 });
 
 test('F1: the same field changed externally needs a second confirmation', async () => {
   let reads = 0;
   const app = await boot(async action => {
-    if (action === 'settings-get') { reads += 1; return reads === 1 ? settings() : settings({ replyStyleMode: 'single' }); }
+    if (action === 'settings-get') { reads += 1; return reads === 1 ? settings() : settings({ dashboardPort: 6187 }); }
     if (action === 'inspect') return { installed: true, running: true, phase: 'ready', setup: { ownerConfigured: true, qqConfigured: true, modelConfigured: true } };
     if (action === 'extensions-status') return {};
     return {};
   });
-  app.click({ action: 'reply-style-mode', mode: 'natural' });
+  app.type('dashboardPort', '6186');
   await app.settle();
   app.click({ action: 'settings-get' });
   for (let i = 0; i < 4; i += 1) await app.settle();
@@ -119,61 +118,7 @@ test('F1: the same field changed externally needs a second confirmation', async 
   app.click({ action: 'save-settings' });
   for (let i = 0; i < 4; i += 1) await app.settle();
   const save = app.calls.find(([action]) => action === 'settings-save');
-  assert.equal(save[1].patch.replyStyleMode, 'natural');
-});
-
-test('F6: an uncomputed host preview never renders a fabricated count or bubbles', async () => {
-  const app = await boot(async action => {
-    if (action === 'settings-get') return settings();
-    if (action === 'inspect') return { installed: true, running: true, phase: 'ready', setup: { ownerConfigured: true, qqConfigured: true, modelConfigured: true } };
-    if (action === 'extensions-status') return {};
-    if (action === 'reply-style-preview') return { mode: 'inherit', path: 'host', hostPath: 'host_unknown', computed: false, uncomputedReason: 'host_regex_timeout', count: 99, bubbles: ['不应渲染'], interval: null, warnings: [], hostSource: { profileId: 'qq', platform: 'aiocqhttp', segmented: { enable: true } } };
-    return {};
-  });
-  app.input('replyStylePreviewText', '甲。乙。');
-  app.click({ action: 'reply-style-preview' });
-  for (let i = 0; i < 4; i += 1) await app.settle();
-  const html = app.html();
-  assert.match(html, /条数未计算/);
-  assert.doesNotMatch(html, /99 条/);
-  assert.doesNotMatch(html, /不应渲染/);
-  assert.match(html, /宿主分段规则执行超时/);
-});
-
-test('F7: the preview textarea is local state and never part of the save payload', async () => {
-  const app = await boot(async action => {
-    if (action === 'settings-get') return settings();
-    if (action === 'inspect') return { installed: true, running: true, phase: 'ready', setup: { ownerConfigured: true, qqConfigured: true, modelConfigured: true } };
-    if (action === 'extensions-status') return {};
-    return {};
-  });
-  app.type('replyStylePreviewText', '只在这里出现的合成文本。');
-  app.click({ action: 'reply-style-mode', mode: 'natural' });
-  await app.settle();
-  assert.match(app.html(), /只在这里出现的合成文本。/);
-  app.click({ action: 'save-settings' });
-  for (let i = 0; i < 4; i += 1) await app.settle();
-  const save = app.calls.find(([action]) => action === 'settings-save');
-  assert.ok(save);
-  assert.equal(JSON.stringify(save[1]).includes('只在这里出现的合成文本'), false);
-});
-
-test('F6: a host-segmented preview shows the real three bubbles, not one placeholder', async () => {
-  const app = await boot(async action => {
-    if (action === 'settings-get') return settings();
-    if (action === 'inspect') return { installed: true, running: true, phase: 'ready', setup: { ownerConfigured: true, qqConfigured: true, modelConfigured: true } };
-    if (action === 'extensions-status') return {};
-    if (action === 'reply-style-preview') return { mode: 'inherit', path: 'host', hostPath: 'host_segmented', computed: true, count: 3, bubbles: ['甲。', '乙。', '丙。'], interval: null, warnings: [], hostSource: { profileId: 'qq', platform: 'aiocqhttp', segmented: { enable: true } } };
-    return {};
-  });
-  app.input('replyStylePreviewText', '甲。乙。丙。');
-  app.click({ action: 'reply-style-preview' });
-  for (let i = 0; i < 4; i += 1) await app.settle();
-  const html = app.html();
-  assert.match(html, /3 条 · 沿用宿主 · host_segmented/);
-  assert.match(html, /甲。/);
-  assert.match(html, /乙。/);
-  assert.match(html, /丙。/);
+  assert.equal(save[1].patch.dashboardPort, 6186);
 });
 
 test('S5: a failed save exposes an in-app refresh that preserves the draft', async () => {
@@ -182,17 +127,17 @@ test('S5: a failed save exposes an in-app refresh that preserves the draft', asy
   const app = await boot(async action => {
     if (action === 'settings-get') {
       reads += 1;
-      return reads === 1 ? settings() : settings({ replyStyleMode: 'single', proactiveEnabled: true });
+      return reads === 1 ? settings() : settings({ dashboardPort: 6187, proactiveEnabled: true });
     }
     if (action === 'settings-save') {
       saves += 1;
-      return saves === 1 ? { error: '设置已被外部修改，请重新读取。' } : settings({ replyStyleMode: 'natural', proactiveEnabled: true });
+      return saves === 1 ? { error: '设置已被外部修改，请重新读取。' } : settings({ dashboardPort: 6186, proactiveEnabled: true });
     }
     if (action === 'inspect') return { installed: true, running: true, phase: 'ready', setup: { ownerConfigured: true, qqConfigured: true, modelConfigured: true } };
     if (action === 'extensions-status') return {};
     return {};
   });
-  app.click({ action: 'reply-style-mode', mode: 'natural' });
+  app.type('dashboardPort', '6186');
   await app.settle();
   app.click({ action: 'save-settings' });
   for (let i = 0; i < 4; i += 1) await app.settle();
@@ -215,6 +160,6 @@ test('S5: a failed save exposes an in-app refresh that preserves the draft', asy
   for (let i = 0; i < 4; i += 1) await app.settle();
   assert.equal(saves, 2);
   const save = app.calls.filter(([action]) => action === 'settings-save').at(-1);
-  assert.deepEqual(save[1].patch, { replyStyleMode: 'natural' });
+  assert.deepEqual(save[1].patch, { dashboardPort: 6186 });
   assert.doesNotMatch(app.html(), /重新读取并保留修改/);
 });

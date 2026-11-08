@@ -127,7 +127,8 @@ def prompt_hint(mode):
     """Short runtime style hint; never written back to the user's persona."""
     if mode == "natural":
         return (
-            "回复排版：像日常聊天一样，通常一句一条、合计 1–3 条；每条是完整的一句话或一个意思，"
+            "像平常发消息一样聊天：日常闲聊简短自然，通常一句一条、合计 1–3 条，换行区分；"
+            "每条只说一个完整的意思，不用客服套话、标题或编号，不为了凑条数硬聊或句句追问。"
             "不要出现半句或空白消息；不要为了凑条数硬拆；代码、链接、数字和长技术内容保持完整。"
         )
     if mode == "single":

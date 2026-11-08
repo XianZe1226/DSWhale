@@ -1,6 +1,5 @@
 'use strict';
-// R4: reply style configuration stays independent from the persona text, is
-// validated before saving, and renders a usable offline preview card.
+// Ordinary chat needs no formatting setup. Advanced transport remains compatible.
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
@@ -41,7 +40,7 @@ function renderApp(invoke) {
       markup = value; document.activeElement = body;
       buttons = [...value.matchAll(/<button\b([^>]*)>/g)].map(([, attrs]) => {
         const attr = key => attrs.match(new RegExp(`(?:^|\\s)${key}="([^"]*)"`))?.[1];
-        return { id: attr('id'), disabled: /\sdisabled(?:\s|$)/.test(attrs), dataset: { action: attr('data-action'), mode: attr('data-mode'), route: attr('data-route') }, focus() { if (!this.disabled) document.activeElement = this; } };
+        return { id: attr('id'), disabled: /\sdisabled(?:\s|$)/.test(attrs), dataset: { action: attr('data-action'), mode: attr('data-mode'), route: attr('data-route'), panel: attr('data-panel') }, focus() { if (!this.disabled) document.activeElement = this; } };
       });
     },
     addEventListener(name, callback) { handlers[name] = callback; },
@@ -92,64 +91,36 @@ test('reply style fields are allowlisted by the renderer security gate', () => {
   assert.equal(security.validateSettings({ patch: { ownerQQ: '1', replyStylePrompt: true } }), true);
 });
 
-test('the intelligence page shows the persona source and reply-style controls', async () => {
+test('the intelligence page needs no reply setup and never exposes a private persona', async () => {
   const app = renderApp(async action => {
-    if (action === 'settings-get') return settings();
-    if (action === 'inspect') return { installed: true, running: true, phase: 'ready', setup: { ownerConfigured: true, qqConfigured: true, modelConfigured: true, memoryConfigured: false, biliEnabled: false } };
+    if (action === 'settings-get') return settings({ persona: 'SYNTHETIC_PRIVATE_PERSONA_DO_NOT_RENDER' });
+    if (action === 'inspect') return { installed: true, running: true, phase: 'ready', setup: { ownerConfigured: true, qqConfigured: true, modelConfigured: true, memoryConfigured: false } };
     if (action === 'extensions-status') return { memory: { installed: false, version: '' }, memes: { installed: false, version: '' } };
     if (action === 'connections-status') return { channels: [] };
-    if (action === 'settings-history') return { records: [] };
     return {};
   });
   for (let i = 0; i < 10; i += 1) await app.settle();
   const html = app.html();
-  assert.match(html, /人格来源/);
-  assert.match(html, /DSWhale 补充人格/);
-  assert.match(html, /自然短句/);
-  assert.match(html, /离线预览/);
-  assert.match(html, /仅 DSWhale 授权的私聊与主人会话/);
-  assert.ok(app.buttons().some(button => button.dataset.action === 'reply-style-mode' && button.dataset.mode === 'natural'));
-  assert.ok(app.buttons().some(button => button.dataset.action === 'reply-style-preview'));
-});
-
-test('preview uses the runtime plan returned by the main process and does not call a model', async () => {
-  const app = renderApp(async (action, payload) => {
-    if (action === 'settings-get') return settings();
-    if (action === 'inspect') return { installed: true, running: true, phase: 'ready', setup: { ownerConfigured: true, qqConfigured: true, modelConfigured: true, memoryConfigured: false, biliEnabled: false } };
-    if (action === 'extensions-status') return { memory: { installed: false, version: '' }, memes: { installed: false, version: '' } };
-    if (action === 'reply-style-preview') return { mode: 'natural', path: 'plugin', hostPath: 'plugin_owned', bubbles: ['甲。', '乙。'], count: 2, warnings: [], protected: [], interval: [0.8, 1.5] };
-    return {};
-  });
-  for (let i = 0; i < 10; i += 1) await app.settle();
-  app.input('replyStylePreviewText', '甲。乙。');
-  app.click({ action: 'reply-style-preview' });
+  assert.doesNotMatch(html, /SYNTHETIC_PRIVATE_PERSONA_DO_NOT_RENDER/);
+  assert.doesNotMatch(html, /人格来源|回复方式|离线预览|发送间隔|Python 正则|最多几条/);
+  assert.match(html, /聊天性格/);
+  const entry = app.buttons().find(button => button.dataset.panel === 'persona');
+  assert.ok(entry, 'one clear persona management entry is available');
+  assert.equal(app.calls.some(([action]) => ['settings-save', 'start', 'stop', 'reply-style-preview'].includes(action)), false);
+  app.click(entry.dataset);
   for (let i = 0; i < 4; i += 1) await app.settle();
-  const previewCall = app.calls.find(([action]) => action === 'reply-style-preview');
-  assert.ok(previewCall);
-  assert.equal(previewCall[1].text, '甲。乙。');
-  assert.equal(previewCall[1].platform, 'aiocqhttp');
-  assert.match(app.html(), /2 条 · DSWhale 接管/);
-  assert.match(app.html(), /甲。/);
-  assert.match(app.html(), /乙。/);
+  assert.ok(app.calls.some(([action, payload]) => action === 'open-panel' && payload.panel === 'persona'));
 });
 
-test('the persona text is displayed only locally and is not part of a save patch', () => {
+test('the persona text is never part of a save patch', () => {
   const payload = model.settingsPayload(settings());
   assert.equal(Object.hasOwn(payload, 'persona'), false);
 });
 
-test('host decoration preview fields are allowlisted and explained in the card', async () => {
+test('persona management is restricted to the trusted desktop frame', () => {
   const shell = { mainFrame: {} };
   const event = { sender: shell, senderFrame: shell.mainFrame };
-  assert.doesNotThrow(() => security.validateRequest(event, shell, 'reply-style-preview', { text: '甲', hostReplyPrefix: true, hostTtsEnabled: true }));
-  assert.throws(() => security.validateRequest(event, shell, 'reply-style-preview', { text: '甲', tts: true }), /预览内容无效/);
-  const app = renderApp(async action => {
-    if (action === 'settings-get') return settings({ hostReplyPrefix: true });
-    if (action === 'inspect') return { installed: true, running: true, phase: 'ready', setup: { ownerConfigured: true, qqConfigured: true, modelConfigured: true, memoryConfigured: false, biliEnabled: false } };
-    if (action === 'extensions-status') return { memory: { installed: false, version: '' }, memes: { installed: false, version: '' } };
-    return {};
-  });
-  for (let i = 0; i < 10; i += 1) await app.settle();
-  assert.match(app.html(), /宿主已配置回复前缀/);
-  assert.match(app.html(), /预览会标记实际回退路径/);
+  assert.doesNotThrow(() => security.validateRequest(event, shell, 'open-panel', { panel: 'persona' }));
+  assert.throws(() => security.validateRequest({ sender: {}, senderFrame: {} }, shell, 'open-panel', { panel: 'persona' }), /不允许/);
+  assert.throws(() => security.validateRequest(event, shell, 'open-panel', { panel: 'file:///persona' }), /页面无效/);
 });

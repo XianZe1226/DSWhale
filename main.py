@@ -108,9 +108,8 @@ class DSWhale(Star):
             return
         result = event.get_result()
         if self.companion.authorized(event) and result:
-            if (
-                getattr(result, "async_stream", None) is not None
-                and self.companion.settings.reply_style_mode == "inherit"
+            if getattr(result, "async_stream", None) is not None and not event.get_extra(
+                "_dswhale_stream_wrapped"
             ):
                 result.async_stream = clean_stream(result.async_stream)
             for item in result.chain or []:

@@ -155,14 +155,14 @@
   "reply_style_mode": {
     "description": "回复方式",
     "type": "string",
-    "default": "inherit",
+    "default": "natural",
     "options": [
       "inherit",
       "natural",
       "single",
       "custom"
     ],
-    "hint": "inherit 沿用 AstrBot 现有分段；natural 收齐完整回复后按语义分成 1–3 条；single 合并为一条；custom 使用自定义规则。保存后重载插件生效。"
+    "hint": "默认自动分成自然短句，无需设置。旧 inherit 值自动使用自然聊天；显式 single/custom 配置继续兼容。保存后重载插件生效。"
   },
   "reply_style_max_bubbles": {
     "description": "自然短句最多几条",

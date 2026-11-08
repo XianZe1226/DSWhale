@@ -1,6 +1,6 @@
 'use strict';
 const ACTIONS = new Set(['inspect', 'install', 'start', 'stop', 'open-panel', 'home', 'settings-get', 'settings-save', 'open-data', 'backup', 'restore', 'initial-login', 'extensions-status', 'extension-check', 'extension-update', 'extension-rollback', 'connections-status', 'connection-change', 'connection-confirm', 'settings-history', 'settings-restore-field', 'reply-style-preview']);
-const PANELS = new Set(['astrbot', 'models', 'memory', 'bilibili', 'qq', 'napcat']);
+const PANELS = new Set(['astrbot', 'models', 'memory', 'bilibili', 'qq', 'napcat', 'persona']);
 const WORKSPACE_ACTIONS = new Set(['workspace-status','health-check','backup-list','backup-restore','backup-delete','diagnostics-export','app-update-check','app-update-start','app-update-download','app-update-install','app-update-rollback','napcat-install','napcat-configure','napcat-wire','napcat-stop','napcat-guide','napcat-login-code','preferences-save']);
 for (const action of WORKSPACE_ACTIONS) ACTIONS.add(action);
 const SETTINGS_FIELDS = new Set(['qqConnectionMode','officialOwnerUMO','defaultDelivery','dashboardPort','ownerQQ','platformId','onebotPort','onebotToken','biliEnabled','proactiveEnabled','signatureEnabled','qzoneEnabled','replyStyleMode','replyStyleMaxBubbles','replyStyleInterval','replyStylePunctuation','replyStylePrompt','replyStyleCustomRegex','replyStyleCustomCleanup']);

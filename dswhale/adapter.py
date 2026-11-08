@@ -289,11 +289,21 @@ class Companion:
                     ensure_ascii=False,
                 ),
             )
-        if self.settings.reply_style_prompt and self.settings.reply_style_mode != "inherit":
-            hint = prompt_hint(self.settings.reply_style_mode)
+        if self.settings.reply_style_prompt and self.reply_mode != "inherit":
+            hint = prompt_hint(self.reply_mode)
             if hint:
                 instructions += "\n" + hint
         request.system_prompt = (request.system_prompt or "") + "\n" + instructions
+
+    @property
+    def reply_mode(self):
+        """Ordinary chat works without setup; retain explicit advanced choices.
+
+        Old default ``inherit`` becomes natural at runtime only. No private
+        configuration, persona or host setting is rewritten during upgrade.
+        """
+        mode = self.settings.reply_style_mode
+        return "natural" if mode == "inherit" else mode
 
     def _reply_style_channel(self, event):
         """Resolve the channel that owns this reply, without trusting a marker.
@@ -323,7 +333,7 @@ class Companion:
         low, high = parse_interval(self.settings.reply_style_interval)
         return await plan_async(
             text,
-            mode=self.settings.reply_style_mode,
+            mode=self.reply_mode,
             max_bubbles=self.settings.reply_style_max_bubbles,
             punctuation=self.settings.reply_style_punctuation,
             custom_regex=self.settings.reply_style_custom_regex,
@@ -474,7 +484,7 @@ class Companion:
         Returns True only when DSWhale owns the final send. Streaming replies
         are handled by ``_style_stream`` installed in ``observe``.
         """
-        mode = self.settings.reply_style_mode
+        mode = self.reply_mode
         if mode == "inherit" or not self.authorized(event):
             return False
         if event.get_extra("_dswhale_stream_owned"):
@@ -493,6 +503,14 @@ class Companion:
             return False
         plain_texts = [part.text for part in chain if isinstance(part, Plain)]
         text = "".join(plain_texts)
+        sent_texts = event.get_extra("_send_message_to_user_current_session_plain_texts", [])
+        dedup_text = " ".join(plain_texts).strip()  # AstrBot get_plain_text() uses spaces.
+        if dedup_text and isinstance(sent_texts, list) and dedup_text in sent_texts:
+            # AstrBot's send_message_to_user tool already delivered this reply.
+            # Leave the result intact for RespondStage's own deduplication; do
+            # not emit new bubbles or claim a second successful delivery.
+            event.set_extra("dswhale_style_fallback", "already_sent")
+            return False
         fallback = await self._style_fallback_reason(event, result, text, plain_texts=plain_texts)
         if fallback:
             event.set_extra("dswhale_style_fallback", fallback)
@@ -604,7 +622,7 @@ class Companion:
         self.delivered(event)
 
     def _style_stream_wrapper(self, event):
-        if not self.authorized(event) or self.settings.reply_style_mode == "inherit":
+        if not self.authorized(event) or self.reply_mode == "inherit":
             return
         if event.get_extra("_dswhale_stream_wrapped"):
             return

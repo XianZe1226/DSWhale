@@ -5,7 +5,7 @@
   const controller = createController({ bridge: window.dswhale, preview: query.get('preview') === '1' });
   const root = document.getElementById('app');
   const routeNames = { overview: '概览', environment: '运行环境', connect: 'QQ 连接', intelligence: '模型与记忆', bilibili: '哔哩哔哩', settings: '应用设置' };
-  const panelNames = { astrbot: 'AstrBot 控制台', models: '模型配置', memory: '记忆管理', bilibili: '哔哩哔哩设置', qq: 'QQ 连接控制台', napcat: 'QQ 登录' };
+  const panelNames = { astrbot: 'AstrBot 控制台', models: '模型配置', memory: '记忆管理', bilibili: '哔哩哔哩设置', qq: 'QQ 连接控制台', napcat: 'QQ 登录', persona: '人格管理' };
   const iconPaths = {
     overview: '<rect x="3" y="3" width="7" height="7" rx="2"/><rect x="14" y="3" width="7" height="7" rx="2"/><rect x="3" y="14" width="7" height="7" rx="2"/><rect x="14" y="14" width="7" height="7" rx="2"/>',
     environment: '<path d="m12 3 9 5-9 5-9-5 9-5Z"/><path d="m3 12 9 5 9-5M3 16l9 5 9-5"/>',
@@ -50,8 +50,6 @@
   let lastAnnouncement = '';
   let connectionAdvancedOpen = false;
   let externalGuideOpen = false;
-  let replyStylePreviewResult = null;
-  let replyStylePreviewText = '';
   const busy = data => !!data.pending || ['checking', 'installing'].includes(data.state.phase);
   const desktop = data => data.mode === 'desktop';
   const disabled = yes => yes ? ' disabled' : '';
@@ -275,31 +273,13 @@
   function extensions(data) {
     return `<div class="section-heading"><h2>插件管理</h2><span>独立更新，无需升级应用</span></div><p class="extension-intro">打开此页只读取本机状态；点击「检查更新」后才会联网查找版本。</p>${extensionsLoading ? '<p class="extension-feedback" role="status"><span class="spinner" aria-hidden="true"></span>正在读取本机插件状态…</p>' : ''}<div class="extension-grid">${extensionCard(data, 'memory')}${extensionCard(data, 'memes')}</div>${!data.extensions && !extensionsLoading ? `<p class="inline-note">未能读取插件状态。${button('重试读取', 'extensions-status', { off: !desktop(data) || busy(data) })}</p>` : ''}`;
   }
-  function replyStyleCard(data) {
-    const value = draft || data.settings;
-    if (!value) return `<section class="card reply-style-card"><div class="section-heading"><h2>人格与回复方式</h2></div><p class="inline-note">${settingsLoading ? '<span class="spinner" aria-hidden="true"></span> 正在读取…' : '正在读取本机回复方式。'}${button('重新读取', 'settings-get', { off: !desktop(data) || busy(data) })}</p></section>`;
-    const off = !desktop(data) || busy(data);
-    const mode = value.replyStyleMode || 'inherit';
-    const custom = mode === 'custom';
-    const personas = value.persona ? [{ label: 'DSWhale 补充人格', source: '自定义', text: value.persona }] : [{ label: 'DSWhale 补充人格', source: '内置默认', text: '' }];
-    const persona = personas[0];
-    const firstLine = persona.text ? persona.text.split(/\r?\n/)[0].slice(0, 80) : '内置默认人格（可爱大肥鱼）';
-    const preview = replyStylePreviewResult;
-    return `<div class="section-heading"><h2>人格与回复方式</h2><span>原人格不改写，回复方式独立保存</span></div>
-      <section class="card reply-style-card">
-        <div class="persona-sources"><h3>人格来源</h3><dl class="connection-channel-facts"><div><dt>${esc(persona.label)}</dt><dd>${esc(persona.source)} · ${persona.text.length} 字符</dd></div><div><dt>适用聊天</dt><dd>仅 DSWhale 授权的私聊与主人会话</dd></div><div><dt>宿主基础人格</dt><dd>由 AstrBot 全局人格提供；DSWhale 只在其后追加，不替换</dd></div></dl><p class="option-help">${esc(firstLine)}</p>${persona.text ? `<details class="reply-persona-full"><summary>查看完整人格文本（仅本机）</summary><pre>${esc(persona.text)}</pre></details>` : ''}</div>
-        <h3>回复方式</h3>
-        <div class="reply-style-modes" role="group" aria-label="回复方式">${[['inherit','沿用现有','由 AstrBot 决定分段与流式，DSWhale 不额外拆分'],['natural','自然短句','收齐完整回复后按语义分成 1–3 条'],['single','整段发送','合并为一条，不再被普通分段或流式拆开'],['custom','自定义','使用下方 Python 正则拆分；保存前校验']].map(([id,title,help])=>`<button type="button" class="button${mode===id?' primary':''}" data-action="reply-style-mode" data-mode="${id}" aria-pressed="${mode===id}"${disabled(off)}><span>${title}</span></button>`).join('')}</div>
-        ${value.hostReplyPrefix||value.hostTtsEnabled?`<p class="option-help" role="note">宿主已配置${value.hostReplyPrefix?'回复前缀':''}${value.hostReplyPrefix&&value.hostTtsEnabled?'和':''}${value.hostTtsEnabled?'TTS':''}；运行时会把最终发送交还宿主，预览会标记实际回退路径。</p>`:''}
-        <p class="option-help">${mode==='inherit'?'保持现状：不接管发送，也不改写宿主的分段、流式或间隔设置。':mode==='natural'?'会先收齐完整回复再发送，首字延迟可能增加；模型仍可能不严格遵守 1–3 条。':mode==='single'?'会接管最终发送；图片、引用、@、语音或混合链会回退宿主，页面会显示实际路径。':'自定义规则由 Python 正则执行；只接受可信规则，复杂规则仍有性能风险。'}</p>
-        <div class="settings-grid"><label for="replyStyleMaxBubbles">最多几条<input id="replyStyleMaxBubbles" type="number" min="1" max="3" step="1" value="${esc(value.replyStyleMaxBubbles??3)}"${disabled(off||mode==='inherit'||mode==='single'||mode==='custom')}></label><label for="replyStyleInterval">发送间隔（秒）<input id="replyStyleInterval" type="text" value="${esc(value.replyStyleInterval||'0.8,1.5')}"${disabled(off||mode==='inherit')}></label><label for="replyStylePunctuation">句尾标点<select id="replyStylePunctuation"${disabled(off||mode==='inherit')}><option value="keep"${value.replyStylePunctuation!=='sentence_end'?' selected':''}>保留原标点</option><option value="sentence_end"${value.replyStylePunctuation==='sentence_end'?' selected':''}>去掉每条末尾一个句号</option></select></label><label class="switch-row"><input id="replyStylePrompt" type="checkbox"${value.replyStylePrompt!==false?' checked':''}${disabled(off||mode==='inherit')}><span>在授权聊天中附加一次排版提示</span></label></div>
-        <details class="reply-style-advanced"${custom?' open':''}><summary>自定义规则与高级选项</summary><label for="replyStyleCustomRegex">拆分规则（Python 正则）<textarea id="replyStyleCustomRegex" rows="2" maxlength="200"${disabled(off)}>${esc(value.replyStyleCustomRegex||'')}</textarea></label><label for="replyStyleCustomCleanup">清理规则（可选，只在受保护区间外删除）<textarea id="replyStyleCustomCleanup" rows="2" maxlength="200"${disabled(off)}>${esc(value.replyStyleCustomCleanup||'')}</textarea></label><p class="option-help">不能包含捕获组、不能匹配空字符串；示例：[^\\n]+。保存后重载插件生效。</p></details>
-        <div class="reply-style-preview"><label for="replyStylePreviewText">离线预览（不调用模型或 QQ，不保存正文）<textarea id="replyStylePreviewText" rows="3" placeholder="粘贴一段合成文字，查看将如何分条。">${esc(replyStylePreviewText)}</textarea></label><div class="card-actions">${button('生成预览', 'reply-style-preview', {off})}${button('恢复回复方式默认值', 'reply-style-reset', {off})}${button('保存回复方式', 'save-settings', {primary:true,off})}</div>${preview?`<div class="reply-style-preview-result" role="status"><strong>${preview.computed===false?'条数未计算':`${esc(preview.count)} 条`} · ${preview.path==='plugin'?'DSWhale 接管':'沿用宿主'} · ${esc(preview.hostPath||'')}</strong>${preview.computed===false?`<p class="option-help">${esc(({host_owned:'发送由宿主装饰，条数由宿主决定',profile_unknown:'无法唯一确定宿主配置档',config_missing:'宿主配置档不存在',host_regex_timeout:'宿主分段规则执行超时，正文将整段发送'}[preview.uncomputedReason]||'当前无法计算实际条数'))}</p>`:`<ol>${(preview.bubbles||[]).map(bubble=>`<li>${esc(bubble)}</li>`).join('')}</ol>`}${(preview.warnings||[]).length?`<p class="option-help">保护/回退：${esc(preview.warnings.join('、'))}</p>`:''}${preview.hostSource?`<p class="option-help">宿主配置：${esc(preview.hostSource.profileId||'')} · ${esc(preview.hostSource.platform||'')} · 分段${preview.hostSource.segmented?.enable?'开':'关'}</p>`:''}</div>`:''}</div>
-      </section>`;
+  function personaCard(data) {
+    const off = !desktop(data) || !data.state.running || busy(data);
+    return `<section class="card preference-card persona-card" aria-labelledby="persona-title"><div><h3 id="persona-title">聊天性格</h3><p>在 AstrBot 中选择聊天角色。</p></div>${button('管理人格', 'open-panel', { payload: 'persona', iconName: 'arrow', off })}</section>`;
   }
   function intelligence(data) {
     const off = !data.state.running || !desktop(data) || busy(data);
-    return `<section class="page-heading"><div><p class="eyebrow">每一次对话，都更懂你</p><h1>模型与记忆</h1><p class="subtitle">连接云端模型，让记忆自然延续。</p></div></section><div class="feature-grid"><section class="card feature-card"><span class="feature-icon lavender">${icon('intelligence')}</span>${badge(data.state.setup.modelConfigured ? '已配置' : '待配置', data.state.setup.modelConfigured ? 'good' : '')}<h2>对话模型</h2><p>在 AstrBot 中管理模型服务商、API 密钥、模型选择与对话能力。</p><ul><li>使用现有的云端模型服务</li><li>无需下载本地模型权重</li></ul>${button('配置模型', 'open-panel', { primary: true, payload: 'models', iconName: 'arrow', off })}</section><section class="card feature-card"><span class="feature-icon mint">${icon('environment')}</span>${badge(data.state.setup.memoryConfigured ? '已配置' : '待配置', data.state.setup.memoryConfigured ? 'good' : '')}<h2>长期记忆</h2><p>在记忆插件中管理检索、总结与记忆设置，让重要的细节留下来。</p><ul><li>沿用现有记忆与插件配置</li><li>在同一个窗口中完成管理</li></ul>${button('管理记忆', 'open-panel', { payload: 'memory', iconName: 'arrow', off })}</section></div>${replyStyleCard(data)}${extensions(data)}${!data.state.running ? `<section class="info-strip">${icon('play')}<div><strong>先启动对话服务</strong><p>${data.state.installed ? '启动后，即可在当前窗口打开模型和记忆控制台。' : '请先准备运行环境，然后启动服务。'}</p></div>${data.state.installed ? serviceButton(data) : button('准备环境', 'route-environment', { primary: true, iconName: 'arrow' })}</section>` : `<section class="info-strip">${icon('shield')}<div><strong>完整配置，留在当前窗口。</strong><p>模型、插件与高级设置均通过现有 AstrBot 控制台管理。</p></div>${button('打开控制台', 'open-panel', { payload: 'astrbot', off })}</section>`}`;
+    return `<section class="page-heading"><div><p class="eyebrow">每一次对话，都更懂你</p><h1>模型与记忆</h1><p class="subtitle">连接云端模型，让记忆自然延续。</p></div></section><div class="feature-grid"><section class="card feature-card"><span class="feature-icon lavender">${icon('intelligence')}</span>${badge(data.state.setup.modelConfigured ? '已配置' : '待配置', data.state.setup.modelConfigured ? 'good' : '')}<h2>对话模型</h2><p>在 AstrBot 中管理模型服务商、API 密钥、模型选择与对话能力。</p><ul><li>使用现有的云端模型服务</li><li>无需下载本地模型权重</li></ul>${button('配置模型', 'open-panel', { primary: true, payload: 'models', iconName: 'arrow', off })}</section><section class="card feature-card"><span class="feature-icon mint">${icon('environment')}</span>${badge(data.state.setup.memoryConfigured ? '已配置' : '待配置', data.state.setup.memoryConfigured ? 'good' : '')}<h2>长期记忆</h2><p>在记忆插件中管理检索、总结与记忆设置，让重要的细节留下来。</p><ul><li>沿用现有记忆与插件配置</li><li>在同一个窗口中完成管理</li></ul>${button('管理记忆', 'open-panel', { payload: 'memory', iconName: 'arrow', off })}</section></div>${personaCard(data)}${extensions(data)}${!data.state.running ? `<section class="info-strip">${icon('play')}<div><strong>先启动对话服务</strong><p>${data.state.installed ? '启动后，即可在当前窗口打开模型和记忆控制台。' : '请先准备运行环境，然后启动服务。'}</p></div>${data.state.installed ? serviceButton(data) : button('准备环境', 'route-environment', { primary: true, iconName: 'arrow' })}</section>` : `<section class="info-strip">${icon('shield')}<div><strong>完整配置，留在当前窗口。</strong><p>模型、插件与高级设置均通过现有 AstrBot 控制台管理。</p></div>${button('打开控制台', 'open-panel', { payload: 'astrbot', off })}</section>`}`;
   }
   function bilibili(data) {
     const value = draft || data.settings;
@@ -464,10 +444,9 @@
   }
   function readField(target) {
     if(target.id==='app-update-channel'){updateChannel=target.value;return;}
-    if(target.id==='replyStylePreviewText'){replyStylePreviewText=target.value;return;}
 
     if(target.id.startsWith('pref-')){if(!preferencesDraft)preferencesDraft={...controller.get().workspace.preferences};preferencesDraft[target.id.slice(5)]=target.checked===true;preferencesDirty=true;return;}
-    if(!['ownerQQ','platformId','onebotPort','dashboardPort','onebotToken','biliEnabled','proactiveEnabled','signatureEnabled','qzoneEnabled','officialOwnerUMO','defaultDelivery','replyStyleMode','replyStyleMaxBubbles','replyStyleInterval','replyStylePunctuation','replyStylePrompt','replyStyleCustomRegex','replyStyleCustomCleanup'].includes(target.id))return;
+    if(!['ownerQQ','platformId','onebotPort','dashboardPort','onebotToken','biliEnabled','proactiveEnabled','signatureEnabled','qzoneEnabled','officialOwnerUMO','defaultDelivery'].includes(target.id))return;
     markDraft(target.id, target.type === 'checkbox' ? target.checked : target.value);
   }
   async function saveSettings() {
@@ -549,22 +528,6 @@
       controller.setConnectionTab(mode);
       render(controller.get());
       return;
-    }
-    if (action === 'reply-style-mode') {
-      const mode = target.dataset.mode; if (!['inherit','natural','single','custom'].includes(mode)) return;
-      markDraft('replyStyleMode', mode); replyStylePreviewResult = null; render(controller.get()); return;
-    }
-    if (action === 'reply-style-reset') {
-      for (const [key, next] of Object.entries({ replyStyleMode:'inherit', replyStyleMaxBubbles:3, replyStyleInterval:'0.8,1.5', replyStylePunctuation:'keep', replyStylePrompt:true, replyStyleCustomRegex:'', replyStyleCustomCleanup:'' })) markDraft(key, next);
-      replyStylePreviewResult = null; localMessage = '已恢复回复方式默认值，保存后才会写入。'; render(controller.get()); return;
-    }
-    if (action === 'reply-style-preview') {
-      const value = draft || controller.get().settings || {};
-      const text = document.getElementById('replyStylePreviewText')?.value || '';
-      replyStylePreviewText = text;
-      const result = await run('reply-style-preview', { text, mode:value.replyStyleMode, maxBubbles:value.replyStyleMaxBubbles, interval:value.replyStyleInterval, punctuation:value.replyStylePunctuation, customRegex:value.replyStyleCustomRegex||'', customCleanup:value.replyStyleCustomCleanup||'', platform:value.qqConnectionMode==='official'?'qq_official':'aiocqhttp', hostReplyPrefix:value.hostReplyPrefix===true, hostTtsEnabled:value.hostTtsEnabled===true });
-      if (result) replyStylePreviewResult = result;
-      render(controller.get()); return;
     }
     if (action === 'save-settings') return saveSettings();
     if(action==='save-preferences'){await run('preferences-save',preferencesDraft||controller.get().workspace.preferences);if(!controller.get().error){preferencesDirty=false;preferencesDraft=null;render(controller.get());}return;}

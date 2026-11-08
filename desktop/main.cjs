@@ -194,6 +194,7 @@ async function openPanel(panel) {
     // cookies/storage stay intact. Match the pinned AstrBot runtime matrix.
     entry.searchParams.set('astrbot_bundle', `${app.getVersion()}-astrbot-4.29.3`);
     if (panel === 'models') entry.hash = '/providers';
+    if (panel === 'persona') entry.hash = '/persona';
     if (panel === 'qq') entry.hash = '/platforms';
     url = entry.toString();
   }

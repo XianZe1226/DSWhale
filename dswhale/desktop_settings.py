@@ -102,7 +102,7 @@ def read_settings(host):
         "signatureEnabled": bool(fish.get("qq_signature_enabled", False)),
         "qzoneEnabled": bool(fish.get("qzone_enabled", False)),
         "defaultDelivery": fish.get("qq_default_delivery", ""),
-        "replyStyleMode": fish.get("reply_style_mode", "inherit"),
+        "replyStyleMode": fish.get("reply_style_mode", "natural"),
         "replyStyleMaxBubbles": fish.get("reply_style_max_bubbles", 3),
         "replyStyleInterval": fish.get("reply_style_interval", "0.8,1.5"),
         "replyStylePunctuation": fish.get("reply_style_punctuation", "keep"),

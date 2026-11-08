@@ -8,10 +8,10 @@
   const concurrentReadActions = new Set(['settings-get','workspace-status','backup-list','connections-status','settings-history','reply-style-preview']);
   const noPayloadActions = new Set(['app-update-start','settings-history','connections-status','workspace-status','health-check','backup-list','diagnostics-export','app-update-download','app-update-install','napcat-install','napcat-configure','napcat-wire','napcat-stop','napcat-guide','napcat-login-code']);
   const actions = new Set(['inspect', 'install', 'start', 'stop', 'open-panel', 'home', 'settings-get', 'settings-save', 'open-data', 'backup', 'restore', 'initial-login', 'extensions-status', 'extension-check', 'extension-update', 'extension-rollback','connections-status','connection-change','connection-confirm','settings-history','settings-restore-field','reply-style-preview',...workspaceActions]);
-  const panels = new Set(['astrbot', 'models', 'memory', 'bilibili', 'qq', 'napcat']);
+  const panels = new Set(['astrbot', 'models', 'memory', 'bilibili', 'qq', 'napcat', 'persona']);
   const extensionIds = new Set(['memory', 'memes']);
   const extensionActions = new Set(['extension-check', 'extension-update', 'extension-rollback']);
-  const replyStyleDefaults = value => ({ replyStyleMode: ['inherit','natural','single','custom'].includes(value?.replyStyleMode) ? value.replyStyleMode : 'inherit', replyStyleMaxBubbles: [1,2,3].includes(value?.replyStyleMaxBubbles) ? value.replyStyleMaxBubbles : 3, replyStyleInterval: typeof value?.replyStyleInterval === 'string' ? value.replyStyleInterval : '0.8,1.5', replyStylePunctuation: value?.replyStylePunctuation === 'sentence_end' ? 'sentence_end' : 'keep', replyStylePrompt: value?.replyStylePrompt !== false, replyStyleCustomRegex: typeof value?.replyStyleCustomRegex === 'string' ? value.replyStyleCustomRegex : '', replyStyleCustomCleanup: typeof value?.replyStyleCustomCleanup === 'string' ? value.replyStyleCustomCleanup : '', persona: typeof value?.persona === 'string' ? value.persona : '', hostReplyPrefix: value?.hostReplyPrefix === true, hostTtsEnabled: value?.hostTtsEnabled === true });
+  const replyStyleDefaults = value => ({ replyStyleMode: ['inherit','natural','single','custom'].includes(value?.replyStyleMode) ? value.replyStyleMode : 'natural', replyStyleMaxBubbles: [1,2,3].includes(value?.replyStyleMaxBubbles) ? value.replyStyleMaxBubbles : 3, replyStyleInterval: typeof value?.replyStyleInterval === 'string' ? value.replyStyleInterval : '0.8,1.5', replyStylePunctuation: value?.replyStylePunctuation === 'sentence_end' ? 'sentence_end' : 'keep', replyStylePrompt: value?.replyStylePrompt !== false, replyStyleCustomRegex: typeof value?.replyStyleCustomRegex === 'string' ? value.replyStyleCustomRegex : '', replyStyleCustomCleanup: typeof value?.replyStyleCustomCleanup === 'string' ? value.replyStyleCustomCleanup : '', persona: typeof value?.persona === 'string' ? value.persona : '', hostReplyPrefix: value?.hostReplyPrefix === true, hostTtsEnabled: value?.hostTtsEnabled === true });
   const settingsDefaults = value => ({ ...value, ...replyStyleDefaults(value), dashboardPort:value?.dashboardPort??6185, signatureEnabled: value?.signatureEnabled === true, qzoneEnabled: value?.qzoneEnabled === true });
   const preferencesPayload = value => ({tray:value?.tray===true,startAtLogin:value?.startAtLogin===true,resumeAfterWake:value?.resumeAfterWake===true});
   function extensionsStatus(value) {
@@ -255,7 +255,7 @@
       data.state = { ...data.state, ...state, platform: { ...data.state.platform, ...state.platform }, setup: { ...data.state.setup, ...state.setup } };
     }
     if (!available && preview) {
-      merge({ version: '0.3.0a12', platform: { id: 'darwin-arm64', label: 'macOS · Apple Silicon', supported: true }, components: [
+      merge({ version: '0.3.0a14', platform: { id: 'darwin-arm64', label: 'macOS · Apple Silicon', supported: true }, components: [
         { id: 'python', label: 'Python', version: '3.12', status: 'missing', detail: '将安装到独立环境' },
         { id: 'node', label: 'Node.js', version: '22 LTS', status: 'missing', detail: '用于扩展与网页能力' },
         { id: 'ffmpeg', label: 'FFmpeg', version: '6+', status: 'missing', detail: '音频与视频处理' },

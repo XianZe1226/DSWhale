@@ -713,7 +713,7 @@ def test_reply_style_defaults_migrate_without_writing_and_save_independently(tmp
     fish_path = host / "data/config/astrbot_plugin_dswhale_config.json"
     before_bytes = fish_path.read_bytes()
     before = read_settings(host)
-    assert before["replyStyleMode"] == "inherit"
+    assert before["replyStyleMode"] == "natural"
     assert before["replyStyleMaxBubbles"] == 3
     assert before["replyStylePunctuation"] == "keep"
     assert before["persona"] == "a custom private persona"

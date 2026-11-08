@@ -129,11 +129,66 @@ async def test_mixed_chain_keeps_host_structure_and_reports_fallback():
     assert event.extra["dswhale_style_fallback"] == "mixed_chain"
 
 
-async def test_inherit_never_takes_over():
-    event = FakeEvent(chain=[Plain("甲\n乙")])
+async def test_legacy_inherit_automatically_sends_natural_bubbles_without_rewriting_settings():
+    event = FakeEvent(chain=[Plain("甲。乙。")])
+    value = companion("inherit")
+    assert await value.deliver_reply_style(event) is True
+    assert event.sent == [["甲。"], ["乙。"]]
+    assert value.settings.reply_style_mode == "inherit"
+
+
+async def test_new_install_needs_no_reply_configuration(fast_sleep):
+    event = FakeEvent(chain=[Plain("今天辛苦啦。先歇一会儿。")])
+    value = companion()
+    original = {"persona": "SYNTHETIC_PRIVATE_PERSONA", "proactive_enabled": False}
+    value.settings = Settings.from_mapping(original)
+    assert await value.deliver_reply_style(event) is True
+    assert event.sent == [["今天辛苦啦。"], ["先歇一会儿。"]]
+    assert len(fast_sleep) == 1 and 0.8 <= fast_sleep[0] <= 1.5
+    assert original == {"persona": "SYNTHETIC_PRIVATE_PERSONA", "proactive_enabled": False}
+
+
+@pytest.mark.parametrize(
+    ("parts", "already_sent"),
+    [(["  这条已经发过啦。  "], "这条已经发过啦。"), (["第一段", "第二段"], "第一段 第二段")],
+)
+async def test_tool_already_delivered_the_same_reply_is_left_to_host_deduplication(
+    parts, already_sent
+):
+    event = FakeEvent()
+    result = MessageEventResult()
+    result.result_content_type = ResultContentType.LLM_RESULT
+    result.chain = [Plain(text) for text in parts]
+    event._result = result
+    event.set_extra("_send_message_to_user_current_session_plain_texts", [already_sent])
     value = companion("inherit")
     assert await value.deliver_reply_style(event) is False
     assert event.sent == []
+    assert event.cleared is False
+    assert event.get_extra("dswhale_delivered_called") is None
+
+
+async def test_tool_sent_a_different_reply_does_not_suppress_normal_chat():
+    event = FakeEvent(chain=[Plain("这是接着说的新消息。")])
+    event.set_extra("_send_message_to_user_current_session_plain_texts", ["刚才那条"])
+    value = companion("inherit")
+    assert await value.deliver_reply_style(event) is True
+    assert event.sent == [["这是接着说的新消息。"]]
+
+
+async def test_legacy_streaming_chat_is_automatically_split():
+    event = FakeEvent()
+    value = companion("inherit")
+    event.send_streaming = lambda *_: None
+    value._style_stream_wrapper(event)
+    assert event.get_extra("_dswhale_stream_wrapped") is True
+
+    async def chunks():
+        yield SimpleNamespace(type="plain", chain=[Plain("好哦。")])
+        yield SimpleNamespace(type="plain", chain=[Plain("我在呢。")])
+
+    await event.send_streaming(chunks())
+    assert event.sent == [["好哦。"], ["我在呢。"]]
 
 
 async def test_stream_collects_full_text_then_cleans_once():
@@ -220,7 +275,7 @@ async def test_before_send_skips_when_stream_is_owned():
     assert result.chain[0].text == "好<system_reminder>私有</system_reminder>"
 
 
-def test_missing_reply_style_keys_default_to_inherit():
+def test_missing_reply_style_keys_default_to_natural():
     base = {
         "persona": "人格",
         "owner_qq": "123456789",
@@ -236,7 +291,7 @@ def test_missing_reply_style_keys_default_to_inherit():
         "qzone_enabled": False,
     }
     settings = Settings.from_mapping(base)
-    assert settings.reply_style_mode == "inherit"
+    assert settings.reply_style_mode == "natural"
     assert settings.reply_style_max_bubbles == 3
     assert settings.reply_style_interval == "0.8,1.5"
     assert settings.reply_style_prompt is True
@@ -581,7 +636,7 @@ def test_reply_style_values_reject_false_zero_and_empty(mapping):
         Settings.from_mapping(mapping)
 
 
-def test_legacy_mapping_keeps_inherit_defaults_without_writes(tmp_path, monkeypatch):
+def test_legacy_mapping_keeps_natural_defaults_without_writes(tmp_path, monkeypatch):
     mapping = {
         "owner_qq": "123456789",
         "persona": "合成测试人格，不是真实用户数据",
@@ -595,7 +650,7 @@ def test_legacy_mapping_keeps_inherit_defaults_without_writes(tmp_path, monkeypa
 
     settings = Settings.from_mapping(mapping)
 
-    assert settings.reply_style_mode == "inherit"
+    assert settings.reply_style_mode == "natural"
     assert settings.reply_style_max_bubbles == 3
     assert settings.reply_style_interval == "0.8,1.5"
     assert settings.reply_style_punctuation == "keep"
@@ -607,10 +662,10 @@ def test_legacy_mapping_keeps_inherit_defaults_without_writes(tmp_path, monkeypa
     assert list(tmp_path.iterdir()) == []
 
 
-def test_old_install_missing_keys_keep_inherit_defaults_without_side_effects():
+def test_old_install_missing_keys_keep_natural_defaults_without_side_effects():
     settings = Settings.from_mapping({})
 
-    assert settings.reply_style_mode == "inherit"
+    assert settings.reply_style_mode == "natural"
     assert settings.reply_style_max_bubbles == 3
     assert settings.reply_style_interval == "0.8,1.5"
     assert settings.reply_style_punctuation == "keep"
