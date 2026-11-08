@@ -36,6 +36,8 @@ jobs:
       # transport only: @electron/get still verifies checksums.json from the
       # installed electron package before extracting the binary.
       ELECTRON_MIRROR: https://npmmirror.com/mirrors/electron/
+      # Windows packaging may fetch NSIS/winCodeSign from the same release CDN.
+      ELECTRON_BUILDER_BINARIES_MIRROR: https://npmmirror.com/mirrors/electron-builder-binaries/
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -62,6 +64,14 @@ jobs:
         run: python -m scripts.stage_desktop
       - name: Compare staged bridge against independent Git source inventory
         run: python -m scripts.verify_artifact desktop-resources/backend
+      - name: Seed verified uv for install smoke during the release CDN outage
+        # GitHub's release download hostname can return 504 from hosted runners
+        # while its API asset endpoint remains available. This test-only step
+        # still verifies the pinned checksum; the product installer path below
+        # is unchanged.
+        run: python scripts/ci_seed_uv.py ci-tools
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
       - name: Fresh and repeated desktop installation with synthetic data
         run: node desktop/tests/install-smoke.cjs
         env:

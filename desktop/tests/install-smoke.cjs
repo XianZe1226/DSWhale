@@ -20,6 +20,12 @@ async function main() {
   const stagedSource = process.env.DSWHALE_SMOKE_SOURCE || path.resolve(__dirname, '../../desktop-resources/backend');
   const manager = new RuntimeManager({ source: stagedSource, runtime,
     onProgress: event => { if (event.step) console.log(event.step); } });
+  // CI-only seam for external GitHub release CDN outages. The release asset is
+  // still checksum-verified against tool-assets.json before this path is set.
+  if (process.env.DSWHALE_CI_UV) {
+    manager._uv = async () => process.env.DSWHALE_CI_UV;
+    console.log('using CI-seeded uv');
+  }
   const extensions = new ExtensionRunner(manager,extensionRunner(runBounded,ciReadToken));
   try {
     const installed = await manager.install();
